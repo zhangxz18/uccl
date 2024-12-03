@@ -9,14 +9,13 @@
 
 using namespace uccl;
 
-const char* PLUGIN_NAME = "AFXDP_Plugin";
+const char* PLUGIN_NAME = "RDMA_Plugin";
 
 volatile bool quit = false;
 
 void interrupt_handler(int signal) {
     (void)signal;
     quit = true;
-    AFXDPFactory::shutdown();
 }
 
 Endpoint* ep;
