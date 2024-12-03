@@ -32,6 +32,9 @@ Remember to change `afxdp/transport_config.h` based on your NIC IPs and MACs.
 ### Run TCP testing
 
 ```
+# install libbpf and libxdp
+./configure && cd lib && make
+
 cd afxdp; make -j "CXXFLAGS=-DAWS_ENA"
 or 
 cd afxdp; make -j "CXXFLAGS=-DCLAB_MLX5"
