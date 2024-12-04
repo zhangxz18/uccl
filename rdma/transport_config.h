@@ -8,6 +8,8 @@
 // #define TEST_ZC
 #define USE_MULTIPATH
 
+#define USE_RDMA
+
 #define CLOUDLAB_D6515
 
 static const uint32_t NUM_QUEUES = 1;
@@ -42,9 +44,14 @@ static const uint32_t AFXDP_MTU = 1500;
 static const char* DEV_DEFAULT = "ens1f1np1";
 static const double kLinkBandwidth = 25.0 * 1e9 / 8;
 #elif defined(CLOUDLAB_D6515)
+
+#if defined(USE_RDMA)
+static const char* DEV_RDMA_DEFAULT = "mlx5_2";
+#endif
 static const uint32_t AFXDP_MTU = 3498;
 static const char* DEV_DEFAULT = "enp65s0f0np0";
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;
+
 #else
 #define CLOUDLAB_XL170
 static const uint32_t AFXDP_MTU = 1500;

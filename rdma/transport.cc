@@ -1092,10 +1092,18 @@ std::string UcclEngine::status_to_string() {
 Endpoint::Endpoint(const char *interface_name, int num_queues,
                    uint64_t num_frames, int engine_cpu_start, bool rdma_support)
     : num_queues_(num_queues), engine_cpu_start_(engine_cpu_start), rdma_support_(rdma_support), stats_thread_([this]() { stats_thread_fn(); }) {
-    // Create UDS socket and get the umem_id.
+    
+    char ethernet_name[64];
+
+    // convert IB device name to Ethernet device name
+    if (rdma_support) {
+        DCHECK(convert_ib_name_to_ethernet_name(interface_name, ethernet_name) == 0) << "Failed to convert IB name to Ethernet name";
+    }
+    
     static std::once_flag flag_once;
     std::call_once(flag_once, [interface_name, num_queues, num_frames, rdma_support]() {
         if (!rdma_support) {
+            // Create UDS socket and get the umem_id.
             AFXDPFactory::init(interface_name, num_frames, "ebpf_transport.o",
                            "ebpf_transport");
         }
@@ -1103,6 +1111,9 @@ Endpoint::Endpoint(const char *interface_name, int num_queues,
             RDMAFactory::init(interface_name, num_queues);
         }
     });
+
+    if (rdma_support)
+        interface_name = ethernet_name;
 
     local_ip_str_ = get_dev_ip(interface_name);
     local_mac_str_ = get_dev_mac(interface_name);

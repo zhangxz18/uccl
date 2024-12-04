@@ -29,7 +29,7 @@ DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
 static void server_worker(void)
 {
     std::string remote_ip;
-    auto ep = Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
+    auto ep = Endpoint(DEV_RDMA_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
 
     auto conn_id = ep.uccl_accept(remote_ip);
 
@@ -38,7 +38,7 @@ static void server_worker(void)
 
 static void client_worker(void)
 {
-    auto ep = Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
+    auto ep = Endpoint(DEV_RDMA_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
 
     auto conn_id = ep.uccl_connect(FLAGS_serverip);
 
