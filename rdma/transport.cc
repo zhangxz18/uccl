@@ -854,8 +854,10 @@ void UcclEngine::run() {
             active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
         }
 
-        auto frames = socket_->recv_packets(RECV_BATCH_SIZE);
-        if (frames.size()) process_rx_msg(frames);
+        if (!rdma_support_) {
+            auto frames = socket_->recv_packets(RECV_BATCH_SIZE);
+            if (frames.size()) process_rx_msg(frames);
+        }
 
         if (jring_sc_dequeue_bulk(channel_->tx_cmdq_, &tx_work, 1, nullptr) ==
             1) {
@@ -865,11 +867,16 @@ void UcclEngine::run() {
             std::atomic_thread_fence(std::memory_order_acquire);
 
             VLOG(3) << "Tx jring dequeue";
-            active_flows_map_[tx_work.flow_id]->tx_messages(tx_work);
+
+            if (!rdma_support_) {
+                active_flows_map_[tx_work.flow_id]->tx_messages(tx_work);
+            }
         }
 
-        for (auto &[flow_id, flow] : active_flows_map_) {
-            flow->transmit_pending_packets();
+        if (!rdma_support_) {
+            for (auto &[flow_id, flow] : active_flows_map_) {
+                flow->transmit_pending_packets();
+            }
         }
     }
 
@@ -880,6 +887,8 @@ void UcclEngine::run() {
     }
     // This will flush all unpolled tx frames.
     socket_->shutdown();
+
+    std::cout << "Engine " << local_engine_idx_ << " shutdown" << std::endl;
 }
 
 void UcclEngine::process_rx_msg(
@@ -946,7 +955,9 @@ void UcclEngine::process_rx_msg(
 void UcclEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
-    handle_rto();
+    if (!rdma_support_) {
+        handle_rto();
+    }
     process_ctl_reqs();
 }
 

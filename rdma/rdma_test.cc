@@ -23,12 +23,39 @@ void interrupt_handler(int signal) {
     quit = true;
 }
 
+DEFINE_bool(server, false, "Whether this is a server receiving traffic.");
+DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
+
+static void server_worker(void)
+{
+    std::string remote_ip;
+    auto ep = Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
+
+    auto conn_id = ep.uccl_accept(remote_ip);
+
+    printf("Server accepted connection from %s\n", remote_ip.c_str());
+}
+
+static void client_worker(void)
+{
+    auto ep = Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
+
+    auto conn_id = ep.uccl_connect(FLAGS_serverip);
+
+    printf("Client connected to %s\n", FLAGS_serverip.c_str());
+}
+
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-    auto ep = Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, true);
+    
+    if (FLAGS_server) {
+        server_worker();
+    } else {
+        client_worker();
+    }
 
     signal(SIGINT, interrupt_handler);
     signal(SIGTERM, interrupt_handler);
