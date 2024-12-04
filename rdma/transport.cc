@@ -974,12 +974,20 @@ void UcclEngine::process_ctl_reqs() {
         1) {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::kInstallFlow:
-                handle_install_flow_on_engine(ctrl_work);
+                if (!rdma_support_)
+                    handle_install_flow_on_engine(ctrl_work);
+                else
+                    handle_install_flow_on_engine_rdma(ctrl_work);
                 break;
             default:
                 break;
         }
     }
+}
+
+void UcclEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+{
+
 }
 
 void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
@@ -1076,7 +1084,8 @@ std::string UcclEngine::status_to_string() {
                     flow->remote_engine_idx_);
         s += flow->to_string();
     }
-    s += socket_->to_string();
+    if (!rdma_support_)
+        s += socket_->to_string();
     return s;
 }
 
@@ -1243,8 +1252,11 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
 
         if (unique) break;
     }
-
-    install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    
+    if (!rdma_support_)
+        install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    else
+        install_flow_on_engine_rdma(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -1308,7 +1320,10 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
         }
     }
 
-    install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    if (!rdma_support_)
+        install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    else
+        install_flow_on_engine_rdma(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -1378,6 +1393,13 @@ bool Endpoint::uccl_poll_once(PollCtx *ctx) {
     if (!ctx->done.load()) return false;
     fence_and_clean_ctx(ctx);
     return true;
+}
+
+void Endpoint::install_flow_on_engine_rdma(FlowID flow_id,
+                                      const std::string &remote_ip,
+                                      uint32_t local_engine_idx,
+                                      int bootstrap_fd) {
+
 }
 
 void Endpoint::install_flow_on_engine(FlowID flow_id,

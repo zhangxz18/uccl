@@ -329,7 +329,7 @@ class UcclFlow {
 
    public:
     /**
-     * @brief Construct a new flow.
+     * @brief Construct a new flow running on AFXDP socket.
      *
      * @param local_addr Local IP address.
      * @param remote_addr Remote IP address.
@@ -537,6 +537,8 @@ class UcclEngine {
 
     void handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work);
 
+    void handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
+
     // Called by application to shutdown the engine. App will need to join
     // the engine thread.
     inline void shutdown() { shutdown_ = true; }
@@ -660,6 +662,8 @@ class Endpoint {
    private:
     void install_flow_on_engine(FlowID flow_id, const std::string &remote_ip,
                                 uint32_t local_engine_idx, int bootstrap_fd);
+    void install_flow_on_engine_rdma(FlowID flow_id, const std::string &remote_ip,
+                                     uint32_t local_engine_idx, int bootstrap_fd);
     inline int find_least_loaded_engine_idx_and_update();
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
