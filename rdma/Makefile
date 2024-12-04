@@ -18,8 +18,14 @@ lib_src := $(filter-out %_test.cc,$(lib_src))
 lib_src := $(filter-out %_plugin.cc,$(lib_src))
 lib_obj = $(lib_src:.cc=.o)
 
+test_src = $(wildcard *_test.cc)
+test_bin = $(test_src:.cc=)
+
 .PHONY: build
-build: $(lib_obj) $(PLUGIN_SO)
+build: $(test_bin) $(lib_obj) $(PLUGIN_SO)
+
+rdma_test: rdma_test.cc $(DEPS) $(lib_obj)
+	g++ rdma_test.cc -o rdma_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
 %.o: %.cc $(DEPS)
 	g++ -c $< -o $@ $(INC) $(CXXFLAGS)

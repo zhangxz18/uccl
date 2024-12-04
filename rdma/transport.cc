@@ -1070,13 +1070,18 @@ std::string UcclEngine::status_to_string() {
 }
 
 Endpoint::Endpoint(const char *interface_name, int num_queues,
-                   uint64_t num_frames, int engine_cpu_start)
-    : num_queues_(num_queues), stats_thread_([this]() { stats_thread_fn(); }) {
+                   uint64_t num_frames, int engine_cpu_start, bool rdma_support)
+    : num_queues_(num_queues), engine_cpu_start_(engine_cpu_start), rdma_support_(rdma_support), stats_thread_([this]() { stats_thread_fn(); }) {
     // Create UDS socket and get the umem_id.
     static std::once_flag flag_once;
-    std::call_once(flag_once, [interface_name, num_frames]() {
-        AFXDPFactory::init(interface_name, num_frames, "ebpf_transport.o",
+    std::call_once(flag_once, [interface_name, num_queues, num_frames, rdma_support]() {
+        if (!rdma_support) {
+            AFXDPFactory::init(interface_name, num_frames, "ebpf_transport.o",
                            "ebpf_transport");
+        }
+        else {
+            RDMAFactory::init(interface_name, num_queues);
+        }
     });
 
     local_ip_str_ = get_dev_ip(interface_name);
@@ -1093,7 +1098,7 @@ Endpoint::Endpoint(const char *interface_name, int num_queues,
     for (int queue_id = 0, engine_cpu_id = engine_cpu_start;
          queue_id < num_queues; queue_id++, engine_cpu_id++) {
         engine_vec_.emplace_back(std::make_unique<UcclEngine>(
-            queue_id, channel_vec_[queue_id], local_ip_str_, local_mac_str_));
+            queue_id, channel_vec_[queue_id], local_ip_str_, local_mac_str_, rdma_support));
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), queue_id, engine_cpu_id]() {
                 LOG(INFO) << "[Engine] thread " << queue_id
@@ -1150,7 +1155,12 @@ Endpoint::~Endpoint() {
     }
 
     static std::once_flag flag_once;
-    std::call_once(flag_once, []() { AFXDPFactory::shutdown(); });
+    std::call_once(flag_once, [&]() { 
+        if (!rdma_support_)
+            AFXDPFactory::shutdown();
+        else
+            RDMAFactory::shutdown();
+    });
 
     {
         std::lock_guard<std::mutex> lock(stats_mu_);

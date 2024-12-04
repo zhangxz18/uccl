@@ -35,6 +35,7 @@
 #include "util_latency.h"
 #include "util_rss.h"
 #include "util_timer.h"
+#include "util_rdma.h"
 
 namespace uccl {
 
@@ -504,15 +505,19 @@ class UcclEngine {
      * future it may be responsible for multiple channels.
      */
     UcclEngine(int queue_id, Channel *channel, const std::string local_addr,
-               const std::string local_l2_addr)
-        : local_addr_(htonl(str_to_ip(local_addr))),
+               const std::string local_l2_addr, bool rdma_support)
+        : local_addr_(htonl(str_to_ip(local_addr))), rdma_support_(rdma_support),
           local_engine_idx_(queue_id),
-          socket_(AFXDPFactory::CreateSocket(queue_id)),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
         DCHECK(str_to_mac(local_l2_addr, local_l2_addr_));
+
+        if (!rdma_support_)
+            socket_ = AFXDPFactory::CreateSocket(queue_id);
+        else
+            rdma_ctx_ = RDMAFactory::CreateContext(queue_id);
     }
 
     /**
@@ -558,12 +563,18 @@ class UcclEngine {
     void process_ctl_reqs();
 
    private:
+   // Whether this engine supports RDMA.
+    bool rdma_support_;
     uint32_t local_addr_;
     char local_l2_addr_[ETH_ALEN];
     // Engine index, also NIC queue ID and xsk index.
     uint32_t local_engine_idx_;
-    // AFXDP socket used for send/recv packets.
-    AFXDPSocket *socket_;
+    union {
+        // AFXDP socket used for send/recv packets.
+        AFXDPSocket *socket_;
+        // RDMA context used for send/recv packets.
+        RDMAContext *rdma_ctx_;
+    };
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
     // Control plane channel with Endpoint.
@@ -592,6 +603,12 @@ class Endpoint {
     constexpr static uint16_t kBootstrapPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
+    // Whether this Endpoint supports RDMA.
+    bool rdma_support_;
+    // The first CPU to run the engine thread belongs to the Endpoint.
+    // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_queues_).
+    int engine_cpu_start_;
+
     std::string local_ip_str_;
     std::string local_mac_str_;
 
@@ -614,8 +631,8 @@ class Endpoint {
     std::unordered_map<FlowID, int> bootstrap_fd_map_;
 
    public:
-    Endpoint(const char *interface_name, int num_queues, uint64_t num_frames,
-             int engine_cpu_start);
+    // Note: num_frames is specific to AF_XDP and would be ignored if rdma_support is true.
+    Endpoint(const char *interface_name, int num_queues, uint64_t num_frames, int engine_cpu_start, bool rdma_support);
     ~Endpoint();
 
     // Connecting to a remote address; thread-safe

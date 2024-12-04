@@ -76,7 +76,7 @@ ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
     signal(SIGTERM, interrupt_handler);
     signal(SIGHUP, interrupt_handler);
 
-    ep = new Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START);
+    ep = new Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START, false);
     // pin_thread_to_cpu(ENGINE_CPU_START + 1);
 
     uccl_req_pool_buf = (char*)malloc(sizeof(UcclRequest) * kMaxInflightMsg);
