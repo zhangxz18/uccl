@@ -148,7 +148,7 @@ class UcclFlow {
 
    public:
     /**
-     * @brief Construct a new flow running on AFXDP socket.
+     * @brief Construct a new flow
      *
      * @param local_addr Local IP address.
      * @param remote_addr Remote IP address.

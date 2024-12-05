@@ -1,12 +1,9 @@
 ABS_ROOT_PATH := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 
 KERNEL = $(shell uname -r)
-INC = -I ../lib/install/include
-LIBS = ../lib/install/lib/libxdp.a ../lib/install/lib/libbpf.a -lglog -lgflags -lgtest -lz -lelf -libverbs
-LIBS_SHARED = -Wl,-rpath=$(ABS_ROOT_PATH)/../lib/xdp-tools/lib/libxdp/ \
-	   		  -Wl,-rpath=$(ABS_ROOT_PATH)/../lib/libbpf/src/ \
-	   		  -L../lib/xdp-tools/lib/libxdp -lxdp -L../lib/libbpf/src -lbpf \
-	   		  -lglog -lgflags -lgtest -lz -lelf -libverbs
+INC = -I./
+LIBS = -lglog -lgflags -lgtest -lz -lelf -libverbs
+LIBS_SHARED = -lglog -lgflags -lgtest -lz -lelf -libverbs
 override CXXFLAGS += -O3 -g -std=c++17 -Wno-pointer-arith -Wno-interference-size -fPIC
 CLANGFLAGS = -O3 -g
 DEPS = *.h
@@ -39,4 +36,4 @@ $(PLUGIN_SO): nccl_plugin.cc $(DEPS) $(lib_obj)
 
 .PHONY: clean
 clean:
-	rm -f *.o $(main_bin) $(PLUGIN_SO)
+	rm -f *.o $(test_bin) $(PLUGIN_SO)
