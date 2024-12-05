@@ -18,7 +18,7 @@ void interrupt_handler(int signal) {
     quit = true;
 }
 
-Endpoint* ep;
+RdmaEndpoint* ep;
 
 struct ConnectAcceptHandler {
     uint32_t ip_addr_u32;
@@ -84,7 +84,7 @@ ncclResult_t pluginPtrSupport(int dev, int* supportedTypes) {
 ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t* props) {
     // Below are default values, if unsure don't change.
 
-    props->name = (char*)DEV_DEFAULT;
+    props->name = (char*)DEV_RDMA_DEFAULT;
     // Fill for proper topology detection, e.g.
     // /sys/devices/pci0000:00/0000:00:10.0/0000:0b:00.0
     props->pciPath = NULL;

@@ -42,8 +42,8 @@ namespace uccl {
 typedef uint64_t FlowID;
 
 struct ConnID {
-    FlowID flow_id;       // Used for UcclEngine to look up UcclFlow.
-    uint32_t engine_idx;  // Used for Endpoint to locate the right engine.
+    FlowID flow_id;       // Used for UcclRdmaEngine to look up UcclFlow.
+    uint32_t engine_idx;  // Used for RdmaEndpoint to locate the right engine.
     int boostrap_id;      // Used for bootstrap connection with the peer.
 };
 
@@ -125,8 +125,8 @@ class Channel {
 };
 
 class UcclFlow;
-class UcclEngine;
-class Endpoint;
+class UcclRdmaEngine;
+class RdmaEndpoint;
 
 /**
  * @class UcclFlow, a connection between a local and a remote endpoint.
@@ -173,7 +173,7 @@ class UcclFlow {
     }
     ~UcclFlow() {}
 
-    friend class UcclEngine;
+    friend class UcclRdmaEngine;
 
     std::string to_string() const;
     inline void shutdown() { pcb_.rto_disable(); }
@@ -265,7 +265,7 @@ class UcclFlow {
     Channel *channel_;
     // FlowID of this flow.
     FlowID flow_id_;
-    // Destination ports with remote_engine_idx_ as the target queue_id.
+    // Destination ports with remote_engine_idx_ as the target engine_id.
     std::vector<uint16_t> dst_ports_;
     // Index in dst_ports_ for the next port to use.
     uint32_t next_port_idx_ = 0;
@@ -276,40 +276,40 @@ class UcclFlow {
     Latency rtt_stats_;
     uint64_t rtt_probe_count_ = 0;
 
-    friend class UcclEngine;
-    friend class Endpoint;
+    friend class UcclRdmaEngine;
+    friend class RdmaEndpoint;
 };
 
 /**
- * @brief Class `UcclEngine' abstracts the main Uccl engine. This engine
+ * @brief Class `UcclRdmaEngine' abstracts the main Uccl engine which supports RDMA. This engine
  * contains all the functionality need to be run by the stack's threads.
  */
-class UcclEngine {
+class UcclRdmaEngine {
    public:
     // Slow timer (periodic processing) interval in microseconds.
     const size_t kSlowTimerIntervalUs = 2000;  // 2ms
-    UcclEngine() = delete;
-    UcclEngine(UcclEngine const &) = delete;
+    UcclRdmaEngine() = delete;
+    UcclRdmaEngine(UcclRdmaEngine const &) = delete;
 
     /**
-     * @brief Construct a new UcclEngine object.
+     * @brief Construct a new UcclRdmaEngine object.
      *
-     * @param queue_id      RX/TX queue index to be used by the engine.
+     * @param engine_id     Engine index.
      * @param channel       Uccl channel the engine will be responsible for.
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclEngine(int queue_id, Channel *channel, const std::string local_addr,
+    UcclRdmaEngine(int engine_id, Channel *channel, const std::string local_addr,
                const std::string local_l2_addr)
         : local_addr_(htonl(str_to_ip(local_addr))),
-          local_engine_idx_(queue_id),
+          local_engine_idx_(engine_id),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
         DCHECK(str_to_mac(local_l2_addr, local_l2_addr_));
 
-        rdma_ctx_ = RDMAFactory::CreateContext(queue_id);
+        rdma_ctx_ = RDMAFactory::CreateContext(engine_id);
     }
 
     /**
@@ -359,7 +359,7 @@ class UcclEngine {
     RDMAContext *rdma_ctx_;
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
-    // Control plane channel with Endpoint.
+    // Control plane channel with RdmaEndpoint.
     Channel *channel_;
     // Timestamp of last periodic process execution.
     uint64_t last_periodic_tsc_;
@@ -372,34 +372,35 @@ class UcclEngine {
 };
 
 /**
- * @class Endpoint
- * @brief application-facing interface, communicating with `UcclEngine' through
+ * @class RdmaEndpoint
+ * @brief application-facing interface, communicating with `UcclRdmaEngine' through
  * `Channel'. Each connection is identified by a unique flow_id, and uses
  * multiple src+dst port combinations to leverage multiple paths. Under the
  * hood, we leverage TCP to boostrap our connections. We do not consider
  * multi-tenancy for now, assuming this endpoint exclusively uses the NIC and
  * its all queues.
  */
-class Endpoint {
+class RdmaEndpoint {
     constexpr static uint32_t kMaxInflightMsg = 1024 * 256;
     constexpr static uint16_t kBootstrapPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
-    // The first CPU to run the engine thread belongs to the Endpoint.
-    // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_queues_).
+    // The first CPU to run the engine thread belongs to the RdmaEndpoint.
+    // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_engines_).
     int engine_cpu_start_;
 
     std::string local_ip_str_;
     std::string local_mac_str_;
 
-    int num_queues_;
-    Channel *channel_vec_[NUM_QUEUES];
-    std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
+    int num_engines_;
+    // Per-engine communication channel
+    Channel *channel_vec_[NUM_ENGINES];
+    std::vector<std::unique_ptr<UcclRdmaEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
-    std::array<int, NUM_QUEUES> engine_load_vec_ = {0};
+    std::array<int, NUM_ENGINES> engine_load_vec_ = {0};
 
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
@@ -411,8 +412,8 @@ class Endpoint {
     std::unordered_map<FlowID, int> bootstrap_fd_map_;
 
    public:
-    Endpoint(const char *interface_name, int num_engines, int engine_cpu_start);
-    ~Endpoint();
+    RdmaEndpoint(const char *infiniband_name, int num_engines, int engine_cpu_start);
+    ~RdmaEndpoint();
 
     // Connecting to a remote address; thread-safe
     ConnID uccl_connect(std::string remote_ip);

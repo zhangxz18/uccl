@@ -26,7 +26,11 @@ struct ncclIbStats {
   int fatalErrorCount;
 };
 
-static inline int convert_ib_name_to_ethernet_name(const char *ib_name, char *ethernet_name)
+/**
+ * @brief This helper function converts an Infiniband name (e.g., mlx5_0) to an Ethernet name (e.g., eth0)
+ * @return int -1 on error, 0 on success
+ */
+static inline int util_rdma_ib2eth_name(const char *ib_name, char *ethernet_name)
 {
     char command[512];
     snprintf(command, sizeof(command), 
@@ -47,20 +51,49 @@ static inline int convert_ib_name_to_ethernet_name(const char *ib_name, char *et
 }
 
 /**
+ * @brief This helper function gets the GUID of an RoCE device
+ * @return int -1 on error, 0 on success
+ */
+static inline int util_rdma_get_gid_index(struct ibv_context *context, uint8_t port_num, struct ibv_port_attr *port_attr, int *gid_index)
+{
+    *gid_index = GID_INDEX;
+    return 0;
+}
+
+static inline int util_rdma_query_gid(struct ibv_context *context, uint8_t port_num, int gid_index ,union ibv_gid *gid)
+{
+    return ibv_query_gid(context, port_num, gid_index, gid);
+}
+
+/**
  * @brief Per engine context for RDMA
  * 
  */
 class RDMAContext {
     public:
-        // aka engine index
-        int queue_id_;
 
-        // UC QPs
-        struct ibv_qp *qps_[kPortEntropy];
-        // UC CQ
-        struct ibv_cq *cq_;
+        static const int kCqSize = 4096;
+        static const int kMaxReq = 32;
+        static const int kMaxRecv = 8;
 
-        RDMAContext(int queue_id): queue_id_(queue_id) {}
+        int engine_idx_;
+
+        struct ibv_context *context_ = nullptr;
+
+        int gid_index_ = -1;
+
+        union ibv_gid gid_;
+
+        // Protection domain (PD)
+        struct ibv_pd *pd_ = nullptr;
+
+        // Completion queue (CQ)
+        struct ibv_cq *cq_ = nullptr;
+
+        // Unreliable Connection (UC) Queue Pairs (QPs)
+        struct ibv_qp *qps_[kPortEntropy] = {nullptr};
+
+        RDMAContext(int engine_idx, struct ibv_context *context);
     
     friend class RDMAFactory;
 };
@@ -73,24 +106,24 @@ class RDMAFactory {
 
     char interface_name_[256];
 
+    struct ibv_context *context_;
     __be64 guid_;
-    struct ibv_port_attr portAttr_;
-    int portNum_;
+    struct ibv_port_attr port_attr_;
+    int port_num_;
     uint8_t link_;
     int speed_;
-    struct ibv_context *context_;
-    int pdRefs_;
+    int pd_refs_;
     struct ibv_pd *pd_;
 
-    int maxQp_;
-    struct ncclIbMrCache mrCache_;
+    int max_qp_;
+    struct ncclIbMrCache mr_cache_;
     struct ncclIbStats stats_;
 
     std::deque<RDMAContext *> context_q_;
     std::mutex context_q_lock_;
 
     public:
-        static void init(const char *interface_name, uint64_t num_queues);
+        static void init(const char *infiniband_name, uint64_t num_queues);
         static RDMAContext *CreateContext(int queue_id);
         static void shutdown(void);
 

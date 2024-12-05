@@ -126,7 +126,7 @@ void UcclFlow::prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
 #endif
 }
 
-void UcclEngine::run() {
+void UcclRdmaEngine::run() {
     Channel::Msg rx_work;
     Channel::Msg tx_work;
 
@@ -165,20 +165,20 @@ void UcclEngine::run() {
  * @brief Method to perform periodic processing. This is called by the
  * main engine cycle (see method `Run`).
  */
-void UcclEngine::periodic_process() {
+void UcclRdmaEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
     process_ctl_reqs();
 }
 
-void UcclEngine::handle_rto() {
+void UcclRdmaEngine::handle_rto() {
     for (auto [flow_id, flow] : active_flows_map_) {
         auto is_active_flow = flow->periodic_check();
         DCHECK(is_active_flow);
     }
 }
 
-void UcclEngine::process_ctl_reqs() {
+void UcclRdmaEngine::process_ctl_reqs() {
     Channel::CtrlMsg ctrl_work;
     if (jring_sc_dequeue_bulk(channel_->ctrl_cmdq_, &ctrl_work, 1, nullptr) ==
         1) {
@@ -192,12 +192,12 @@ void UcclEngine::process_ctl_reqs() {
     }
 }
 
-void UcclEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+void UcclRdmaEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
 {
 
 }
 
-std::string UcclEngine::status_to_string() {
+std::string UcclRdmaEngine::status_to_string() {
     std::string s;
     for (auto [flow_id, flow] : active_flows_map_) {
         s += Format("\n\t\tEngine %d Flow 0x%lx: %s (%u) <-> %s (%u)",
@@ -212,39 +212,35 @@ std::string UcclEngine::status_to_string() {
     return s;
 }
 
-Endpoint::Endpoint(const char *interface_name, int num_queues, int engine_cpu_start)
-    : num_queues_(num_queues), engine_cpu_start_(engine_cpu_start), stats_thread_([this]() { stats_thread_fn(); }) {
+RdmaEndpoint::RdmaEndpoint(const char *infiniband_name, int num_engines, int engine_cpu_start)
+    : num_engines_(num_engines), engine_cpu_start_(engine_cpu_start), stats_thread_([this]() { stats_thread_fn(); }) {
     
     char ethernet_name[64];
-
-    // convert IB device name to Ethernet device name
-    DCHECK(convert_ib_name_to_ethernet_name(interface_name, ethernet_name) == 0) << "Failed to convert IB name to Ethernet name";
+    DCHECK(util_rdma_ib2eth_name(infiniband_name, ethernet_name) == 0) << "Failed to convert IB name to Ethernet name";
     
     static std::once_flag flag_once;
-    std::call_once(flag_once, [interface_name, num_queues]() {
-        RDMAFactory::init(interface_name, num_queues);
+    std::call_once(flag_once, [infiniband_name, num_engines]() {
+        RDMAFactory::init(infiniband_name, num_engines);
     });
 
-    interface_name = ethernet_name;
+    local_ip_str_ = get_dev_ip(ethernet_name);
+    local_mac_str_ = get_dev_mac(ethernet_name);
 
-    local_ip_str_ = get_dev_ip(interface_name);
-    local_mac_str_ = get_dev_mac(interface_name);
+    CHECK_LE(num_engines, NUM_CPUS / 4)
+        << "num_engines should be less than or equal to the number of CPUs / 4";
 
-    CHECK_LE(num_queues, NUM_CPUS / 4)
-        << "num_queues should be less than or equal to the number of CPUs / 4";
+    // Create multiple engines. Each engine has its own thread and channel to let the endpoint communicate with.
+    for (int i = 0; i < num_engines; i++) channel_vec_[i] = new Channel();
 
-    // Create multiple engines, each got its xsk and umem from the
-    // daemon. Each engine has its own thread and channel to let the endpoint
-    // communicate with.
-    for (int i = 0; i < num_queues; i++) channel_vec_[i] = new Channel();
-
-    for (int queue_id = 0, engine_cpu_id = engine_cpu_start;
-         queue_id < num_queues; queue_id++, engine_cpu_id++) {
-        engine_vec_.emplace_back(std::make_unique<UcclEngine>(
-            queue_id, channel_vec_[queue_id], local_ip_str_, local_mac_str_));
+    for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
+         engine_id < num_engines; engine_id++, engine_cpu_id++) {
+        
+        engine_vec_.emplace_back(std::make_unique<UcclRdmaEngine>(
+            engine_id, channel_vec_[engine_id], local_ip_str_, local_mac_str_));
+        
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
-            [engine_ptr = engine_vec_.back().get(), queue_id, engine_cpu_id]() {
-                LOG(INFO) << "[Engine] thread " << queue_id
+            [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {
+                LOG(INFO) << "[Engine] thread " << engine_id
                           << " running on CPU " << engine_cpu_id;
                 pin_thread_to_cpu(engine_cpu_id);
                 engine_ptr->run();
@@ -276,14 +272,14 @@ Endpoint::Endpoint(const char *interface_name, int num_queues, int engine_cpu_st
         << "ERROR: binding";
 
     DCHECK(!listen(listen_fd_, 128)) << "ERROR: listen";
-    LOG(INFO) << "[Endpoint] server ready, listening on port "
+    LOG(INFO) << "[RdmaEndpoint] server ready, listening on port "
               << kBootstrapPort;
 }
 
-Endpoint::~Endpoint() {
+RdmaEndpoint::~RdmaEndpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
-    for (int i = 0; i < num_queues_; i++) delete channel_vec_[i];
+    for (int i = 0; i < num_engines_; i++) delete channel_vec_[i];
 
     delete ctx_pool_;
     delete[] ctx_pool_buf_;
@@ -310,7 +306,7 @@ Endpoint::~Endpoint() {
     stats_thread_.join();
 }
 
-ConnID Endpoint::uccl_connect(std::string remote_ip) {
+ConnID RdmaEndpoint::uccl_connect(std::string remote_ip) {
     struct sockaddr_in serv_addr;
     struct hostent *server;
     int bootstrap_fd;
@@ -333,13 +329,13 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
     localaddr.sin_addr.s_addr = str_to_ip(local_ip_str_.c_str());
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
-    LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
+    LOG(INFO) << "[RdmaEndpoint] connecting to " << remote_ip << ":"
               << kBootstrapPort;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
-        LOG(INFO) << "[Endpoint] connecting... Make sure the server is up.";
+        LOG(INFO) << "[RdmaEndpoint] connecting... Make sure the server is up.";
         sleep(1);
     }
 
@@ -355,7 +351,7 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
     while (true) {
         int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
-        LOG(INFO) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
+        LOG(INFO) << "[RdmaEndpoint] connect: receive proposed FlowID: " << std::hex
                   << "0x" << flow_id;
 
         // Check if the flow ID is unique, and return it to the server.
@@ -380,7 +376,7 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-ConnID Endpoint::uccl_accept(std::string &remote_ip) {
+ConnID RdmaEndpoint::uccl_accept(std::string &remote_ip) {
     struct sockaddr_in cli_addr;
     socklen_t clilen = sizeof(cli_addr);
     int bootstrap_fd;
@@ -390,7 +386,7 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
     DCHECK(bootstrap_fd >= 0);
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 
-    LOG(INFO) << "[Endpoint] accept from " << remote_ip << ":"
+    LOG(INFO) << "[RdmaEndpoint] accept from " << remote_ip << ":"
               << cli_addr.sin_port;
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -418,7 +414,7 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
             }
         }
 
-        LOG(INFO) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
+        LOG(INFO) << "[RdmaEndpoint] accept: propose FlowID: " << std::hex << "0x"
                   << flow_id;
 
         // Ask client if this is unique
@@ -444,19 +440,19 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-bool Endpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
+bool RdmaEndpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
                          bool busypoll) {
     auto *poll_ctx = uccl_send_async(conn_id, data, len);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
-bool Endpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
+bool RdmaEndpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
                          bool busypoll) {
     auto *poll_ctx = uccl_recv_async(conn_id, data, len_p);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
-PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
+PollCtx *RdmaEndpoint::uccl_send_async(ConnID conn_id, const void *data,
                                    const size_t len) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
@@ -474,7 +470,7 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p) {
+PollCtx *RdmaEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
@@ -489,7 +485,7 @@ PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p) {
     return poll_ctx;
 }
 
-bool Endpoint::uccl_wait(PollCtx *ctx) {
+bool RdmaEndpoint::uccl_wait(PollCtx *ctx) {
     {
         std::unique_lock<std::mutex> lock(ctx->mu);
         ctx->cv.wait(lock, [&ctx] { return ctx->done.load(); });
@@ -498,25 +494,25 @@ bool Endpoint::uccl_wait(PollCtx *ctx) {
     return true;
 }
 
-bool Endpoint::uccl_poll(PollCtx *ctx) {
+bool RdmaEndpoint::uccl_poll(PollCtx *ctx) {
     while (!uccl_poll_once(ctx));
     return true;
 }
 
-bool Endpoint::uccl_poll_once(PollCtx *ctx) {
+bool RdmaEndpoint::uccl_poll_once(PollCtx *ctx) {
     if (!ctx->done.load()) return false;
     fence_and_clean_ctx(ctx);
     return true;
 }
 
-void Endpoint::install_flow_on_engine_rdma(FlowID flow_id,
+void RdmaEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
                                       int bootstrap_fd) {
 
 }
 
-void Endpoint::install_flow_on_engine(FlowID flow_id,
+void RdmaEndpoint::install_flow_on_engine(FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
                                       int bootstrap_fd) {
@@ -524,7 +520,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
 
     char local_mac_char[ETH_ALEN];
     std::string local_mac = local_mac_str_;
-    VLOG(3) << "[Endpoint] local MAC: " << local_mac;
+    VLOG(3) << "[RdmaEndpoint] local MAC: " << local_mac;
     str_to_mac(local_mac, local_mac_char);
     ret = send_message(bootstrap_fd, local_mac_char, ETH_ALEN);
     DCHECK(ret == ETH_ALEN);
@@ -533,7 +529,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     ret = receive_message(bootstrap_fd, remote_mac_char, ETH_ALEN);
     DCHECK(ret == ETH_ALEN);
     std::string remote_mac = mac_to_str(remote_mac_char);
-    VLOG(3) << "[Endpoint] remote MAC: " << remote_mac;
+    VLOG(3) << "[RdmaEndpoint] remote MAC: " << remote_mac;
 
     // Sync remote engine index.
     uint32_t remote_engine_idx;
@@ -565,7 +561,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     net_barrier(bootstrap_fd);
 }
 
-inline int Endpoint::find_least_loaded_engine_idx_and_update() {
+inline int RdmaEndpoint::find_least_loaded_engine_idx_and_update() {
     std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
     if (engine_load_vec_.empty()) return -1;  // Handle empty vector case
 
@@ -575,7 +571,7 @@ inline int Endpoint::find_least_loaded_engine_idx_and_update() {
     return std::distance(engine_load_vec_.begin(), minElementIter);
 }
 
-inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {
+inline void RdmaEndpoint::fence_and_clean_ctx(PollCtx *ctx) {
     // Make the data written by the engine thread visible to the app thread.
     std::ignore =
         std::atomic_load_explicit(&ctx->fence, std::memory_order_relaxed);
@@ -585,7 +581,7 @@ inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {
     ctx_pool_->push(ctx);
 }
 
-void Endpoint::stats_thread_fn() {
+void RdmaEndpoint::stats_thread_fn() {
     if (GetEnvVar("UCCL_ENGINE_QUIET") == "1") return;
 
     while (!shutdown_) {
