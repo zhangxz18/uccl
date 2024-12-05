@@ -880,13 +880,15 @@ void UcclEngine::run() {
         }
     }
 
-    // This will reset flow pcb state.
-    for (auto [flow_id, flow] : active_flows_map_) {
-        flow->shutdown();
-        delete flow;
+    if (!rdma_support_) {
+        // This will reset flow pcb state.
+        for (auto [flow_id, flow] : active_flows_map_) {
+            flow->shutdown();
+            delete flow;
+        }
+        // This will flush all unpolled tx frames.
+        socket_->shutdown();
     }
-    // This will flush all unpolled tx frames.
-    socket_->shutdown();
 
     std::cout << "Engine " << local_engine_idx_ << " shutdown" << std::endl;
 }
