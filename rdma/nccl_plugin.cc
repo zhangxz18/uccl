@@ -18,7 +18,7 @@ void interrupt_handler(int signal) {
     quit = true;
 }
 
-RdmaEndpoint* ep;
+RDMAEndpoint* ep;
 
 struct ConnectAcceptHandler {
     uint32_t ip_addr_u32;

@@ -94,6 +94,11 @@ class RDMAContext {
     constexpr static int kMaxRecv = 32;
     public:
 
+        // Memory region for data transfer.
+        struct ibv_mr * data_mr_ = nullptr;
+        // Protection domain for data transfer.
+        struct ibv_pd * data_pd_ = nullptr;
+
         // Unreliable Connection QPs.
         std::vector<struct ibv_qp *> qp_vec_;
         // Local PSN for UC QPs.
@@ -240,6 +245,6 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     return ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_SQ_PSN);
 }
 
-}
+} // namespace uccl
 
 #endif

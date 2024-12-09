@@ -29,18 +29,32 @@ DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
 static void server_worker(void)
 {
     std::string remote_ip;
-    auto ep = RdmaEndpoint(DEV_RDMA_DEFAULT, NUM_ENGINES, ENGINE_CPU_START);
+    auto ep = RDMAEndpoint(DEV_RDMA_DEFAULT, NUM_ENGINES, ENGINE_CPU_START);
 
     auto conn_id = ep.uccl_accept(remote_ip);
+
+    void *data = mmap(nullptr, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(data != MAP_FAILED);
+
+    ep.uccl_regmr(conn_id, data, 65536, 0);
+
+    ep.uccl_deregmr(conn_id);
 
     printf("Server accepted connection from %s\n", remote_ip.c_str());
 }
 
 static void client_worker(void)
 {
-    auto ep = RdmaEndpoint(DEV_RDMA_DEFAULT, NUM_ENGINES, ENGINE_CPU_START);
+    auto ep = RDMAEndpoint(DEV_RDMA_DEFAULT, NUM_ENGINES, ENGINE_CPU_START);
 
     auto conn_id = ep.uccl_connect(FLAGS_serverip);
+
+    void *data = mmap(nullptr, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(data != MAP_FAILED);
+
+    ep.uccl_regmr(conn_id, data, 65536, 0);
+
+    ep.uccl_deregmr(conn_id);
 
     printf("Client connected to %s\n", FLAGS_serverip.c_str());
 }

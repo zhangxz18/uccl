@@ -129,7 +129,7 @@ void UcclFlow::prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
 #endif
 }
 
-void UcclRdmaEngine::run() {
+void UcclRDMAEngine::run() {
     Channel::Msg rx_work;
     Channel::Msg tx_work;
 
@@ -168,20 +168,20 @@ void UcclRdmaEngine::run() {
  * @brief Method to perform periodic processing. This is called by the
  * main engine cycle (see method `Run`).
  */
-void UcclRdmaEngine::periodic_process() {
+void UcclRDMAEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
     process_ctl_reqs();
 }
 
-void UcclRdmaEngine::handle_rto() {
+void UcclRDMAEngine::handle_rto() {
     for (auto [flow_id, flow] : active_flows_map_) {
         auto is_active_flow = flow->periodic_check();
         DCHECK(is_active_flow);
     }
 }
 
-void UcclRdmaEngine::process_ctl_reqs() {
+void UcclRDMAEngine::process_ctl_reqs() {
     Channel::CtrlMsg ctrl_work;
     if (jring_sc_dequeue_bulk(channel_->ctrl_cmdq_, &ctrl_work, 1, nullptr) ==
         1) {
@@ -196,16 +196,89 @@ void UcclRdmaEngine::process_ctl_reqs() {
                     /// TODO: handle error case
                     handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
+            case Channel::CtrlMsg::kRegMR:
+                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kRegMR";
+                    handle_regmr_on_engine_rdma(ctrl_work);
+                break;
+            case Channel::CtrlMsg::kDeregMR:
+                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kDeregMR";
+                    handle_deregmr_on_engine_rdma(ctrl_work);
+                break;
             default:
                 break;
         }
     }
 }
 
-void UcclRdmaEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+{
+    auto *flow = active_flows_map_[ctrl_work.flow_id];
+    auto *poll_ctx = ctrl_work.poll_ctx;
+    if (flow == nullptr) {
+        LOG(ERROR) << "Flow not found";
+        return;
+    }
+    
+    auto *rdma_ctx = flow->rdma_ctx_;
+    DCHECK(rdma_ctx != nullptr);
+
+    if (rdma_ctx->data_pd_ && rdma_ctx->data_mr_) {
+        LOG(ERROR) << "Only one MR is allowed";
+        return;
+    }
+
+    auto *pd = ibv_alloc_pd(rdma_ctx->context_);
+    DCHECK(pd != nullptr);
+    auto *mr = ibv_reg_mr(pd, ctrl_work.addr, ctrl_work.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    DCHECK(mr != nullptr);
+
+    rdma_ctx->data_pd_ = pd;
+    rdma_ctx->data_mr_ = mr;
+
+    // Wakeup app thread waiting one endpoint.
+    {
+        std::lock_guard<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->done = true;
+        poll_ctx->cv.notify_one();
+    }
+}
+
+void UcclRDMAEngine::handle_deregmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+{
+    auto *flow = active_flows_map_[ctrl_work.flow_id];
+    auto *poll_ctx = ctrl_work.poll_ctx;
+    if (flow == nullptr) {
+        LOG(ERROR) << "Flow not found";
+        return;
+    }
+    
+    auto *rdma_ctx = flow->rdma_ctx_;
+
+    if (!rdma_ctx->data_pd_ || !rdma_ctx->data_mr_) {
+        LOG(ERROR) << "MR not found";
+        return;
+    }
+
+    ibv_dereg_mr(rdma_ctx->data_mr_);
+    ibv_dealloc_pd(rdma_ctx->data_pd_);
+
+    rdma_ctx->data_mr_ = nullptr;
+    rdma_ctx->data_pd_ = nullptr;
+
+    // Wakeup app thread waiting one endpoint.
+    {
+        std::lock_guard<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->done = true;
+        poll_ctx->cv.notify_one();
+    }
+}
+
+
+void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
 {
     int ret;
     auto meta = ctrl_work.meta;
+    auto *poll_ctx = ctrl_work.poll_ctx;
     
     auto *flow = active_flows_map_[ctrl_work.flow_id];
     if (flow == nullptr) {
@@ -243,9 +316,16 @@ void UcclRdmaEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
     } else {
         LOG(ERROR) << "Invalid sync_cnt_ " << rdma_ctx->sync_cnt_;
     }
+
+    // Wakeup app thread waiting one endpoint.
+    if (rdma_ctx->sync_cnt_ == kPortEntropy + 2) {
+        std::lock_guard<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->done = true;
+        poll_ctx->cv.notify_one();
+    }
 }
 
-void UcclRdmaEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
 {
     int ret;
     auto flow_id = ctrl_work.flow_id;
@@ -290,7 +370,7 @@ void UcclRdmaEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
 
 }
 
-std::string UcclRdmaEngine::status_to_string() {
+std::string UcclRDMAEngine::status_to_string() {
     std::string s;
     for (auto [flow_id, flow] : active_flows_map_) {
         s += Format("\n\t\tEngine %d Flow 0x%lx: %s (%u) <-> %s (%u)",
@@ -305,7 +385,7 @@ std::string UcclRdmaEngine::status_to_string() {
     return s;
 }
 
-RdmaEndpoint::RdmaEndpoint(const char *infiniband_name, int num_engines, int engine_cpu_start)
+RDMAEndpoint::RDMAEndpoint(const char *infiniband_name, int num_engines, int engine_cpu_start)
     : num_engines_(num_engines), engine_cpu_start_(engine_cpu_start), stats_thread_([this]() { stats_thread_fn(); }) {
     
     char ethernet_name[64];
@@ -334,7 +414,7 @@ RdmaEndpoint::RdmaEndpoint(const char *infiniband_name, int num_engines, int eng
     for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
          engine_id < num_engines; engine_id++, engine_cpu_id++) {
         
-        engine_vec_.emplace_back(std::make_unique<UcclRdmaEngine>(
+        engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
             engine_id, channel_vec_[engine_id], local_ip_str_, local_mac_str_));
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
@@ -375,7 +455,7 @@ RdmaEndpoint::RdmaEndpoint(const char *infiniband_name, int num_engines, int eng
               << kBootstrapPort;
 }
 
-RdmaEndpoint::~RdmaEndpoint() {
+RDMAEndpoint::~RDMAEndpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
     for (int i = 0; i < num_engines_; i++) delete channel_vec_[i];
@@ -405,7 +485,7 @@ RdmaEndpoint::~RdmaEndpoint() {
     stats_thread_.join();
 }
 
-ConnID RdmaEndpoint::uccl_connect(std::string remote_ip) {
+ConnID RDMAEndpoint::uccl_connect(std::string remote_ip) {
     struct sockaddr_in serv_addr;
     struct hostent *server;
     int bootstrap_fd;
@@ -475,7 +555,7 @@ ConnID RdmaEndpoint::uccl_connect(std::string remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-ConnID RdmaEndpoint::uccl_accept(std::string &remote_ip) {
+ConnID RDMAEndpoint::uccl_accept(std::string &remote_ip) {
     struct sockaddr_in cli_addr;
     socklen_t clilen = sizeof(cli_addr);
     int bootstrap_fd;
@@ -539,19 +619,19 @@ ConnID RdmaEndpoint::uccl_accept(std::string &remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-bool RdmaEndpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
+bool RDMAEndpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
                          bool busypoll) {
     auto *poll_ctx = uccl_send_async(conn_id, data, len);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
-bool RdmaEndpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
+bool RDMAEndpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
                          bool busypoll) {
     auto *poll_ctx = uccl_recv_async(conn_id, data, len_p);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
-PollCtx *RdmaEndpoint::uccl_send_async(ConnID conn_id, const void *data,
+PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
                                    const size_t len) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
@@ -569,7 +649,7 @@ PollCtx *RdmaEndpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *RdmaEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p) {
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
@@ -584,7 +664,7 @@ PollCtx *RdmaEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p
     return poll_ctx;
 }
 
-bool RdmaEndpoint::uccl_wait(PollCtx *ctx) {
+bool RDMAEndpoint::uccl_wait(PollCtx *ctx) {
     {
         std::unique_lock<std::mutex> lock(ctx->mu);
         ctx->cv.wait(lock, [&ctx] { return ctx->done.load(); });
@@ -593,18 +673,18 @@ bool RdmaEndpoint::uccl_wait(PollCtx *ctx) {
     return true;
 }
 
-bool RdmaEndpoint::uccl_poll(PollCtx *ctx) {
+bool RDMAEndpoint::uccl_poll(PollCtx *ctx) {
     while (!uccl_poll_once(ctx));
     return true;
 }
 
-bool RdmaEndpoint::uccl_poll_once(PollCtx *ctx) {
+bool RDMAEndpoint::uccl_poll_once(PollCtx *ctx) {
     if (!ctx->done.load()) return false;
     fence_and_clean_ctx(ctx);
     return true;
 }
 
-void RdmaEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
+void RDMAEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
                                       int bootstrap_fd) {
@@ -700,6 +780,7 @@ void RdmaEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
     LOG(INFO) << "[Endpoint] Sync QPN and PSN done" << std::endl;
     
     // Send remote QPN and PSN to engine.
+    poll_ctx = new PollCtx();
     for (int i = 0; i < kPortEntropy + 2; i++) {
         meta.remote_qpn = xchg_meta[i].qpn;
         meta.remote_psn = xchg_meta[i].psn;
@@ -707,6 +788,7 @@ void RdmaEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
             .opcode = Channel::CtrlMsg::Op::kSyncFlowRDMA,
             .flow_id = flow_id,
             .meta = meta,
+            .poll_ctx = poll_ctx,
         };
         while (jring_mp_enqueue_bulk(channel_vec_[local_engine_idx]->ctrl_cmdq_,
                                     &ctrl_msg, 1, nullptr) != 1)
@@ -726,7 +808,7 @@ void RdmaEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
     net_barrier(bootstrap_fd);
 }
 
-inline int RdmaEndpoint::find_least_loaded_engine_idx_and_update() {
+inline int RDMAEndpoint::find_least_loaded_engine_idx_and_update() {
     std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
     if (engine_load_vec_.empty()) return -1;  // Handle empty vector case
 
@@ -736,7 +818,7 @@ inline int RdmaEndpoint::find_least_loaded_engine_idx_and_update() {
     return std::distance(engine_load_vec_.begin(), minElementIter);
 }
 
-inline void RdmaEndpoint::fence_and_clean_ctx(PollCtx *ctx) {
+inline void RDMAEndpoint::fence_and_clean_ctx(PollCtx *ctx) {
     // Make the data written by the engine thread visible to the app thread.
     std::ignore =
         std::atomic_load_explicit(&ctx->fence, std::memory_order_relaxed);
@@ -746,7 +828,7 @@ inline void RdmaEndpoint::fence_and_clean_ctx(PollCtx *ctx) {
     ctx_pool_->push(ctx);
 }
 
-void RdmaEndpoint::stats_thread_fn() {
+void RDMAEndpoint::stats_thread_fn() {
     if (GetEnvVar("UCCL_ENGINE_QUIET") == "1") return;
 
     while (!shutdown_) {
@@ -767,5 +849,53 @@ void RdmaEndpoint::stats_thread_fn() {
         LOG(INFO) << s;
     }
 }
+
+bool RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*unsed for now*/)
+{
+    auto *poll_ctx = new PollCtx();
+    
+    Channel::CtrlMsg ctrl_msg = {
+        .opcode = Channel::CtrlMsg::Op::kRegMR,
+        .flow_id = conn_id.flow_id,
+        .addr = addr,
+        .len = len,
+        .type = type,
+        .poll_ctx = poll_ctx
+    };
+
+    while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_cmdq_,
+                                 &ctrl_msg, 1, nullptr) != 1)
+        ;
+    // Wait until the information has been received on the engine.
+    {
+        std::unique_lock<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
+    }
+    delete poll_ctx;
+
+    return true;
+}
+
+void RDMAEndpoint::uccl_deregmr(ConnID conn_id)
+{
+    auto *poll_ctx = new PollCtx();
+
+    Channel::CtrlMsg ctrl_msg = {
+        .opcode = Channel::CtrlMsg::Op::kDeregMR,
+        .flow_id = conn_id.flow_id,
+        .poll_ctx = poll_ctx
+    };
+
+    while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_cmdq_,
+                                 &ctrl_msg, 1, nullptr) != 1)
+        ;
+    // Wait until the information has been received on the engine.
+    {
+        std::unique_lock<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
+    }
+    delete poll_ctx;
+}
+
 
 }  // namespace uccl
