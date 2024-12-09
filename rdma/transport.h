@@ -5,8 +5,9 @@
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include <netdb.h>
+#include <infiniband/verbs.h>
 
+#include <netdb.h>
 #include <bitset>
 #include <chrono>
 #include <concepts>
@@ -93,7 +94,11 @@ class Channel {
 
     struct CtrlMsg {
         enum Op : uint8_t {
-            kInstallFlow = 0,
+            // Endpoint --> Engine
+            kInstallFlowRDMA = 0,
+            kSyncFlowRDMA = 1,
+            // Engine --> Endpoint
+            kCompleteFlowRDMA = 2,
         };
         Op opcode;
         FlowID flow_id;
@@ -101,6 +106,7 @@ class Channel {
         char remote_mac[ETH_ALEN];
         char padding[2];
         uint32_t remote_engine_idx;
+        struct RDMAExchangeFormatLocal meta;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -111,17 +117,22 @@ class Channel {
         tx_cmdq_ = create_ring(sizeof(Msg), kChannelSize);
         rx_cmdq_ = create_ring(sizeof(Msg), kChannelSize);
         ctrl_cmdq_ = create_ring(sizeof(CtrlMsg), kChannelSize);
+        ctrl_rspq_ = create_ring(sizeof(CtrlMsg), kChannelSize);
     }
 
     ~Channel() {
         free(tx_cmdq_);
         free(rx_cmdq_);
         free(ctrl_cmdq_);
+        free(ctrl_rspq_);
     }
 
     jring_t *tx_cmdq_;
     jring_t *rx_cmdq_;
+    // Endpoint --> Engine
     jring_t *ctrl_cmdq_;
+    // Engine --> Endpoint
+    jring_t *ctrl_rspq_;
 };
 
 class UcclFlow;
@@ -171,6 +182,18 @@ class UcclFlow {
         memcpy(local_l2_addr_, local_l2_addr, ETH_ALEN);
         memcpy(remote_l2_addr_, remote_l2_addr, ETH_ALEN);
     }
+
+    /**
+     * @brief Construct a new Uccl Flow on RDMA
+     * 
+     * @param local_engine_idx 
+     * @param channel 
+     * @param flow_id 
+     * @param rdma_ctx 
+     */
+    UcclFlow(uint32_t local_engine_idx, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
+        local_engine_idx_(local_engine_idx), channel_(channel), flow_id_(flow_id), pcb_(), rdma_ctx_(rdma_ctx){};
+
     ~UcclFlow() {}
 
     friend class UcclRdmaEngine;
@@ -252,6 +275,9 @@ class UcclFlow {
         return dst_ports_[next_port_idx_++ % kPortEntropy];
     }
 
+    // Context for RDMA resources.
+    RDMAContext *rdma_ctx_;
+
     // The following is used to fill packet headers.
     uint32_t local_addr_;
     uint32_t remote_addr_;
@@ -309,7 +335,6 @@ class UcclRdmaEngine {
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
         DCHECK(str_to_mac(local_l2_addr, local_l2_addr_));
 
-        rdma_ctx_ = RDMAFactory::CreateContext(engine_id);
     }
 
     /**
@@ -327,9 +352,18 @@ class UcclRdmaEngine {
      */
     void periodic_process();
 
-    void handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work);
-
+    /**
+     * @brief Create underlying QPs, MRs, PDs, and CQs for the flow and set 
+     * QP state to INIT.
+     * @param ctrl_work 
+     */
     void handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
+    
+    /**
+     * @brief Modify QP state to RTR and RTS. 
+     * @param ctrl_work 
+     */
+    void handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
 
     // Called by application to shutdown the engine. App will need to join
     // the engine thread.
@@ -355,8 +389,6 @@ class UcclRdmaEngine {
     char local_l2_addr_[ETH_ALEN];
     // Engine index, also NIC queue ID and xsk index.
     uint32_t local_engine_idx_;
-    // RDMA context used for send/recv packets.
-    RDMAContext *rdma_ctx_;
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
     // Control plane channel with RdmaEndpoint.
@@ -388,6 +420,12 @@ class RdmaEndpoint {
     // The first CPU to run the engine thread belongs to the RdmaEndpoint.
     // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_engines_).
     int engine_cpu_start_;
+
+    struct ibv_context *context_;
+    uint8_t ib_port_num_;
+    uint8_t sgid_idx_;
+
+    union ibv_gid gid_;
 
     std::string local_ip_str_;
     std::string local_mac_str_;
@@ -438,8 +476,6 @@ class RdmaEndpoint {
     bool uccl_poll_once(PollCtx *ctx);
 
    private:
-    void install_flow_on_engine(FlowID flow_id, const std::string &remote_ip,
-                                uint32_t local_engine_idx, int bootstrap_fd);
     void install_flow_on_engine_rdma(FlowID flow_id, const std::string &remote_ip,
                                      uint32_t local_engine_idx, int bootstrap_fd);
     inline int find_least_loaded_engine_idx_and_update();

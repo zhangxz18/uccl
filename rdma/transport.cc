@@ -1,4 +1,7 @@
 #include "transport.h"
+#include "transport_config.h"
+#include "util_rdma.h"
+#include <infiniband/verbs.h>
 
 namespace uccl {
 
@@ -183,8 +186,15 @@ void UcclRdmaEngine::process_ctl_reqs() {
     if (jring_sc_dequeue_bulk(channel_->ctrl_cmdq_, &ctrl_work, 1, nullptr) ==
         1) {
         switch (ctrl_work.opcode) {
-            case Channel::CtrlMsg::kInstallFlow:
+            case Channel::CtrlMsg::kInstallFlowRDMA:
+                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kInstallFlowRDMA";
+                    /// TODO: handle error case
                     handle_install_flow_on_engine_rdma(ctrl_work);
+                break;
+            case Channel::CtrlMsg::kSyncFlowRDMA:
+                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kInstallFlowRDMA";
+                    /// TODO: handle error case
+                    handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
             default:
                 break;
@@ -192,8 +202,91 @@ void UcclRdmaEngine::process_ctl_reqs() {
     }
 }
 
+void UcclRdmaEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+{
+    int ret;
+    auto meta = ctrl_work.meta;
+    
+    auto *flow = active_flows_map_[ctrl_work.flow_id];
+    if (flow == nullptr) {
+        LOG(ERROR) << "Flow not found";
+        return;
+    }
+    
+    auto *rdma_ctx = flow->rdma_ctx_;
+
+    if (rdma_ctx->sync_cnt_ < kPortEntropy) {
+        // UC QPs.
+        auto qp = rdma_ctx->qp_vec_[rdma_ctx->sync_cnt_];
+        rdma_ctx->remote_psn_[rdma_ctx->sync_cnt_] = meta.remote_psn;
+        ret = modify_qp_rtr(qp, rdma_ctx, meta.remote_qpn, meta.remote_psn);
+        DCHECK(ret == 0) << "Failed to modify QP to RTR";
+        ret = modify_qp_rts(qp, rdma_ctx, rdma_ctx->local_psn_[rdma_ctx->sync_cnt_]);
+        DCHECK(ret == 0) << "Failed to modify QP to RTS";
+        rdma_ctx->sync_cnt_++;
+    } else if (rdma_ctx->sync_cnt_ == kPortEntropy) {
+        // Ctrl QP.
+        rdma_ctx->ctrl_remote_psn_ = meta.remote_psn;
+        ret = modify_qp_rtr(rdma_ctx->ctrl_qp_, rdma_ctx, meta.remote_qpn, meta.remote_psn);
+        DCHECK(ret == 0) << "Failed to modify QP to RTR";
+        ret = modify_qp_rts(rdma_ctx->ctrl_qp_, rdma_ctx, rdma_ctx->ctrl_local_psn_);
+        DCHECK(ret == 0) << "Failed to modify QP to RTS";
+        rdma_ctx->sync_cnt_++;
+    } else if (rdma_ctx->sync_cnt_ == kPortEntropy + 1) {
+        // Retr QP.
+        rdma_ctx->retr_remote_psn_ = meta.remote_psn;
+        ret = modify_qp_rtr(rdma_ctx->retr_qp_, rdma_ctx, meta.remote_qpn, meta.remote_psn);
+        DCHECK(ret == 0) << "Failed to modify QP to RTR";
+        ret = modify_qp_rts(rdma_ctx->retr_qp_, rdma_ctx, rdma_ctx->retr_local_psn_);
+        DCHECK(ret == 0) << "Failed to modify QP to RTS";
+        rdma_ctx->sync_cnt_++;
+    } else {
+        LOG(ERROR) << "Invalid sync_cnt_ " << rdma_ctx->sync_cnt_;
+    }
+}
+
 void UcclRdmaEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
 {
+    int ret;
+    auto flow_id = ctrl_work.flow_id;
+    auto meta = ctrl_work.meta;
+    auto *poll_ctx = ctrl_work.poll_ctx;
+
+    auto *flow = new UcclFlow(local_engine_idx_, channel_, flow_id, RDMAFactory::CreateContext(local_engine_idx_, meta));
+
+    std::tie(std::ignore, ret) = active_flows_map_.insert({flow_id, flow});
+    DCHECK(ret);
+
+    // Wakeup app thread waiting one endpoint.
+    {
+        std::lock_guard<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->done = true;
+        poll_ctx->cv.notify_one();
+    }
+
+    auto *rdma_ctx = flow->rdma_ctx_;
+
+    rdma_ctx->remote_gid_ = meta.remote_gid;
+
+    Channel::CtrlMsg ctrl_work_rsp[kPortEntropy + 2];
+    for (int i = 0; i < kPortEntropy; i++) {
+        auto qp = rdma_ctx->qp_vec_[i];
+        DCHECK(qp != nullptr);
+        ctrl_work_rsp[i].meta.local_psn = rdma_ctx->local_psn_[i];
+        ctrl_work_rsp[i].meta.local_qpn = qp->qp_num;
+        ctrl_work_rsp[i].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
+    }
+
+    ctrl_work_rsp[kPortEntropy].meta.local_psn = rdma_ctx->ctrl_local_psn_;
+    ctrl_work_rsp[kPortEntropy].meta.local_qpn = rdma_ctx->ctrl_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
+
+    ctrl_work_rsp[kPortEntropy + 1].meta.local_psn = rdma_ctx->retr_local_psn_;
+    ctrl_work_rsp[kPortEntropy + 1].meta.local_qpn = rdma_ctx->retr_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy + 1].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
+
+    while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, kPortEntropy + 2, nullptr) != kPortEntropy + 2) {
+    }
 
 }
 
@@ -219,9 +312,15 @@ RdmaEndpoint::RdmaEndpoint(const char *infiniband_name, int num_engines, int eng
     DCHECK(util_rdma_ib2eth_name(infiniband_name, ethernet_name) == 0) << "Failed to convert IB name to Ethernet name";
     
     static std::once_flag flag_once;
-    std::call_once(flag_once, [infiniband_name, num_engines]() {
-        RDMAFactory::init(infiniband_name, num_engines);
+    std::call_once(flag_once, [infiniband_name]() {
+        RDMAFactory::init(infiniband_name);
     });
+
+    context_ = RDMAFactory::get_ib_context();
+
+    ib_port_num_ = RDMAFactory::get_ib_port_num();
+
+    sgid_idx_ = RDMAFactory::get_sgid_index();
 
     local_ip_str_ = get_dev_ip(ethernet_name);
     local_mac_str_ = get_dev_mac(ethernet_name);
@@ -272,7 +371,7 @@ RdmaEndpoint::RdmaEndpoint(const char *infiniband_name, int num_engines, int eng
         << "ERROR: binding";
 
     DCHECK(!listen(listen_fd_, 128)) << "ERROR: listen";
-    LOG(INFO) << "[RdmaEndpoint] server ready, listening on port "
+    LOG(INFO) << "[Endpoint] server ready, listening on port "
               << kBootstrapPort;
 }
 
@@ -329,13 +428,13 @@ ConnID RdmaEndpoint::uccl_connect(std::string remote_ip) {
     localaddr.sin_addr.s_addr = str_to_ip(local_ip_str_.c_str());
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
-    LOG(INFO) << "[RdmaEndpoint] connecting to " << remote_ip << ":"
+    LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
               << kBootstrapPort;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
-        LOG(INFO) << "[RdmaEndpoint] connecting... Make sure the server is up.";
+        LOG(INFO) << "[Endpoint] connecting... Make sure the server is up.";
         sleep(1);
     }
 
@@ -351,7 +450,7 @@ ConnID RdmaEndpoint::uccl_connect(std::string remote_ip) {
     while (true) {
         int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
-        LOG(INFO) << "[RdmaEndpoint] connect: receive proposed FlowID: " << std::hex
+        LOG(INFO) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
                   << "0x" << flow_id;
 
         // Check if the flow ID is unique, and return it to the server.
@@ -386,7 +485,7 @@ ConnID RdmaEndpoint::uccl_accept(std::string &remote_ip) {
     DCHECK(bootstrap_fd >= 0);
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 
-    LOG(INFO) << "[RdmaEndpoint] accept from " << remote_ip << ":"
+    LOG(INFO) << "[Endpoint] accept from " << remote_ip << ":"
               << cli_addr.sin_port;
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -414,7 +513,7 @@ ConnID RdmaEndpoint::uccl_accept(std::string &remote_ip) {
             }
         }
 
-        LOG(INFO) << "[RdmaEndpoint] accept: propose FlowID: " << std::hex << "0x"
+        LOG(INFO) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
                   << flow_id;
 
         // Ask client if this is unique
@@ -509,46 +608,64 @@ void RdmaEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
                                       int bootstrap_fd) {
-
-}
-
-void RdmaEndpoint::install_flow_on_engine(FlowID flow_id,
-                                      const std::string &remote_ip,
-                                      uint32_t local_engine_idx,
-                                      int bootstrap_fd) {
     int ret;
+    struct ibv_port_attr attr;
+    struct RDMAExchangeFormatLocal meta = { 0 };
+    struct RDMAExchangeFormatRemote xchg_meta[kPortEntropy + 2];
+    
+    ret = ibv_query_port(context_, ib_port_num_, &attr);
+    DCHECK(ret == 0) << "ibv_query_port failed";
+    
+    ret = ibv_query_gid(context_, ib_port_num_, sgid_idx_, &gid_);
+    DCHECK(ret == 0) << "ibv_query_gid failed";
 
-    char local_mac_char[ETH_ALEN];
-    std::string local_mac = local_mac_str_;
-    VLOG(3) << "[RdmaEndpoint] local MAC: " << local_mac;
-    str_to_mac(local_mac, local_mac_char);
-    ret = send_message(bootstrap_fd, local_mac_char, ETH_ALEN);
-    DCHECK(ret == ETH_ALEN);
+    // Sync GID with remote peer.
+    meta.local_gid = gid_;
+    char buf[16];
+    memcpy(buf, &gid_.raw, 16);
+    ret = send_message(bootstrap_fd, buf, 16);
+    DCHECK(ret == 16);
+    ret = receive_message(bootstrap_fd, &buf, 16);
+    DCHECK(ret == 16);
+    memcpy(&meta.remote_gid.raw, buf, 16);
+    
+    if (FLAGS_v >= 1) {
+        std::ostringstream oss;
+        oss << "[Endpoint] meta.local_gid.raw:\t";
+        for (int i = 0; i < 16; ++i) {
+            oss << ((i == 0)? "" : ":") << static_cast<int>(meta.local_gid.raw[i]);
+        }
+        VLOG(1) << oss.str();
+    }
+    
+    if (FLAGS_v >= 1) {
+        std::ostringstream oss;
+        oss << "[Endpoint] meta.remote_gid.raw:\t";
+        for (int i = 0; i < 16; ++i) {
+            oss << ((i == 0)? "" : ":") << static_cast<int>(meta.remote_gid.raw[i]);
+        }
+        VLOG(1) << oss.str();
+    }
 
-    char remote_mac_char[ETH_ALEN];
-    ret = receive_message(bootstrap_fd, remote_mac_char, ETH_ALEN);
-    DCHECK(ret == ETH_ALEN);
-    std::string remote_mac = mac_to_str(remote_mac_char);
-    VLOG(3) << "[RdmaEndpoint] remote MAC: " << remote_mac;
+    LOG(INFO) << "[Endpoint] Sync GID done";
 
-    // Sync remote engine index.
-    uint32_t remote_engine_idx;
-    ret = send_message(bootstrap_fd, &local_engine_idx, sizeof(uint32_t));
-    ret = receive_message(bootstrap_fd, &remote_engine_idx, sizeof(uint32_t));
-    DCHECK(ret == sizeof(uint32_t));
+    // Install RDMA flow on engine.
+    meta.ib_port_num = ib_port_num_;
+    meta.sgid_index = sgid_idx_;
+    meta.mtu = attr.active_mtu;
+    meta.local_psn = 0xDEADBEEF;
 
-    // Install flow and dst ports on engine.
     auto *poll_ctx = new PollCtx();
     Channel::CtrlMsg ctrl_msg = {
-        .opcode = Channel::CtrlMsg::Op::kInstallFlow,
+        .opcode = Channel::CtrlMsg::Op::kInstallFlowRDMA,
         .flow_id = flow_id,
         .remote_ip = htonl(str_to_ip(remote_ip)),
-        .remote_engine_idx = remote_engine_idx,
+        .meta = meta,
         .poll_ctx = poll_ctx,
     };
-    str_to_mac(remote_mac, ctrl_msg.remote_mac);
     while (jring_mp_enqueue_bulk(channel_vec_[local_engine_idx]->ctrl_cmdq_,
-                                 &ctrl_msg, 1, nullptr) != 1);
+                                 &ctrl_msg, 1, nullptr) != 1)
+        ;
 
     // Wait until the flow has been installed on the engine.
     {
@@ -556,6 +673,54 @@ void RdmaEndpoint::install_flow_on_engine(FlowID flow_id,
         poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
     }
     delete poll_ctx;
+
+    LOG(INFO) << "[Endpoint] Install flow done" << std::endl;
+
+    // Receive local QPN and PSN from engine.
+    int qidx = 0;
+    while (qidx < kPortEntropy + 2) {
+        Channel::CtrlMsg rsp_msg;
+        while (jring_sc_dequeue_bulk(channel_vec_[local_engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) != 1);
+        if (rsp_msg.opcode != Channel::CtrlMsg::Op::kCompleteFlowRDMA) continue;
+        xchg_meta[qidx].qpn = rsp_msg.meta.local_qpn;
+        xchg_meta[qidx].psn = rsp_msg.meta.local_psn;
+        qidx++;
+    }
+
+    // Sync QPN and PSN with remote peer.
+    for (int i = 0; i < kPortEntropy + 2; i++) {
+        ret = send_message(bootstrap_fd, &xchg_meta[i], sizeof(struct RDMAExchangeFormatRemote));
+        DCHECK(ret == sizeof(struct RDMAExchangeFormatRemote));
+    }
+    for (int i = 0; i < kPortEntropy + 2; i++) {
+        ret = receive_message(bootstrap_fd, &xchg_meta[i], sizeof(struct RDMAExchangeFormatRemote));
+        DCHECK(ret == sizeof(struct RDMAExchangeFormatRemote));
+    }
+
+    LOG(INFO) << "[Endpoint] Sync QPN and PSN done" << std::endl;
+    
+    // Send remote QPN and PSN to engine.
+    for (int i = 0; i < kPortEntropy + 2; i++) {
+        meta.remote_qpn = xchg_meta[i].qpn;
+        meta.remote_psn = xchg_meta[i].psn;
+        Channel::CtrlMsg ctrl_msg = {
+            .opcode = Channel::CtrlMsg::Op::kSyncFlowRDMA,
+            .flow_id = flow_id,
+            .meta = meta,
+        };
+        while (jring_mp_enqueue_bulk(channel_vec_[local_engine_idx]->ctrl_cmdq_,
+                                    &ctrl_msg, 1, nullptr) != 1)
+        ;
+    }
+
+    // Wait until the information has been received on the engine.
+    {
+        std::unique_lock<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
+    }
+    delete poll_ctx;
+
+    LOG(INFO) << "[Endpoint] Sync flow done" << std::endl;
 
     // sync so to receive flow_id packets.
     net_barrier(bootstrap_fd);

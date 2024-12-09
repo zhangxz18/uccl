@@ -17,7 +17,8 @@ static const std::size_t kFastRexmitDupAckThres = 5;
 
 // IB interface name.
 static const char* DEV_RDMA_DEFAULT = "mlx5_2";
-static const int GID_INDEX = 2;
+static const uint8_t SGID_INDEX = 2;
+static const uint8_t IB_PORT_NUM = 1;
 
 // static const uint32_t RDMA_MTU = 4096;
 static const uint32_t RDMA_MTU = 1024;
