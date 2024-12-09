@@ -192,7 +192,7 @@ void UcclRdmaEngine::process_ctl_reqs() {
                     handle_install_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kSyncFlowRDMA:
-                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kInstallFlowRDMA";
+                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kSyncFlowRDMA";
                     /// TODO: handle error case
                     handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
