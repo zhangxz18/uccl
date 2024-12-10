@@ -105,14 +105,7 @@ class Channel {
         Op opcode;
         FlowID flow_id;
         uint32_t remote_ip;
-        char remote_mac[ETH_ALEN];
-        char padding[2];
         uint32_t remote_engine_idx;
-        
-        // RegMR/DeregMR
-        void *addr;
-        size_t len;
-        int type;
         
         struct RDMAExchangeFormatLocal meta;
         // Wakeup handler
@@ -333,16 +326,13 @@ class UcclRDMAEngine {
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclRDMAEngine(int engine_id, Channel *channel, const std::string local_addr,
-               const std::string local_l2_addr)
+    UcclRDMAEngine(int engine_id, Channel *channel, const std::string local_addr)
         : local_addr_(htonl(str_to_ip(local_addr))),
           local_engine_idx_(engine_id),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
-        DCHECK(str_to_mac(local_l2_addr, local_l2_addr_));
-
     }
 
     /**
@@ -423,6 +413,21 @@ class UcclRDMAEngine {
     std::atomic<bool> shutdown_{false};
 };
 
+// We only support RoCEv2 for now. Lid is not used.
+struct RDMADevice {
+    struct ibv_context *context;
+    // Device name.
+    char ib_name[64];
+    // We only support one port per device, this should always be 1.
+    uint8_t ib_port_num;
+    // GID index.
+    uint8_t gid_idx;
+    // GID.
+    union ibv_gid gid;
+    // Local IP address.
+    std::string local_ip_str;
+};
+
 /**
  * @class RDMAEndpoint
  * @brief application-facing interface, communicating with `UcclRDMAEngine' through
@@ -430,7 +435,7 @@ class UcclRDMAEngine {
  * multiple src+dst port combinations to leverage multiple paths. Under the
  * hood, we leverage TCP to boostrap our connections. We do not consider
  * multi-tenancy for now, assuming this endpoint exclusively uses the NIC and
- * its all queues.
+ * its all queues. Note that all IB devices are managed by a single RDMAEndpoint.
  */
 class RDMAEndpoint {
     constexpr static uint32_t kMaxInflightMsg = 1024 * 256;
@@ -438,21 +443,16 @@ class RDMAEndpoint {
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
     // The first CPU to run the engine thread belongs to the RDMAEndpoint.
-    // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_engines_).
+    // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_engines_per_dev_).
     int engine_cpu_start_;
 
-    // RDMA device information.
-    struct ibv_context *context_;
-    uint8_t ib_port_num_;
-    uint8_t sgid_idx_;
-    union ibv_gid gid_;
+    // RDMA devices.
+    int num_devices_;
+    struct RDMADevice rdma_dev_list_[MAX_IB_DEVICES];
 
-    std::string local_ip_str_;
-    std::string local_mac_str_;
-
-    int num_engines_;
+    int num_engines_per_dev_;
     // Per-engine communication channel
-    Channel *channel_vec_[NUM_ENGINES];
+    Channel *channel_vec_[NUM_ENGINES * MAX_IB_DEVICES];
     std::vector<std::unique_ptr<UcclRDMAEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
 
@@ -470,20 +470,13 @@ class RDMAEndpoint {
     std::unordered_map<FlowID, int> bootstrap_fd_map_;
 
    public:
-    RDMAEndpoint(const char *infiniband_name, int num_engines, int engine_cpu_start);
+    RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
     ~RDMAEndpoint();
 
     // Connecting to a remote address; thread-safe
-    ConnID uccl_connect(std::string remote_ip);
+    ConnID uccl_connect(int dev, std::string remote_ip);
     // Accepting a connection from a remote address; thread-safe
-    ConnID uccl_accept(std::string &remote_ip);
-
-    // Sending the data by leveraging multiple port combinations.
-    bool uccl_send(ConnID flow_id, const void *data, const size_t len,
-                   bool busypoll = false);
-    // Receiving the data by leveraging multiple port combinations.
-    bool uccl_recv(ConnID flow_id, void *data, size_t *len_p,
-                   bool busypoll = false);
+    ConnID uccl_accept(int dev, std::string &remote_ip);
     
     // Registering a memory region.
     bool uccl_regmr(ConnID flow_id, void *data, size_t len, int type);
@@ -494,14 +487,14 @@ class RDMAEndpoint {
     PollCtx *uccl_send_async(ConnID flow_id, const void *data,
                              const size_t len);
     // Receiving the data by leveraging multiple port combinations.
-    PollCtx *uccl_recv_async(ConnID flow_id, void *data, size_t *len_p);
+    PollCtx *uccl_recv_async(ConnID flow_id, void *data, size_t len);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);
     bool uccl_poll_once(PollCtx *ctx);
 
    private:
-    void install_flow_on_engine_rdma(FlowID flow_id, const std::string &remote_ip,
+    void install_flow_on_engine_rdma(int dev, FlowID flow_id, const std::string &remote_ip,
                                      uint32_t local_engine_idx, int bootstrap_fd);
     inline int find_least_loaded_engine_idx_and_update();
     inline void fence_and_clean_ctx(PollCtx *ctx);

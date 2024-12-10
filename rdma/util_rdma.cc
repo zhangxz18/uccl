@@ -14,53 +14,43 @@ namespace uccl {
 
 RDMAFactory rdma_ctl;
 
-std::string RDMAFactory::to_string(void) const
+void RDMAFactory::init_dev(int gid_idx)
 {
-    char buf[512];
-    snprintf(buf, sizeof(buf), 
-        "RDMAFactory: infiniband_name=%s, guid=%llx, portNum=%d, link=%d, speed=%d, maxQp=%d",
-             interface_name_, guid_, ib_port_num_, link_, speed_, max_qp_);
-    return std::string(buf);
-}
-
-/**
- * @brief This function initializes the RDMA NIC, including:
- *  - Open the RDMA device
- *  - Query the device attributes
- *  - Create memory region cache
- *  - and more.
- * 
- * @param infiniband_name 
- */
-void RDMAFactory::init(const char *infiniband_name) 
-{
+    struct FactoryDevice dev;
     struct ibv_device **device_list;
     struct ibv_context *context;
     struct ibv_device_attr dev_attr;
     struct ibv_port_attr port_attr;
     int i, nb_devices;
+
+    // Check if the device is already initialized
+    DCHECK(rdma_ctl.gid_2_dev_map.find(gid_idx) == rdma_ctl.gid_2_dev_map.end());
     
-    strcpy(rdma_ctl.interface_name_, infiniband_name);
+    // Get Infiniband name from GID index
+    DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
+
+    // Get IP address from Infiniband name
+    DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) == 0);
 
     // Get the list of RDMA devices
     device_list = ibv_get_device_list(&nb_devices);
     if (device_list == nullptr || nb_devices == 0) {
         perror("ibv_get_device_list");
-        exit(EXIT_FAILURE);
+        goto error;
     }
 
-    // Currently, we only use one device that is specified by the interface name
+    // Find the device by name
     for (i = 0; i < nb_devices; i++) {
-        if (strcmp(ibv_get_device_name(device_list[i]), infiniband_name) == 0) {
+        if (strcmp(ibv_get_device_name(device_list[i]), dev.ib_name) == 0) {
             break;
         }
     }
     if (i == nb_devices) {
-        fprintf(stderr, "No device found for %s\n", infiniband_name);
+        fprintf(stderr, "No device found for %s\n", dev.ib_name);
         goto free_devices;
     }
 
-    // Open device
+    // Open the device
     memset(&dev_attr, 0, sizeof(dev_attr));
     if ((context = ibv_open_device(device_list[i])) == nullptr) {
         perror("ibv_open_device");
@@ -73,7 +63,7 @@ void RDMAFactory::init(const char *infiniband_name)
     }
 
     // Currently, we only use one port
-    if (dev_attr.phys_port_cnt != 1) {
+    if (dev_attr.phys_port_cnt != IB_PORT_NUM /* 1 */) {
         fprintf(stderr, "Only one port is supported\n");
         goto close_device;
     }
@@ -91,30 +81,20 @@ void RDMAFactory::init(const char *infiniband_name)
         goto close_device;
     }
 
-    rdma_ctl.guid_ = dev_attr.sys_image_guid;
-    rdma_ctl.port_attr_ = port_attr;
-    rdma_ctl.ib_port_num_ = IB_PORT_NUM;
-    rdma_ctl.sgid_idx_ = SGID_INDEX;
-    rdma_ctl.link_ = port_attr.link_layer;
-    rdma_ctl.speed_ = port_attr.active_speed;
-    rdma_ctl.context_ = context;
-    rdma_ctl.pd_refs_ = 0;
-    rdma_ctl.pd_ = nullptr;
-    rdma_ctl.max_qp_ = dev_attr.max_qp;
-    rdma_ctl.mr_cache_.capacity = 0;
-    rdma_ctl.mr_cache_.population = 0;
-    rdma_ctl.mr_cache_.slots = 0;
+    dev.dev_attr = dev_attr;
+    dev.port_attr = port_attr;
+    dev.ib_port_num = IB_PORT_NUM;
+    dev.gid_idx = gid_idx;
+    dev.context = context;
+    
+    if (ibv_query_gid(context, IB_PORT_NUM, gid_idx, &dev.gid)) {
+        perror("ibv_query_gid");
+        goto close_device;
+    }
 
-    __atomic_store_n(&rdma_ctl.stats_.fatalErrorCount, 0, __ATOMIC_RELAXED);
-
-    /// TODO: check RELAXED_ORDERING.
-
-
-    /// TODO: create memory region cache for fast MR registration.
-
-    LOG(INFO) << rdma_ctl.to_string();
-
-    ibv_free_device_list(device_list);
+    rdma_ctl.gid_2_dev_map.insert({gid_idx, rdma_ctl.devices_.size()});
+    
+    rdma_ctl.devices_.push_back(dev);
 
     return;
 
@@ -123,14 +103,14 @@ close_device:
 
 free_devices:
     ibv_free_device_list(device_list);
-
+error:
     throw std::runtime_error("Failed to initialize RDMAFactory");
 }
 
 /**
  * @brief This function frees all resources allocated by the RDMAFactory, including:
  *  - All RDMA contexts
- *  - Resources allocated in init().
+ *  - Resources allocated in init_dev().
  */
 void RDMAFactory::shutdown(void) 
 {
@@ -139,38 +119,46 @@ void RDMAFactory::shutdown(void)
         delete ctx;
     }
     rdma_ctl.context_q_.clear();
+    
+    rdma_ctl.devices_.clear();
+    rdma_ctl.gid_2_dev_map.clear();
 }
 
-struct ibv_context *RDMAFactory::get_ib_context(void)
+struct FactoryDevice *RDMAFactory::get_factory_dev(int dev)
 {
-    return rdma_ctl.context_;
+    return &rdma_ctl.devices_[dev];
 }
 
-uint8_t RDMAFactory::get_ib_port_num(void)
+/**
+ * @brief Create a new RDMA context for a given device running on a specific engine.
+ * 
+ * @param dev 
+ * @param engine_idx 
+ * @param meta 
+ * @return RDMAContext* 
+ */
+RDMAContext *RDMAFactory::CreateContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal meta)
 {
-    return rdma_ctl.ib_port_num_;
-}
-
-uint8_t RDMAFactory::get_sgid_index(void)
-{
-    return rdma_ctl.sgid_idx_;
-}
-
-RDMAContext *RDMAFactory::CreateContext(int engine_idx, struct RDMAExchangeFormatLocal meta)
-{
-    RDMAContext *ctx = new RDMAContext(engine_idx, rdma_ctl.context_, meta);
+    RDMAContext *ctx = new RDMAContext(dev, engine_idx, meta);
     std::lock_guard<std::mutex> lock(rdma_ctl.context_q_lock_);
     rdma_ctl.context_q_.push_back(ctx);
     return ctx;
 }
 
-RDMAContext::RDMAContext(int engine_idx, struct ibv_context *context, struct RDMAExchangeFormatLocal meta):
-    engine_idx_(engine_idx), context_(context), sync_cnt_(0)
+RDMAContext::RDMAContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal meta):
+    dev_(dev), engine_idx_(engine_idx), sync_cnt_(0)
 {
-    local_gid_ = meta.local_gid;
-    mtu_ = meta.mtu;
-    ib_port_num_ = meta.ib_port_num;
-    sgid_index_ = meta.sgid_index;
+    auto *factory_dev = RDMAFactory::get_factory_dev(dev);
+
+    // Copy fields from FactoryDevice (Hardware attributes)
+    context_ = factory_dev->context;
+    local_gid_ = factory_dev->gid;
+    ib_port_num_ = factory_dev->ib_port_num;
+    sgid_index_ = factory_dev->gid_idx;
+
+    // Copy fields from from Endpoint (User attributes)
+    remote_gid_ = meta.ToEngine.remote_gid;
+    mtu_ = meta.ToEngine.mtu;
 
     qp_vec_.resize(kPortEntropy);
     local_psn_.resize(kPortEntropy);
@@ -206,7 +194,7 @@ RDMAContext::RDMAContext(int engine_idx, struct ibv_context *context, struct RDM
         if (qp == nullptr)
             throw std::runtime_error("ibv_create_qp failed");
         
-        local_psn_[i] = meta.local_psn + i;
+        local_psn_[i] = 0xDEADBEEF + i;
         
         // Modify QP state to INIT
         struct ibv_qp_attr qpAttr;
@@ -222,105 +210,14 @@ RDMAContext::RDMAContext(int engine_idx, struct ibv_context *context, struct RDM
         qp_vec_[i] = qp;
     }
 
-    // Create a dedicated CQ for control messages
-    ctrl_cq_ = ibv_create_cq(context_, kCQSize, nullptr, nullptr, 0);
-    if (ctrl_cq_ == nullptr)
-        throw std::runtime_error("ibv_create_cq failed");
-    
-    // Create PD for control messages
-    ctrl_pd_ = ibv_alloc_pd(context_);
-    if (ctrl_pd_ == nullptr)
-        throw std::runtime_error("ibv_alloc_pd failed");
-    
-    // Create memory region for control messages
-    ctrl_mr_addr_ = mmap(nullptr, kCtrlMRSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (ctrl_mr_addr_ == MAP_FAILED)
-        throw std::runtime_error("mmap failed");
+    ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
+    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, &ctrl_cq_, kCQSize, &ctrl_pd_, &ctrl_mr_, &ctrl_mr_addr_, kCtrlMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
-    ctrl_mr_ = ibv_reg_mr(ctrl_pd_, ctrl_mr_addr_, kCtrlMRSize, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    if (ctrl_mr_ == nullptr)
-        throw std::runtime_error("ibv_reg_mr failed");
+    retr_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
+    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_RC, &retr_cq_, kCQSize, &retr_pd_, &retr_mr_, &retr_mr_addr_, kRetrMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
-    // Create a dedicated QP for control messages
-    struct ibv_qp_init_attr ctrl_qp_init_attr;
-    memset(&ctrl_qp_init_attr, 0, sizeof(ctrl_qp_init_attr));
-
-    ctrl_qp_init_attr.qp_context = this;
-    ctrl_qp_init_attr.send_cq = ctrl_cq_;
-    ctrl_qp_init_attr.recv_cq = ctrl_cq_;
-    ctrl_qp_init_attr.qp_type = IBV_QPT_UC;
-
-    ctrl_qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv;
-    ctrl_qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
-    ctrl_qp_init_attr.cap.max_send_sge = 1;
-    ctrl_qp_init_attr.cap.max_recv_sge = 1;
-    ctrl_qp_init_attr.cap.max_inline_data = 0;
-
-    ctrl_qp_ = ibv_create_qp(ctrl_pd_, &ctrl_qp_init_attr);
-    if (ctrl_qp_ == nullptr)
-        throw std::runtime_error("ibv_create_qp failed");
-    ctrl_local_psn_ = meta.local_psn + kPortEntropy;
-
-    // Modify QP state to INIT
-    struct ibv_qp_attr ctrl_qp_attr;
-    memset(&ctrl_qp_attr, 0, sizeof(ctrl_qp_attr));
-    ctrl_qp_attr.qp_state = IBV_QPS_INIT;
-    ctrl_qp_attr.pkey_index = 0;
-    ctrl_qp_attr.port_num = ib_port_num_;
-    ctrl_qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
-    if (ibv_modify_qp(ctrl_qp_, &ctrl_qp_attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS)) {
-        throw std::runtime_error("ibv_modify_qp failed");
-    }
-
-    // Create a dedicated CQ for retransmission
-    retr_cq_ = ibv_create_cq(context_, kCQSize, nullptr, nullptr, 0);
-    if (retr_cq_ == nullptr)
-        throw std::runtime_error("ibv_create_cq failed");
-
-    // Create PD for retransmission
-    retr_pd_ = ibv_alloc_pd(context_);
-    if (retr_pd_ == nullptr)
-        throw std::runtime_error("ibv_alloc_pd failed");
-
-    // Create memory region for retransmission
-    retr_mr_addr_ = mmap(nullptr, kRetrMRSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (retr_mr_addr_ == MAP_FAILED)
-        throw std::runtime_error("mmap failed");
-
-    retr_mr_ = ibv_reg_mr(retr_pd_, retr_mr_addr_, kRetrMRSize, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    if (retr_mr_ == nullptr)
-        throw std::runtime_error("ibv_reg_mr failed");
-
-    // Create a dedicated QP for retransmission
-    struct ibv_qp_init_attr retr_qp_init_attr;
-    memset(&retr_qp_init_attr, 0, sizeof(retr_qp_init_attr));
-
-    retr_qp_init_attr.qp_context = this;
-    retr_qp_init_attr.send_cq = retr_cq_;
-    retr_qp_init_attr.recv_cq = retr_cq_;
-    retr_qp_init_attr.qp_type = IBV_QPT_UC;
-    
-    retr_qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv;
-    retr_qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
-    retr_qp_init_attr.cap.max_send_sge = 1;
-    retr_qp_init_attr.cap.max_recv_sge = 1;
-    retr_qp_init_attr.cap.max_inline_data = 0;
-
-    retr_qp_ = ibv_create_qp(retr_pd_, &retr_qp_init_attr);
-    if (retr_qp_ == nullptr)
-        throw std::runtime_error("ibv_create_qp failed");
-    retr_local_psn_ = meta.local_psn + kPortEntropy + 1;
-
-    // Modify QP state to INIT
-    struct ibv_qp_attr retr_qp_attr;
-    memset(&retr_qp_attr, 0, sizeof(retr_qp_attr));
-    retr_qp_attr.qp_state = IBV_QPS_INIT;
-    retr_qp_attr.pkey_index = 0;
-    retr_qp_attr.port_num = ib_port_num_;
-    retr_qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
-    if (ibv_modify_qp(retr_qp_, &retr_qp_attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS)) {
-        throw std::runtime_error("ibv_modify_qp failed");
-    }
+    fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 2;
+    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, &fifo_cq_, kCQSize, &fifo_pd_, &fifo_mr_, &fifo_mr_addr_, kFifoMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 }
 
 RDMAContext::~RDMAContext()

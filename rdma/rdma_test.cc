@@ -29,34 +29,60 @@ DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
 static void server_worker(void)
 {
     std::string remote_ip;
-    auto ep = RDMAEndpoint(DEV_RDMA_DEFAULT, NUM_ENGINES, ENGINE_CPU_START);
+    auto ep = RDMAEndpoint(GID_INDEX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
 
-    auto conn_id = ep.uccl_accept(remote_ip);
+    auto conn_id = ep.uccl_accept(0, remote_ip);
+
+    printf("Server accepted connection from %s\n", remote_ip.c_str());
 
     void *data = mmap(nullptr, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     assert(data != MAP_FAILED);
 
     ep.uccl_regmr(conn_id, data, 65536, 0);
 
-    ep.uccl_deregmr(conn_id);
+    size_t len;
+    void *recv_data = data;
 
-    printf("Server accepted connection from %s\n", remote_ip.c_str());
+    auto *poll_ctx = ep.uccl_recv_async(conn_id, recv_data, len);
+
+    while (!quit) {
+        if (ep.uccl_poll(poll_ctx)) {
+            break;
+        }
+    }
+
+    // verify data
+    for (int i = 0; i < 65536 / 4; i++) {
+        assert(((uint32_t *)data)[i] == 0x123456);
+    }
+
+    ep.uccl_deregmr(conn_id);
 }
 
 static void client_worker(void)
 {
-    auto ep = RDMAEndpoint(DEV_RDMA_DEFAULT, NUM_ENGINES, ENGINE_CPU_START);
+    auto ep = RDMAEndpoint(GID_INDEX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
 
-    auto conn_id = ep.uccl_connect(FLAGS_serverip);
+    auto conn_id = ep.uccl_connect(0, FLAGS_serverip);
 
+    printf("Client connected to %s\n", FLAGS_serverip.c_str());
+    
     void *data = mmap(nullptr, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     assert(data != MAP_FAILED);
 
     ep.uccl_regmr(conn_id, data, 65536, 0);
 
-    ep.uccl_deregmr(conn_id);
+    // Fill data in a pattern of 0x123456,0x123456,0x123456...
+    for (int i = 0; i < 65536 / 4; i++) {
+        ((uint32_t *)data)[i] = 0x123456;
+    }
 
-    printf("Client connected to %s\n", FLAGS_serverip.c_str());
+    void *send_data = data;
+    auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 65536);
+
+    ep.uccl_poll(poll_ctx);
+
+    ep.uccl_deregmr(conn_id);
 }
 
 int main(int argc, char* argv[]) {

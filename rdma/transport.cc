@@ -15,7 +15,15 @@ void UcclFlow::rx_messages() {
 
 }
 
+/**
+ * @brief Application supplies a buffer to the flow for receiving data.
+ * @param rx_work 
+ */
 void UcclFlow::rx_supply_app_buf(Channel::Msg &rx_work) {
+    auto *buf = rx_work.data;
+    auto len = rx_work.len_p;
+
+
 
 }
 
@@ -181,6 +189,7 @@ void UcclRDMAEngine::handle_rto() {
     }
 }
 
+/// TODO: handle error case
 void UcclRDMAEngine::process_ctl_reqs() {
     Channel::CtrlMsg ctrl_work;
     if (jring_sc_dequeue_bulk(channel_->ctrl_cmdq_, &ctrl_work, 1, nullptr) ==
@@ -188,12 +197,10 @@ void UcclRDMAEngine::process_ctl_reqs() {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::kInstallFlowRDMA:
                     LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kInstallFlowRDMA";
-                    /// TODO: handle error case
                     handle_install_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kSyncFlowRDMA:
                     LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kSyncFlowRDMA";
-                    /// TODO: handle error case
                     handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kRegMR:
@@ -229,7 +236,7 @@ void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
 
     auto *pd = ibv_alloc_pd(rdma_ctx->context_);
     DCHECK(pd != nullptr);
-    auto *mr = ibv_reg_mr(pd, ctrl_work.addr, ctrl_work.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    auto *mr = ibv_reg_mr(pd, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     DCHECK(mr != nullptr);
 
     rdma_ctx->data_pd_ = pd;
@@ -291,34 +298,42 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
     if (rdma_ctx->sync_cnt_ < kPortEntropy) {
         // UC QPs.
         auto qp = rdma_ctx->qp_vec_[rdma_ctx->sync_cnt_];
-        rdma_ctx->remote_psn_[rdma_ctx->sync_cnt_] = meta.remote_psn;
-        ret = modify_qp_rtr(qp, rdma_ctx, meta.remote_qpn, meta.remote_psn);
-        DCHECK(ret == 0) << "Failed to modify QP to RTR";
-        ret = modify_qp_rts(qp, rdma_ctx, rdma_ctx->local_psn_[rdma_ctx->sync_cnt_]);
-        DCHECK(ret == 0) << "Failed to modify QP to RTS";
+        rdma_ctx->remote_psn_[rdma_ctx->sync_cnt_] = meta.ToEngine.remote_psn;
+        ret = modify_qp_rtr(qp, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, false);
+        DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
+        ret = modify_qp_rts(qp, rdma_ctx, rdma_ctx->local_psn_[rdma_ctx->sync_cnt_], false);
+        DCHECK(ret == 0) << "Failed to modify UC QP to RTS";
         rdma_ctx->sync_cnt_++;
     } else if (rdma_ctx->sync_cnt_ == kPortEntropy) {
         // Ctrl QP.
-        rdma_ctx->ctrl_remote_psn_ = meta.remote_psn;
-        ret = modify_qp_rtr(rdma_ctx->ctrl_qp_, rdma_ctx, meta.remote_qpn, meta.remote_psn);
-        DCHECK(ret == 0) << "Failed to modify QP to RTR";
-        ret = modify_qp_rts(rdma_ctx->ctrl_qp_, rdma_ctx, rdma_ctx->ctrl_local_psn_);
-        DCHECK(ret == 0) << "Failed to modify QP to RTS";
+        rdma_ctx->ctrl_remote_psn_ = meta.ToEngine.remote_psn;
+        ret = modify_qp_rtr(rdma_ctx->ctrl_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, false);
+        DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
+        ret = modify_qp_rts(rdma_ctx->ctrl_qp_, rdma_ctx, rdma_ctx->ctrl_local_psn_, false);
+        DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTS";
         rdma_ctx->sync_cnt_++;
     } else if (rdma_ctx->sync_cnt_ == kPortEntropy + 1) {
         // Retr QP.
-        rdma_ctx->retr_remote_psn_ = meta.remote_psn;
-        ret = modify_qp_rtr(rdma_ctx->retr_qp_, rdma_ctx, meta.remote_qpn, meta.remote_psn);
-        DCHECK(ret == 0) << "Failed to modify QP to RTR";
-        ret = modify_qp_rts(rdma_ctx->retr_qp_, rdma_ctx, rdma_ctx->retr_local_psn_);
-        DCHECK(ret == 0) << "Failed to modify QP to RTS";
+        rdma_ctx->retr_remote_psn_ = meta.ToEngine.remote_psn;
+        ret = modify_qp_rtr(rdma_ctx->retr_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, true);
+        DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
+        ret = modify_qp_rts(rdma_ctx->retr_qp_, rdma_ctx, rdma_ctx->retr_local_psn_, true);
+        DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
+        rdma_ctx->sync_cnt_++;
+    } else if (rdma_ctx->sync_cnt_ == kPortEntropy + 2) {
+        // Fifo Qp.
+        rdma_ctx->fifo_remote_psn_ = meta.ToEngine.remote_psn;
+        ret = modify_qp_rtr(rdma_ctx->fifo_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, true);
+        DCHECK(ret == 0) << "Failed to modify Fifo QP to RTR";
+        ret = modify_qp_rts(rdma_ctx->fifo_qp_, rdma_ctx, rdma_ctx->fifo_local_psn_, true);
+        DCHECK(ret == 0) << "Failed to modify Fifo QP to RTS";
         rdma_ctx->sync_cnt_++;
     } else {
         LOG(ERROR) << "Invalid sync_cnt_ " << rdma_ctx->sync_cnt_;
     }
 
     // Wakeup app thread waiting one endpoint.
-    if (rdma_ctx->sync_cnt_ == kPortEntropy + 2) {
+    if (rdma_ctx->sync_cnt_ == RDMAContext::kTotalQP) {
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
         poll_ctx->cv.notify_one();
@@ -331,8 +346,9 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     auto flow_id = ctrl_work.flow_id;
     auto meta = ctrl_work.meta;
     auto *poll_ctx = ctrl_work.poll_ctx;
+    auto dev = ctrl_work.meta.ToEngine.dev;
 
-    auto *flow = new UcclFlow(local_engine_idx_, channel_, flow_id, RDMAFactory::CreateContext(local_engine_idx_, meta));
+    auto *flow = new UcclFlow(local_engine_idx_, channel_, flow_id, RDMAFactory::CreateContext(dev, local_engine_idx_, meta));
 
     std::tie(std::ignore, ret) = active_flows_map_.insert({flow_id, flow});
     DCHECK(ret);
@@ -345,27 +361,29 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     }
 
     auto *rdma_ctx = flow->rdma_ctx_;
-
-    rdma_ctx->remote_gid_ = meta.remote_gid;
-
-    Channel::CtrlMsg ctrl_work_rsp[kPortEntropy + 2];
+    
+    Channel::CtrlMsg ctrl_work_rsp[RDMAContext::kTotalQP];
     for (int i = 0; i < kPortEntropy; i++) {
         auto qp = rdma_ctx->qp_vec_[i];
         DCHECK(qp != nullptr);
-        ctrl_work_rsp[i].meta.local_psn = rdma_ctx->local_psn_[i];
-        ctrl_work_rsp[i].meta.local_qpn = qp->qp_num;
+        ctrl_work_rsp[i].meta.ToEndPoint.local_psn = rdma_ctx->local_psn_[i];
+        ctrl_work_rsp[i].meta.ToEndPoint.local_qpn = qp->qp_num;
         ctrl_work_rsp[i].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
     }
 
-    ctrl_work_rsp[kPortEntropy].meta.local_psn = rdma_ctx->ctrl_local_psn_;
-    ctrl_work_rsp[kPortEntropy].meta.local_qpn = rdma_ctx->ctrl_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_psn = rdma_ctx->ctrl_local_psn_;
+    ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_qpn = rdma_ctx->ctrl_qp_->qp_num;
     ctrl_work_rsp[kPortEntropy].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
 
-    ctrl_work_rsp[kPortEntropy + 1].meta.local_psn = rdma_ctx->retr_local_psn_;
-    ctrl_work_rsp[kPortEntropy + 1].meta.local_qpn = rdma_ctx->retr_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_psn = rdma_ctx->retr_local_psn_;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_qpn = rdma_ctx->retr_qp_->qp_num;
     ctrl_work_rsp[kPortEntropy + 1].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
 
-    while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, kPortEntropy + 2, nullptr) != kPortEntropy + 2) {
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_psn = rdma_ctx->fifo_local_psn_;
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_qpn = rdma_ctx->fifo_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy + 2].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
+
+    while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
     }
 
 }
@@ -385,37 +403,40 @@ std::string UcclRDMAEngine::status_to_string() {
     return s;
 }
 
-RDMAEndpoint::RDMAEndpoint(const char *infiniband_name, int num_engines, int engine_cpu_start)
-    : num_engines_(num_engines), engine_cpu_start_(engine_cpu_start), stats_thread_([this]() { stats_thread_fn(); }) {
+RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start)
+    : num_devices_(num_devices), num_engines_per_dev_(num_engines_per_dev), engine_cpu_start_(engine_cpu_start), stats_thread_([this]() { stats_thread_fn(); }) {
     
-    char ethernet_name[64];
-    DCHECK(util_rdma_ib2eth_name(infiniband_name, ethernet_name) == 0) << "Failed to convert IB name to Ethernet name";
-    
+    // Initialize all RDMA devices.
     static std::once_flag flag_once;
-    std::call_once(flag_once, [infiniband_name]() {
-        RDMAFactory::init(infiniband_name);
+    std::call_once(flag_once, [&]() {
+        for (int i = 0; i < num_devices; i++) {
+            RDMAFactory::init_dev(gid_idx_list[i]);
+            auto *factory_dev = RDMAFactory::get_factory_dev(i);
+            // Copy fields from factory device to endpoint device.
+            rdma_dev_list_[i].context = factory_dev->context;
+            memcpy(rdma_dev_list_[i].ib_name, factory_dev->ib_name, sizeof(factory_dev->ib_name));
+            rdma_dev_list_[i].ib_port_num = factory_dev->ib_port_num;
+            rdma_dev_list_[i].gid_idx = factory_dev->gid_idx;
+            rdma_dev_list_[i].local_ip_str = factory_dev->local_ip_str;
+        }
     });
 
-    context_ = RDMAFactory::get_ib_context();
+    CHECK_LE(num_engines_per_dev, NUM_CPUS / 4)
+        << "num_engines_per_dev should be less than or equal to the number of CPUs / 4";
 
-    ib_port_num_ = RDMAFactory::get_ib_port_num();
-
-    sgid_idx_ = RDMAFactory::get_sgid_index();
-
-    local_ip_str_ = get_dev_ip(ethernet_name);
-    local_mac_str_ = get_dev_mac(ethernet_name);
-
-    CHECK_LE(num_engines, NUM_CPUS / 4)
-        << "num_engines should be less than or equal to the number of CPUs / 4";
+    int total_num_engines = num_devices * num_engines_per_dev;
 
     // Create multiple engines. Each engine has its own thread and channel to let the endpoint communicate with.
-    for (int i = 0; i < num_engines; i++) channel_vec_[i] = new Channel();
+    for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();
 
+    LOG(INFO) << engine_vec_.size();
     for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
-         engine_id < num_engines; engine_id++, engine_cpu_id++) {
+         engine_id < total_num_engines; engine_id++, engine_cpu_id++) {
+        
+        auto local_ip_str = rdma_dev_list_[engine_id % num_devices].local_ip_str;
         
         engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
-            engine_id, channel_vec_[engine_id], local_ip_str_, local_mac_str_));
+            engine_id, channel_vec_[engine_id], local_ip_str));
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {
@@ -458,7 +479,7 @@ RDMAEndpoint::RDMAEndpoint(const char *infiniband_name, int num_engines, int eng
 RDMAEndpoint::~RDMAEndpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
-    for (int i = 0; i < num_engines_; i++) delete channel_vec_[i];
+    for (int i = 0; i < num_engines_per_dev_; i++) delete channel_vec_[i];
 
     delete ctx_pool_;
     delete[] ctx_pool_buf_;
@@ -474,7 +495,7 @@ RDMAEndpoint::~RDMAEndpoint() {
 
     static std::once_flag flag_once;
     std::call_once(flag_once, [&]() { 
-            RDMAFactory::shutdown();
+        RDMAFactory::shutdown();
     });
 
     {
@@ -485,7 +506,7 @@ RDMAEndpoint::~RDMAEndpoint() {
     stats_thread_.join();
 }
 
-ConnID RDMAEndpoint::uccl_connect(std::string remote_ip) {
+ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     struct sockaddr_in serv_addr;
     struct hostent *server;
     int bootstrap_fd;
@@ -505,7 +526,8 @@ ConnID RDMAEndpoint::uccl_connect(std::string remote_ip) {
     // Force the socket to bind to the local IP address.
     sockaddr_in localaddr = {0};
     localaddr.sin_family = AF_INET;
-    localaddr.sin_addr.s_addr = str_to_ip(local_ip_str_.c_str());
+    auto local_ip_str = rdma_dev_list_[dev].local_ip_str;
+    localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
     LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
@@ -548,14 +570,14 @@ ConnID RDMAEndpoint::uccl_connect(std::string remote_ip) {
         if (unique) break;
     }
     
-    install_flow_on_engine_rdma(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
                   .boostrap_id = bootstrap_fd};
 }
 
-ConnID RDMAEndpoint::uccl_accept(std::string &remote_ip) {
+ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
     struct sockaddr_in cli_addr;
     socklen_t clilen = sizeof(cli_addr);
     int bootstrap_fd;
@@ -612,23 +634,11 @@ ConnID RDMAEndpoint::uccl_accept(std::string &remote_ip) {
         }
     }
 
-    install_flow_on_engine_rdma(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
                   .boostrap_id = bootstrap_fd};
-}
-
-bool RDMAEndpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
-                         bool busypoll) {
-    auto *poll_ctx = uccl_send_async(conn_id, data, len);
-    return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
-}
-
-bool RDMAEndpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
-                         bool busypoll) {
-    auto *poll_ctx = uccl_recv_async(conn_id, data, len_p);
-    return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
 PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
@@ -649,14 +659,13 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p) {
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t len) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
         .flow_id = conn_id.flow_id,
         .data = data,
-        .len = 0,
-        .len_p = len_p,
+        .len = len,
         .poll_ctx = poll_ctx,
     };
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->rx_cmdq_,
@@ -684,36 +693,34 @@ bool RDMAEndpoint::uccl_poll_once(PollCtx *ctx) {
     return true;
 }
 
-void RDMAEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
+void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
                                       int bootstrap_fd) {
     int ret;
-    struct ibv_port_attr attr;
     struct RDMAExchangeFormatLocal meta = { 0 };
-    struct RDMAExchangeFormatRemote xchg_meta[kPortEntropy + 2];
-    
-    ret = ibv_query_port(context_, ib_port_num_, &attr);
-    DCHECK(ret == 0) << "ibv_query_port failed";
-    
-    ret = ibv_query_gid(context_, ib_port_num_, sgid_idx_, &gid_);
-    DCHECK(ret == 0) << "ibv_query_gid failed";
+    // We use this pointer to fill meta data.
+    auto *to_engine_meta = &meta.ToEngine;
+    struct RDMAExchangeFormatRemote xchg_meta[RDMAContext::kTotalQP];
+
+    auto factory_dev = RDMAFactory::get_factory_dev(dev);
+
+    auto *context = factory_dev->context;
 
     // Sync GID with remote peer.
-    meta.local_gid = gid_;
     char buf[16];
-    memcpy(buf, &gid_.raw, 16);
+    memcpy(buf, &factory_dev->gid.raw, 16);
     ret = send_message(bootstrap_fd, buf, 16);
     DCHECK(ret == 16);
     ret = receive_message(bootstrap_fd, &buf, 16);
     DCHECK(ret == 16);
-    memcpy(&meta.remote_gid.raw, buf, 16);
+    memcpy(&to_engine_meta->remote_gid.raw, buf, 16);
     
     if (FLAGS_v >= 1) {
         std::ostringstream oss;
         oss << "[Endpoint] meta.local_gid.raw:\t";
         for (int i = 0; i < 16; ++i) {
-            oss << ((i == 0)? "" : ":") << static_cast<int>(meta.local_gid.raw[i]);
+            oss << ((i == 0)? "" : ":") << static_cast<int>(factory_dev->gid.raw[i]);
         }
         VLOG(1) << oss.str();
     }
@@ -722,19 +729,19 @@ void RDMAEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
         std::ostringstream oss;
         oss << "[Endpoint] meta.remote_gid.raw:\t";
         for (int i = 0; i < 16; ++i) {
-            oss << ((i == 0)? "" : ":") << static_cast<int>(meta.remote_gid.raw[i]);
+            oss << ((i == 0)? "" : ":") << static_cast<int>(to_engine_meta->remote_gid.raw[i]);
         }
         VLOG(1) << oss.str();
     }
 
     LOG(INFO) << "[Endpoint] Sync GID done";
 
-    // Install RDMA flow on engine.
-    meta.ib_port_num = ib_port_num_;
-    meta.sgid_index = sgid_idx_;
-    meta.mtu = attr.active_mtu;
-    meta.local_psn = 0xDEADBEEF;
+    // Which mtu to use?
+    to_engine_meta->mtu = factory_dev->port_attr.active_mtu;
+    // Which dev to use?
+    to_engine_meta->dev = dev;
 
+    // Install RDMA flow on engine.
     auto *poll_ctx = new PollCtx();
     Channel::CtrlMsg ctrl_msg = {
         .opcode = Channel::CtrlMsg::Op::kInstallFlowRDMA,
@@ -756,34 +763,34 @@ void RDMAEndpoint::install_flow_on_engine_rdma(FlowID flow_id,
 
     LOG(INFO) << "[Endpoint] Install flow done" << std::endl;
 
-    // Receive local QPN and PSN from engine.
+    // Receive local QPN,PSN and FifoAddr from engine.
     int qidx = 0;
-    while (qidx < kPortEntropy + 2) {
+    while (qidx < RDMAContext::kTotalQP) {
         Channel::CtrlMsg rsp_msg;
         while (jring_sc_dequeue_bulk(channel_vec_[local_engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) != 1);
         if (rsp_msg.opcode != Channel::CtrlMsg::Op::kCompleteFlowRDMA) continue;
-        xchg_meta[qidx].qpn = rsp_msg.meta.local_qpn;
-        xchg_meta[qidx].psn = rsp_msg.meta.local_psn;
+        xchg_meta[qidx].qpn = rsp_msg.meta.ToEndPoint.local_qpn;
+        xchg_meta[qidx].psn = rsp_msg.meta.ToEndPoint.local_psn;
         qidx++;
     }
 
-    // Sync QPN and PSN with remote peer.
-    for (int i = 0; i < kPortEntropy + 2; i++) {
+    // Sync QPN, PSN and FifoAddr with remote peer.
+    for (int i = 0; i < RDMAContext::kTotalQP; i++) {
         ret = send_message(bootstrap_fd, &xchg_meta[i], sizeof(struct RDMAExchangeFormatRemote));
         DCHECK(ret == sizeof(struct RDMAExchangeFormatRemote));
     }
-    for (int i = 0; i < kPortEntropy + 2; i++) {
+    for (int i = 0; i < RDMAContext::kTotalQP; i++) {
         ret = receive_message(bootstrap_fd, &xchg_meta[i], sizeof(struct RDMAExchangeFormatRemote));
         DCHECK(ret == sizeof(struct RDMAExchangeFormatRemote));
     }
 
     LOG(INFO) << "[Endpoint] Sync QPN and PSN done" << std::endl;
     
-    // Send remote QPN and PSN to engine.
+    // Send remote QPN, PSN and FifoAddr to engine.
     poll_ctx = new PollCtx();
-    for (int i = 0; i < kPortEntropy + 2; i++) {
-        meta.remote_qpn = xchg_meta[i].qpn;
-        meta.remote_psn = xchg_meta[i].psn;
+    for (int i = 0; i < RDMAContext::kTotalQP; i++) {
+        meta.ToEngine.remote_qpn = xchg_meta[i].qpn;
+        meta.ToEngine.remote_psn = xchg_meta[i].psn;
         Channel::CtrlMsg ctrl_msg = {
             .opcode = Channel::CtrlMsg::Op::kSyncFlowRDMA,
             .flow_id = flow_id,
@@ -853,13 +860,17 @@ void RDMAEndpoint::stats_thread_fn() {
 bool RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*unsed for now*/)
 {
     auto *poll_ctx = new PollCtx();
+
+    struct RDMAExchangeFormatLocal meta = { 0 };
+
+    meta.ToEngine.addr = addr;
+    meta.ToEngine.len = len;
+    meta.ToEngine.type = type;
     
     Channel::CtrlMsg ctrl_msg = {
         .opcode = Channel::CtrlMsg::Op::kRegMR,
         .flow_id = conn_id.flow_id,
-        .addr = addr,
-        .len = len,
-        .type = type,
+        .meta = meta,
         .poll_ctx = poll_ctx
     };
 

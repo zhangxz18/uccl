@@ -15,10 +15,15 @@ static const uint32_t kPortEntropy = 32;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 5;
 
-// IB interface name.
-static const char* DEV_RDMA_DEFAULT = "mlx5_2";
-static const uint8_t SGID_INDEX = 2;
+// IB interface.
+static const uint32_t MAX_IB_DEVICES = 32;
+static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
+static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {
+    2,
+    3,
+};
 static const uint8_t IB_PORT_NUM = 1;
+static const uint8_t NUM_DEVICES = 2;
 
 // static const uint32_t RDMA_MTU = 4096;
 static const uint32_t RDMA_MTU = 1024;
