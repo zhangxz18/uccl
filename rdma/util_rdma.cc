@@ -150,14 +150,15 @@ RDMAContext::RDMAContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
-    // Copy fields from FactoryDevice (Hardware attributes)
+    // Copy fields from FactoryDevice
     context_ = factory_dev->context;
     local_gid_ = factory_dev->gid;
     ib_port_num_ = factory_dev->ib_port_num;
     sgid_index_ = factory_dev->gid_idx;
 
-    // Copy fields from from Endpoint (User attributes)
-    remote_gid_ = meta.ToEngine.remote_gid;
+    // Copy fields from from Endpoint
+    remote_ctx_.remote_gid = meta.ToEngine.remote_gid;
+    /// fifo_key and fifo_addr are set later
     mtu_ = meta.ToEngine.mtu;
 
     qp_vec_.resize(kPortEntropy);
@@ -211,22 +212,20 @@ RDMAContext::RDMAContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal
     }
 
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
-    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, &ctrl_cq_, kCQSize, &ctrl_pd_, &ctrl_mr_, &ctrl_mr_addr_, kCtrlMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, &ctrl_cq_, kCQSize, &ctrl_pd_, &ctrl_mr_, kCtrlMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     retr_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
-    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_RC, &retr_cq_, kCQSize, &retr_pd_, &retr_mr_, &retr_mr_addr_, kRetrMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_RC, &retr_cq_, kCQSize, &retr_pd_, &retr_mr_, kRetrMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 2;
-    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, &fifo_cq_, kCQSize, &fifo_pd_, &fifo_mr_, &fifo_mr_addr_, kFifoMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, &fifo_cq_, kCQSize, &fifo_pd_, &fifo_mr_, kFifoMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 }
 
 RDMAContext::~RDMAContext()
 {
     if (ctrl_mr_ != nullptr) {
+        munmap(ctrl_mr_->addr, ctrl_mr_->length);
         ibv_dereg_mr(ctrl_mr_);
-    }
-    if (ctrl_mr_addr_ != nullptr) {
-        munmap(ctrl_mr_addr_, kCtrlMRSize);
     }
     if (ctrl_pd_ != nullptr) {
         ibv_dealloc_pd(ctrl_pd_);
@@ -239,10 +238,8 @@ RDMAContext::~RDMAContext()
     }
 
     if (retr_mr_ != nullptr) {
+        munmap(retr_mr_->addr, retr_mr_->length);
         ibv_dereg_mr(retr_mr_);
-    }
-    if (retr_mr_addr_ != nullptr) {
-        munmap(retr_mr_addr_, kCtrlMRSize);
     }
     if (retr_pd_ != nullptr) {
         ibv_dealloc_pd(retr_pd_);
@@ -252,6 +249,23 @@ RDMAContext::~RDMAContext()
     }
     if (retr_qp_ != nullptr) {
         ibv_destroy_qp(retr_qp_);
+    }
+
+    if (fifo_mr_ != nullptr) {
+        munmap(fifo_mr_->addr, fifo_mr_->length);
+        ibv_dereg_mr(fifo_mr_);
+    }
+
+    if (fifo_pd_ != nullptr) {
+        ibv_dealloc_pd(fifo_pd_);
+    }
+
+    if (fifo_cq_ != nullptr) {
+        ibv_destroy_cq(fifo_cq_);
+    }
+
+    if (fifo_qp_ != nullptr) {
+        ibv_destroy_qp(fifo_qp_);
     }
 
     for (auto qp : qp_vec_) {

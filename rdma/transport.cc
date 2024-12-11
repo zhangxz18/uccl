@@ -292,8 +292,16 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         LOG(ERROR) << "Flow not found";
         return;
     }
-    
     auto *rdma_ctx = flow->rdma_ctx_;
+    
+    // Copy fields from Endpoint
+    if (meta.ToEngine.fifo) {
+        rdma_ctx->remote_ctx_.fifo_addr = meta.ToEngine.fifo_addr;
+        rdma_ctx->remote_ctx_.fifo_key = meta.ToEngine.fifo_key;
+    }
+
+    LOG(INFO) << "Remote FIFO addr " << rdma_ctx->remote_ctx_.fifo_addr
+              << " key " << rdma_ctx->remote_ctx_.fifo_key;
 
     if (rdma_ctx->sync_cnt_ < kPortEntropy) {
         // UC QPs.
@@ -373,15 +381,18 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
 
     ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_psn = rdma_ctx->ctrl_local_psn_;
     ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_qpn = rdma_ctx->ctrl_qp_->qp_num;
-    ctrl_work_rsp[kPortEntropy].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
+    ctrl_work_rsp[kPortEntropy].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
     ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_psn = rdma_ctx->retr_local_psn_;
     ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_qpn = rdma_ctx->retr_qp_->qp_num;
-    ctrl_work_rsp[kPortEntropy + 1].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
+    ctrl_work_rsp[kPortEntropy + 1].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
     ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_psn = rdma_ctx->fifo_local_psn_;
     ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_qpn = rdma_ctx->fifo_qp_->qp_num;
-    ctrl_work_rsp[kPortEntropy + 2].opcode =  Channel::CtrlMsg::kCompleteFlowRDMA;
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo = true;
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo_key = rdma_ctx->fifo_mr_->rkey;
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo_addr = reinterpret_cast<uint64_t>(rdma_ctx->fifo_mr_->addr);
+    ctrl_work_rsp[kPortEntropy + 2].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
     while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
     }
@@ -440,8 +451,8 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {
-                LOG(INFO) << "[Engine] thread " << engine_id
-                          << " running on CPU " << engine_cpu_id;
+                LOG(INFO) << "[Engine#" << engine_id << "] "
+                          << "running on CPU " << engine_cpu_id;
                 pin_thread_to_cpu(engine_cpu_id);
                 engine_ptr->run();
             }));
@@ -718,7 +729,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     
     if (FLAGS_v >= 1) {
         std::ostringstream oss;
-        oss << "[Endpoint] meta.local_gid.raw:\t";
+        oss << "[Endpoint] Local GID:\t";
         for (int i = 0; i < 16; ++i) {
             oss << ((i == 0)? "" : ":") << static_cast<int>(factory_dev->gid.raw[i]);
         }
@@ -727,7 +738,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     
     if (FLAGS_v >= 1) {
         std::ostringstream oss;
-        oss << "[Endpoint] meta.remote_gid.raw:\t";
+        oss << "[Endpoint] Remote GID:\t";
         for (int i = 0; i < 16; ++i) {
             oss << ((i == 0)? "" : ":") << static_cast<int>(to_engine_meta->remote_gid.raw[i]);
         }
@@ -771,6 +782,10 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         if (rsp_msg.opcode != Channel::CtrlMsg::Op::kCompleteFlowRDMA) continue;
         xchg_meta[qidx].qpn = rsp_msg.meta.ToEndPoint.local_qpn;
         xchg_meta[qidx].psn = rsp_msg.meta.ToEndPoint.local_psn;
+        if (rsp_msg.meta.ToEndPoint.fifo) {
+            xchg_meta[qidx].fifo_key = rsp_msg.meta.ToEndPoint.fifo_key;
+            xchg_meta[qidx].fifo_addr = rsp_msg.meta.ToEndPoint.fifo_addr;
+        }
         qidx++;
     }
 
@@ -791,6 +806,11 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     for (int i = 0; i < RDMAContext::kTotalQP; i++) {
         meta.ToEngine.remote_qpn = xchg_meta[i].qpn;
         meta.ToEngine.remote_psn = xchg_meta[i].psn;
+        if (i == RDMAContext::kTotalQP - 1) {
+            meta.ToEngine.fifo = true;
+            meta.ToEngine.fifo_key = xchg_meta[i].fifo_key;
+            meta.ToEngine.fifo_addr = xchg_meta[i].fifo_addr;
+        }
         Channel::CtrlMsg ctrl_msg = {
             .opcode = Channel::CtrlMsg::Op::kSyncFlowRDMA,
             .flow_id = flow_id,

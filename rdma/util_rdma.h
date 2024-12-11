@@ -37,6 +37,9 @@ struct RDMAExchangeFormatLocal {
             uint32_t remote_qpn;
             uint32_t remote_psn;
             ibv_mtu mtu;
+            bool fifo;
+            uint32_t fifo_key;
+            uint64_t fifo_addr;
             // Memory Region
             void *addr;
             size_t len;
@@ -46,6 +49,9 @@ struct RDMAExchangeFormatLocal {
         struct {
             uint32_t local_qpn;
             uint32_t local_psn;
+            bool fifo;
+            uint32_t fifo_key;
+            uint64_t fifo_addr;;
         } ToEndPoint;
     };
 };
@@ -58,6 +64,8 @@ struct RDMAExchangeFormatRemote {
     // QP information (Only one QP is used for now).
     uint32_t qpn;
     uint32_t psn;
+    uint32_t fifo_key;
+    uint64_t fifo_addr;
 };
 
 struct SendFifo {
@@ -75,6 +83,12 @@ struct RemFifo {
     uint64_t fifo_tail;
     uint64_t addr;
     uint32_t flags;
+};
+
+struct RemoteRDMAContext {
+    union ibv_gid remote_gid;
+    uint32_t fifo_key;
+    uint64_t fifo_addr;
 };
 
 /**
@@ -121,7 +135,6 @@ class RDMAContext {
         struct ibv_pd *fifo_pd_;
         // Memory region for Fifo.
         struct ibv_mr *fifo_mr_;
-        void *fifo_mr_addr_;
         
         // (high-priority) QP for control messages (e.g., ACK) based on Unreliable Datagram (UD).
         struct ibv_qp *ctrl_qp_;
@@ -135,8 +148,6 @@ class RDMAContext {
         struct ibv_pd *ctrl_pd_;
         // Memory region for control messages.
         struct ibv_mr *ctrl_mr_;
-        // Memory address for control messages.
-        void *ctrl_mr_addr_;
 
         // QP for retransmission based on Reliable Connection (RC).
         struct ibv_qp *retr_qp_;
@@ -150,8 +161,6 @@ class RDMAContext {
         struct ibv_pd *retr_pd_;
         // Memory region for retransmission.
         struct ibv_mr *retr_mr_;
-        // Memory address for retransmission.
-        void *retr_mr_addr_;
 
         // The device index that this context belongs to.
         int dev_;
@@ -159,13 +168,12 @@ class RDMAContext {
         int engine_idx_;
 
         struct ibv_context *context_;
-
         union ibv_gid local_gid_;
-        union ibv_gid remote_gid_;
-
         ibv_mtu mtu_;
         uint8_t ib_port_num_;
         uint8_t sgid_index_;
+        
+        struct RemoteRDMAContext remote_ctx_;
 
         // When sync_cnt_ equals to kTotalQP, the flow is ready.
         uint32_t sync_cnt_;
@@ -226,7 +234,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     attr.path_mtu = rdma_ctx->mtu_;
     attr.ah_attr.is_global = 1;
     attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
-    attr.ah_attr.grh.dgid = rdma_ctx->remote_gid_;
+    attr.ah_attr.grh.dgid = rdma_ctx->remote_ctx_.remote_gid;
     attr.ah_attr.grh.sgid_index = rdma_ctx->sgid_index_;
     attr.ah_attr.grh.hop_limit = 0xff;
     attr.dest_qp_num = remote_qpn;
@@ -278,7 +286,7 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
 }
 
 static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type,
-    struct ibv_cq **cq, uint32_t cqsize, struct ibv_pd **pd, struct ibv_mr **mr, void **addr, size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr)
+    struct ibv_cq **cq, uint32_t cqsize, struct ibv_pd **pd, struct ibv_mr **mr, size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr)
 {
     // Create a dedicated CQ for control messages
     *cq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
@@ -291,12 +299,12 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
         throw std::runtime_error("ibv_alloc_pd failed");
     
     // Create memory region for control messages
-    *addr = mmap(nullptr, mr_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (*addr == MAP_FAILED)
+    void *addr = mmap(nullptr, mr_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (addr == MAP_FAILED)
         throw std::runtime_error("mmap failed");
-    memset(*addr, 0, mr_size);
+    memset(addr, 0, mr_size);
 
-    *mr = ibv_reg_mr(*pd, *addr, mr_size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    *mr = ibv_reg_mr(*pd, addr, mr_size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | ((qp_type == IBV_QPT_RC) ? IBV_ACCESS_REMOTE_READ : 0));
     if (*mr == nullptr)
         throw std::runtime_error("ibv_reg_mr failed");
 
@@ -321,12 +329,14 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
 
     // Modify QP state to INIT
     struct ibv_qp_attr qp_attr;
+    int attr_mask = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
     memset(&qp_attr, 0, sizeof(qp_attr));
     qp_attr.qp_state = IBV_QPS_INIT;
     qp_attr.pkey_index = 0;
     qp_attr.port_num = rdma_ctx->ib_port_num_;
     qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
-    if (ibv_modify_qp(*qp, &qp_attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS)) {
+
+    if (ibv_modify_qp(*qp, &qp_attr, attr_mask)) {
         throw std::runtime_error("ibv_modify_qp failed");
     }
 }
