@@ -15,19 +15,253 @@ void UcclFlow::rx_messages() {
 
 }
 
+void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int n)
+{
+    struct ibv_send_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    struct RemFifo *rem_fifo = rdma_ctx_->recv_comm_.base.fifo;
+    int slot = rem_fifo->fifo_tail % kMaxReq;
+    auto elems = rem_fifo->elems[slot];
+    auto qp = rdma_ctx_->fifo_qp_;
+
+    auto recv_comm_ = &rdma_ctx_->recv_comm_;
+
+    // Clear sizes.
+    req->recv.sizes = rem_fifo->sizes[slot];
+    for (int i = 0; i < n; i++) req->recv.sizes[i] = 0;
+    
+    for (int i = 0; i < n; i++) {
+        elems[i].addr = reinterpret_cast<uint64_t>(data[i]);
+        elems[i].rkey = rdma_ctx_->data_mr_->rkey;
+        elems[i].nreqs = n;
+        // For sender to check if the receiver is ready.
+        elems[i].idx = rem_fifo->fifo_tail + 1;
+        elems[i].size = size[i];
+        elems[i].tag = 0;
+
+        LOG(INFO) << "Post Recv: addr: " << elems[i].addr << ", rkey: " << elems[i].rkey << ", size: " << elems[i].size;
+    }
+    
+    // Figure out the remote address to write.
+    wr.wr.rdma.remote_addr = recv_comm_->base.remote_ctx.fifo_addr + slot * kMaxRecv * sizeof(struct FifoItem);
+    wr.wr.rdma.rkey = recv_comm_->base.remote_ctx.fifo_key;
+
+    struct ibv_sge sge;
+    sge.lkey = rdma_ctx_->fifo_mr_->lkey;
+    sge.addr = (uint64_t)elems;
+    sge.length = n * sizeof(struct FifoItem);
+
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+
+    wr.opcode = IBV_WR_RDMA_WRITE;
+    wr.send_flags = IBV_SEND_INLINE;
+
+    // Occasionally post a request with the IBV_SEND_SIGNALED flag.
+    if (slot == 0) {
+        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
+        // Polling the CQ.
+        if (!rdma_ctx_->fifo_cq_polling_) {
+            engine_->add_fifo_cq_polling(this);
+            rdma_ctx_->fifo_cq_polling_ = true;
+        }
+    }
+    struct ibv_send_wr* bad_wr;
+    if (ibv_post_send(qp, &wr, &bad_wr)) {
+        LOG(ERROR) << "Failed to post send";
+    }
+    rem_fifo->fifo_tail++;
+}
+
 /**
  * @brief Application supplies a buffer to the flow for receiving data.
  * @param rx_work 
  */
-void UcclFlow::rx_supply_app_buf(Channel::Msg &rx_work) {
-    auto *buf = rx_work.data;
-    auto len = rx_work.len_p;
+void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
+    auto data = rx_work.rx.data;
+    auto size = rx_work.rx.size;
+    auto n = rx_work.rx.n;
+    auto poll_ctx = rx_work.poll_ctx;
 
+    auto recv_comm_ = &rdma_ctx_->recv_comm_;
 
+    auto req = rdma_ctx_->get_request(&recv_comm_->base);
+    if (!req) {
+        LOG(ERROR) << "Failed to get request";
+        return;
+    }
+    req->type = FlowRequest::RECV;
+    req->nreqs = n;
+    req->poll_ctx = poll_ctx;
 
+    // Post recvs to consume immediate data.
+    struct ibv_recv_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
+    wr.sg_list = nullptr;
+    wr.num_sge = 0;
+    struct ibv_recv_wr *bad_wr;
+    auto qp = rdma_ctx_->qp_vec_[0];
+    
+    if (ibv_post_recv(qp, &wr, &bad_wr)) {
+        LOG(ERROR) << "Failed to post recv";
+    }
+
+    // Push buffer information to FIFO queue and notify the remote peer.
+    post_fifo(req, data, size, n);
 }
 
-void UcclFlow::tx_messages(Channel::Msg &tx_work) {
+void UcclFlow::rdma_multi_send(int slot)
+{
+    auto send_comm_ = &rdma_ctx_->send_comm_;
+    auto reqs = send_comm_->fifo_reqs[slot];
+    
+    auto rem_fifo = send_comm_->base.fifo;
+
+    auto slots = rem_fifo->elems[slot];
+
+    int nreqs = slots[0].nreqs;
+
+    uint64_t wr_id = 0ULL;
+    for (int i = 0; i < nreqs; i++) {
+        struct ibv_send_wr *wr = send_comm_->wrs + i;
+        memset(wr, 0, sizeof(struct ibv_send_wr));
+
+        struct ibv_sge *sge = send_comm_->sges + i;
+        sge->addr = (uintptr_t)reqs[i]->send.data;
+        wr->opcode = IBV_WR_RDMA_WRITE;
+        wr->send_flags = 0;
+        wr->wr.rdma.remote_addr = slots[i].addr;
+        wr->next = wr + 1;
+        wr_id += (reqs[i] - send_comm_->base.reqs) << (i * 8);
+    }
+
+    uint32_t imm_data = 0;
+    if (nreqs == 1) {
+        imm_data = reqs[0]->send.size;
+    } else {
+
+    }
+
+    struct ibv_send_wr *last_wr = send_comm_->wrs + nreqs - 1;
+
+    last_wr->wr_id = wr_id;
+    last_wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    last_wr->imm_data = imm_data;
+    last_wr->next = nullptr;
+    last_wr->send_flags = IBV_SEND_SIGNALED;
+
+    /// TODO:
+    const int align = 128;
+    auto qp = rdma_ctx_->qp_vec_[0];
+    for (int i = 0; i < nreqs; i++) {
+        
+        send_comm_->wrs[i].wr.rdma.rkey = slots[i].rkey;
+
+        LOG(INFO) << "Post Send Remote addr: " << slots[i].addr << ", rkey: " << slots[i].rkey << ", Local addr: " << (uint64_t)reqs[i]->send.data << ", lkey: " << reqs[i]->send.lkey;
+
+        int chunk_size = DIVUP(reqs[i]->send.size, align) * align;
+        int length = std::min(reqs[i]->send.size - reqs[i]->send.offset, chunk_size);
+
+        if (length <= 0) {
+            send_comm_->wrs[i].sg_list = nullptr;
+            send_comm_->wrs[i].num_sge = 0;
+        } else {
+            send_comm_->sges[i].lkey = reqs[i]->send.lkey;
+            send_comm_->sges[i].length = length;
+            send_comm_->wrs[i].sg_list = send_comm_->sges + i;
+            send_comm_->wrs[i].num_sge = 1;
+        }
+    }
+
+    if (nreqs > 1) {
+    }
+
+    struct ibv_send_wr *bad_wr;
+    if (ibv_post_send(qp, send_comm_->wrs, &bad_wr)) {
+        LOG(ERROR) << "Failed to post send";
+    }
+
+    for (int i = 0; i < nreqs; i++) {
+        int chunksize = DIVUP(reqs[i]->send.size, align) * align;
+        reqs[i]->send.offset += chunksize;
+        send_comm_->sges[i].addr += chunksize;
+        send_comm_->wrs[i].wr.rdma.remote_addr += chunksize;
+    }
+}
+
+bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
+    auto data = tx_work.tx.data;
+    auto size = tx_work.tx.size;
+    auto poll_ctx = tx_work.poll_ctx;
+
+    auto send_comm_ = &rdma_ctx_->send_comm_;
+
+    int slot = send_comm_->fifo_head % kMaxReq;
+
+    auto reqs = send_comm_->fifo_reqs[slot];
+
+    auto rem_fifo = send_comm_->base.fifo;
+
+    volatile struct FifoItem *slots = rem_fifo->elems[slot];
+
+    auto idx = send_comm_->fifo_head + 1;
+    if (slots[0].idx != idx) {
+        return true;
+    }
+    
+    // Wait until all slots are ready
+    auto nreqs = slots[0].nreqs;
+    for (int i = 1; i < nreqs; i++) while(slots[i].idx != idx) {}
+
+    LOG(INFO) << "Receiver is ready to receive";
+
+    __sync_synchronize();
+
+    for (int i = 0; i < nreqs; i++) {
+        if (reqs[i] != nullptr) continue;
+        if (slots[i].size < 0 || slots[i].addr == 0 || slots[i].rkey == 0) {
+            LOG(ERROR) << "Receiver posted incorrect receive info";
+            return false;
+        }
+        // Can't send more than what the receiver can receive.
+        if (size > slots[i].size) size = slots[i].size;
+        
+        struct FlowRequest *req = rdma_ctx_->get_request(&send_comm_->base);
+        if (!req) {
+            LOG(ERROR) << "Failed to get request";
+            return false;
+        }
+
+        req->type = FlowRequest::SEND;
+        req->nreqs = nreqs;
+        req->poll_ctx = poll_ctx;
+        req->send.size = size;
+        req->send.data = data;
+        req->send.offset = 0;
+
+        /// TODO:
+        auto qp = rdma_ctx_->qp_vec_[0];
+        req->send.lkey = rdma_ctx_->data_mr_->lkey;
+
+        // Track this request.
+        reqs[i] = req;
+
+        // If this is a multi-recv, send only when all requests have matched.
+        for (int i = 0; i < nreqs; i++) {
+            if (reqs[i] == nullptr) return false;
+        }
+
+        rdma_multi_send(slot);
+
+        memset((void*)slots, 0, sizeof(struct FifoItem));
+        memset(reqs, 0, kMaxRecv * sizeof(struct FlowRequest *));
+
+        send_comm_->fifo_head++;
+        return false;
+    }
+    return false;
 }
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
@@ -137,6 +371,146 @@ void UcclFlow::prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
 #endif
 }
 
+void UcclRDMAEngine::handle_pending_tx_work(void)
+{
+    std::deque<Channel::Msg> tmp;
+    for (auto it = pending_tx_work_.begin(); it != pending_tx_work_.end();) {
+        auto tx_work = *it;
+        auto flow = active_flows_map_[tx_work.flow_id];
+        if (flow == nullptr) {
+            LOG(ERROR) << "Flow not found";
+            it = pending_tx_work_.erase(it);
+            continue;
+        }
+
+        if (flow->tx_messages(tx_work)) {
+            tmp.push_back(tx_work);
+            it++;
+        } else it = pending_tx_work_.erase(it);
+    }
+
+    pending_tx_work_.insert(pending_tx_work_.begin(), tmp.begin(), tmp.end());
+}
+
+void UcclRDMAEngine::handle_completion(void) 
+{
+    // Polling infrequent FIFO CQ events.
+    for (auto it = fifo_cq_list_.begin(); it != fifo_cq_list_.end();) {
+        FlowRequest *req = nullptr;
+        auto rdma_ctx = (*it)->rdma_ctx_;
+        auto cq = rdma_ctx->fifo_cq_;
+        struct ibv_wc wc;
+        int nr_cqe = ibv_poll_cq(cq, 1, &wc);
+        if (nr_cqe <= 0) goto next_flow;
+        if (wc.status != IBV_WC_SUCCESS) {
+            LOG(ERROR) << "Error in FIFO CQ completion:" << wc.status;
+            goto next_flow;
+        }
+
+        req = rdma_ctx->get_request_by_id(wc.wr_id & 0xff, &rdma_ctx->recv_comm_.base);
+        if (req == nullptr) {
+            LOG(ERROR) << "Request not found";
+            goto next_flow;
+        }
+
+        if (req->type != FlowRequest::RECV) {
+            LOG(ERROR) << "Unexpected request type";
+            goto next_flow;
+        }
+        
+        rdma_ctx->fifo_cq_polling_ = false;
+        it = fifo_cq_list_.erase(it);
+        
+        continue;
+
+        next_flow:
+            ++it;
+    }
+
+    // Polling the CQ for UC QPs.
+    for (auto flow: active_flows_map_) {
+        auto rdma_ctx = flow.second->rdma_ctx_;
+        auto send_comm = &rdma_ctx->send_comm_;
+        auto cq = rdma_ctx->cq_;
+        struct ibv_wc wc;
+        int nr_cqe = ibv_poll_cq(cq, 1, &wc);
+        if (nr_cqe <= 0) continue;
+        if (wc.status != IBV_WC_SUCCESS) {
+            LOG(ERROR) << "Error in UC CQ completion:" << wc.status;
+            continue;
+        }
+
+        auto req = rdma_ctx->get_request_by_id(wc.wr_id & 0xff, &rdma_ctx->send_comm_.base);
+        if (req == nullptr) {
+            LOG(ERROR) << "Request not found";
+            continue;
+        }
+
+        if (req->type != FlowRequest::SEND && req->type != FlowRequest::RECV) {
+            LOG(ERROR) << "Unexpected request type";
+            continue;
+        }
+
+        if (req->type == FlowRequest::RECV && wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+            req->recv.sizes[0] = wc.imm_data;
+            LOG(INFO) << "IMM data: " << wc.imm_data;
+            // Wakeup app thread waiting on this request.
+            {
+                std::lock_guard<std::mutex> lock(req->poll_ctx->mu);
+                req->poll_ctx->done = true;
+                req->poll_ctx->cv.notify_one();
+            }
+            continue;
+        } else if (req->type == FlowRequest::RECV && wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM) {
+            LOG(ERROR) << "Unexpected opcode for RECV request";
+            continue;
+        }
+
+
+        for (int i = 0; i < req->nreqs; i++) {
+            auto send_req = send_comm->base.reqs + ((wc.wr_id >> (i * 8)) & 0xff);
+
+            LOG(INFO) << "Send request completed";
+
+            // Wakeup app thread waiting on this request.
+            {
+                std::lock_guard<std::mutex> lock(send_req->poll_ctx->mu);
+                send_req->poll_ctx->done = true;
+                send_req->poll_ctx->cv.notify_one();
+            }
+        }
+    }
+
+}
+
+void UcclRDMAEngine::handle_async_recv(void) 
+{
+    Channel::Msg rx_work;
+    if (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
+        1) {
+        LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRX";
+        active_flows_map_[rx_work.flow_id]->app_supply_rx_buf(rx_work);
+    }
+}
+
+void UcclRDMAEngine::handle_async_send(void)
+{
+    Channel::Msg tx_work;
+
+    if (jring_sc_dequeue_bulk(channel_->tx_cmdq_, &tx_work, 1, nullptr) ==
+        1) {
+        // Make data written by the app thread visible to the engine.
+        std::ignore = std::atomic_load_explicit(&tx_work.poll_ctx->fence,
+                                                std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+
+        LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kTX";
+
+        if (active_flows_map_[tx_work.flow_id]->tx_messages(tx_work))
+            pending_tx_work_.push_back(tx_work);
+    }
+}
+
 void UcclRDMAEngine::run() {
     Channel::Msg rx_work;
     Channel::Msg tx_work;
@@ -152,24 +526,15 @@ void UcclRDMAEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
-        if (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
-            1) {
-            VLOG(3) << "Rx jring dequeue";
-            active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
-        }
+        handle_pending_tx_work();
 
-        if (jring_sc_dequeue_bulk(channel_->tx_cmdq_, &tx_work, 1, nullptr) ==
-            1) {
-            // Make data written by the app thread visible to the engine.
-            std::ignore = std::atomic_load_explicit(&tx_work.poll_ctx->fence,
-                                                    std::memory_order_relaxed);
-            std::atomic_thread_fence(std::memory_order_acquire);
+        handle_async_recv();
 
-            (void)tx_work;
-            VLOG(3) << "Tx jring dequeue";
-        }
+        handle_async_send();
+
+        handle_completion();
     }
-    std::cout << "Engine " << local_engine_idx_ << " shutdown" << std::endl;
+    std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
 }
 
 /**
@@ -196,19 +561,19 @@ void UcclRDMAEngine::process_ctl_reqs() {
         1) {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::kInstallFlowRDMA:
-                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kInstallFlowRDMA";
+                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kInstallFlowRDMA";
                     handle_install_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kSyncFlowRDMA:
-                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kSyncFlowRDMA";
+                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kSyncFlowRDMA";
                     handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kRegMR:
-                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kRegMR";
+                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRegMR";
                     handle_regmr_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kDeregMR:
-                    LOG(INFO) << "[Engine#" << local_engine_idx_ << "] " << "kDeregMR";
+                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kDeregMR";
                     handle_deregmr_on_engine_rdma(ctrl_work);
                 break;
             default:
@@ -229,18 +594,17 @@ void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
     auto *rdma_ctx = flow->rdma_ctx_;
     DCHECK(rdma_ctx != nullptr);
 
-    if (rdma_ctx->data_pd_ && rdma_ctx->data_mr_) {
+    if (rdma_ctx->data_mr_) {
         LOG(ERROR) << "Only one MR is allowed";
         return;
     }
 
-    auto *pd = ibv_alloc_pd(rdma_ctx->context_);
-    DCHECK(pd != nullptr);
-    auto *mr = ibv_reg_mr(pd, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    auto *mr = ibv_reg_mr(rdma_ctx->pd_, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     DCHECK(mr != nullptr);
 
-    rdma_ctx->data_pd_ = pd;
     rdma_ctx->data_mr_ = mr;
+
+    LOG(INFO) << "Memory region address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
 
     // Wakeup app thread waiting one endpoint.
     {
@@ -261,16 +625,13 @@ void UcclRDMAEngine::handle_deregmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
     
     auto *rdma_ctx = flow->rdma_ctx_;
 
-    if (!rdma_ctx->data_pd_ || !rdma_ctx->data_mr_) {
+    if (!rdma_ctx->data_mr_) {
         LOG(ERROR) << "MR not found";
         return;
     }
 
     ibv_dereg_mr(rdma_ctx->data_mr_);
-    ibv_dealloc_pd(rdma_ctx->data_pd_);
-
     rdma_ctx->data_mr_ = nullptr;
-    rdma_ctx->data_pd_ = nullptr;
 
     // Wakeup app thread waiting one endpoint.
     {
@@ -292,16 +653,19 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         LOG(ERROR) << "Flow not found";
         return;
     }
+
     auto *rdma_ctx = flow->rdma_ctx_;
+
+    auto comm_base = rdma_ctx->is_send_ ? &rdma_ctx->send_comm_.base : &rdma_ctx->recv_comm_.base;
     
     // Copy fields from Endpoint
     if (meta.ToEngine.fifo) {
-        rdma_ctx->remote_ctx_.fifo_addr = meta.ToEngine.fifo_addr;
-        rdma_ctx->remote_ctx_.fifo_key = meta.ToEngine.fifo_key;
+        comm_base->remote_ctx.fifo_addr = meta.ToEngine.fifo_addr;
+        comm_base->remote_ctx.fifo_key = meta.ToEngine.fifo_key;
     }
 
-    LOG(INFO) << "Remote FIFO addr " << rdma_ctx->remote_ctx_.fifo_addr
-              << " key " << rdma_ctx->remote_ctx_.fifo_key;
+    LOG(INFO) << "Remote FIFO addr " << comm_base->remote_ctx.fifo_addr
+              << " key " << comm_base->remote_ctx.fifo_key;
 
     if (rdma_ctx->sync_cnt_ < kPortEntropy) {
         // UC QPs.
@@ -356,7 +720,7 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     auto *poll_ctx = ctrl_work.poll_ctx;
     auto dev = ctrl_work.meta.ToEngine.dev;
 
-    auto *flow = new UcclFlow(local_engine_idx_, channel_, flow_id, RDMAFactory::CreateContext(dev, local_engine_idx_, meta));
+    auto *flow = new UcclFlow(this, channel_, flow_id, RDMAFactory::CreateContext(dev, meta));
 
     std::tie(std::ignore, ret) = active_flows_map_.insert({flow_id, flow});
     DCHECK(ret);
@@ -397,21 +761,6 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
     }
 
-}
-
-std::string UcclRDMAEngine::status_to_string() {
-    std::string s;
-    for (auto [flow_id, flow] : active_flows_map_) {
-        s += Format("\n\t\tEngine %d Flow 0x%lx: %s (%u) <-> %s (%u)",
-                    local_engine_idx_, flow_id,
-                    ip_to_str(htonl(flow->local_addr_)).c_str(),
-                    flow->local_engine_idx_,
-                    ip_to_str(htonl(flow->remote_addr_)).c_str(),
-                    flow->remote_engine_idx_);
-        s += flow->to_string();
-    }
-
-    return s;
 }
 
 RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start)
@@ -581,7 +930,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
         if (unique) break;
     }
     
-    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, true);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -645,7 +994,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
         }
     }
 
-    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd);
+    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, false);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -653,16 +1002,17 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
 }
 
 PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
-                                   const size_t len) {
+                                   const size_t size) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
         .flow_id = conn_id.flow_id,
-        .data = const_cast<void *>(data),
-        .len = len,
-        .len_p = nullptr,
         .poll_ctx = poll_ctx,
     };
+    
+    msg.tx.data = const_cast<void *>(data);
+    msg.tx.size = size;
+    
     std::atomic_store_explicit(&poll_ctx->fence, true,
                                std::memory_order_release);
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->tx_cmdq_,
@@ -670,15 +1020,20 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void *data, size_t len) {
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void **data, size_t *size, int n) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
         .flow_id = conn_id.flow_id,
-        .data = data,
-        .len = len,
         .poll_ctx = poll_ctx,
     };
+
+    for (int i = 0; i < n; i++) {
+        msg.rx.data[i] = data[i];
+        msg.rx.size[i] = size[i];
+    }
+    msg.rx.n = n;
+
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->rx_cmdq_,
                                  &msg, 1, nullptr) != 1);
     return poll_ctx;
@@ -707,7 +1062,7 @@ bool RDMAEndpoint::uccl_poll_once(PollCtx *ctx) {
 void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
-                                      int bootstrap_fd) {
+                                      int bootstrap_fd, bool is_send) {
     int ret;
     struct RDMAExchangeFormatLocal meta = { 0 };
     // We use this pointer to fill meta data.
@@ -751,6 +1106,8 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     to_engine_meta->mtu = factory_dev->port_attr.active_mtu;
     // Which dev to use?
     to_engine_meta->dev = dev;
+    // Flow direction?
+    to_engine_meta->is_send = is_send;
 
     // Install RDMA flow on engine.
     auto *poll_ctx = new PollCtx();
@@ -867,13 +1224,13 @@ void RDMAEndpoint::stats_thread_fn() {
             if (shutdown) break;
         }
 
-        if (engine_vec_.empty()) continue;
-        std::string s;
-        s += "\n\t[Uccl Engine] ";
-        for (auto &engine : engine_vec_) {
-            s += engine->status_to_string();
-        }
-        LOG(INFO) << s;
+        // if (engine_vec_.empty()) continue;
+        // std::string s;
+        // s += "\n\t[Uccl Engine] ";
+        // for (auto &engine : engine_vec_) {
+        //     s += engine->status_to_string();
+        // }
+        // LOG(INFO) << s;
     }
 }
 

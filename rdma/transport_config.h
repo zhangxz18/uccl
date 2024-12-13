@@ -25,6 +25,10 @@ static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {
 static const uint8_t IB_PORT_NUM = 1;
 static const uint8_t NUM_DEVICES = 2;
 
+static const uint32_t kMaxNetReq = 32;
+static const uint32_t kMaxRecv = 8;
+static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
+
 // static const uint32_t RDMA_MTU = 4096;
 static const uint32_t RDMA_MTU = 1024;
 // 100Gbps link.

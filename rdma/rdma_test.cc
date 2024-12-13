@@ -40,10 +40,10 @@ static void server_worker(void)
 
     ep.uccl_regmr(conn_id, data, 65536, 0);
 
-    size_t len;
+    size_t len = 65536;
     void *recv_data = data;
 
-    auto *poll_ctx = ep.uccl_recv_async(conn_id, recv_data, len);
+    auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
 
     while (!quit) {
         if (ep.uccl_poll(poll_ctx)) {

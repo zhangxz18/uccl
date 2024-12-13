@@ -23,23 +23,23 @@ void RDMAFactory::init_dev(int gid_idx)
     struct ibv_port_attr port_attr;
     int i, nb_devices;
 
-    // Check if the device is already initialized
+    // Check if the device is already initialized.
     DCHECK(rdma_ctl.gid_2_dev_map.find(gid_idx) == rdma_ctl.gid_2_dev_map.end());
     
-    // Get Infiniband name from GID index
+    // Get Infiniband name from GID index.
     DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
 
-    // Get IP address from Infiniband name
+    // Get IP address from Infiniband name.
     DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) == 0);
 
-    // Get the list of RDMA devices
+    // Get the list of RDMA devices.
     device_list = ibv_get_device_list(&nb_devices);
     if (device_list == nullptr || nb_devices == 0) {
         perror("ibv_get_device_list");
         goto error;
     }
 
-    // Find the device by name
+    // Find the device by name.
     for (i = 0; i < nb_devices; i++) {
         if (strcmp(ibv_get_device_name(device_list[i]), dev.ib_name) == 0) {
             break;
@@ -50,7 +50,7 @@ void RDMAFactory::init_dev(int gid_idx)
         goto free_devices;
     }
 
-    // Open the device
+    // Open the device.
     memset(&dev_attr, 0, sizeof(dev_attr));
     if ((context = ibv_open_device(device_list[i])) == nullptr) {
         perror("ibv_open_device");
@@ -62,19 +62,19 @@ void RDMAFactory::init_dev(int gid_idx)
         goto close_device;
     }
 
-    // Currently, we only use one port
+    // Currently, we only use one port.
     if (dev_attr.phys_port_cnt != IB_PORT_NUM /* 1 */) {
         fprintf(stderr, "Only one port is supported\n");
         goto close_device;
     }
 
-    // Port number starts from 1
+    // Port number starts from 1.
     if (ibv_query_port(context, 1, &port_attr)) {
         perror("ibv_query_port");
         goto close_device;
     }
 
-    // Currently, we only support RoCEv2
+    // Currently, we only support RoCEv2.
     if (port_attr.state != IBV_PORT_ACTIVE ||
         (port_attr.link_layer != IBV_LINK_LAYER_ETHERNET)) {
         fprintf(stderr, "Port is not active or not Ethernet\n");
@@ -133,49 +133,56 @@ struct FactoryDevice *RDMAFactory::get_factory_dev(int dev)
  * @brief Create a new RDMA context for a given device running on a specific engine.
  * 
  * @param dev 
- * @param engine_idx 
  * @param meta 
  * @return RDMAContext* 
  */
-RDMAContext *RDMAFactory::CreateContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal meta)
+RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal meta)
 {
-    RDMAContext *ctx = new RDMAContext(dev, engine_idx, meta);
+    RDMAContext *ctx = new RDMAContext(dev, meta);
     std::lock_guard<std::mutex> lock(rdma_ctl.context_q_lock_);
     rdma_ctl.context_q_.push_back(ctx);
     return ctx;
 }
 
-RDMAContext::RDMAContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), engine_idx_(engine_idx), sync_cnt_(0)
+RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
+    dev_(dev), sync_cnt_(0)
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
-    // Copy fields from FactoryDevice
+    is_send_ = meta.ToEngine.is_send;
+
+    memset(&send_comm_, 0, sizeof(send_comm_));
+    memset(&recv_comm_, 0, sizeof(recv_comm_));
+
+    auto comm_base = is_send_ ? &send_comm_.base : &recv_comm_.base;
+
+    // Copy fields from FactoryDevice.
     context_ = factory_dev->context;
     local_gid_ = factory_dev->gid;
     ib_port_num_ = factory_dev->ib_port_num;
     sgid_index_ = factory_dev->gid_idx;
 
-    // Copy fields from from Endpoint
-    remote_ctx_.remote_gid = meta.ToEngine.remote_gid;
-    /// fifo_key and fifo_addr are set later
+    // Copy fields from from Endpoint.
+    // fifo_key and fifo_addr are set later.
+    comm_base->remote_ctx.remote_gid = meta.ToEngine.remote_gid;
+    
     mtu_ = meta.ToEngine.mtu;
 
     qp_vec_.resize(kPortEntropy);
     local_psn_.resize(kPortEntropy);
     remote_psn_.resize(kPortEntropy);
 
-    // Create a dedicated CQ for UC QPs
-    cq_ = ibv_create_cq(context_, kCQSize, nullptr, nullptr, 0);
-    if (cq_ == nullptr)
-        throw std::runtime_error("ibv_create_cq failed");
-
-    // Crate PD for UC QPs
+    // Crate PD.
     pd_ = ibv_alloc_pd(context_);
     if (pd_ == nullptr)
         throw std::runtime_error("ibv_alloc_pd failed");
 
-    // Create up to kPortEntropy UC QPs
+    // Create a dedicated CQ for UC QPs.
+    cq_ = ibv_create_cq(context_, kCQSize, nullptr, nullptr, 0);
+    if (cq_ == nullptr)
+        throw std::runtime_error("ibv_create_cq failed");
+
+    // Create up to kPortEntropy UC QPs.
     for (int i = 0; i < kPortEntropy; i++) {
         struct ibv_qp_init_attr qp_init_attr;
         memset(&qp_init_attr, 0, sizeof(qp_init_attr));
@@ -197,7 +204,7 @@ RDMAContext::RDMAContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal
         
         local_psn_[i] = 0xDEADBEEF + i;
         
-        // Modify QP state to INIT
+        // Modify QP state to INIT.
         struct ibv_qp_attr qpAttr;
         memset(&qpAttr, 0, sizeof(qpAttr));
         qpAttr.qp_state = IBV_QPS_INIT;
@@ -212,13 +219,21 @@ RDMAContext::RDMAContext(int dev, int engine_idx, struct RDMAExchangeFormatLocal
     }
 
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
-    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, &ctrl_cq_, kCQSize, &ctrl_pd_, &ctrl_mr_, kCtrlMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, 
+        &ctrl_cq_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
+            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     retr_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
-    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_RC, &retr_cq_, kCQSize, &retr_pd_, &retr_mr_, kRetrMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_RC, 
+        &retr_cq_, kCQSize, pd_, &retr_mr_, kRetrMRSize, 
+            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 2;
-    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, &fifo_cq_, kCQSize, &fifo_pd_, &fifo_mr_, kFifoMRSize, kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, 
+        &fifo_cq_, kCQSize, pd_, &fifo_mr_, kFifoMRSize, 
+            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+
+    comm_base->fifo = reinterpret_cast<struct RemFifo *>(fifo_mr_->addr);
 }
 
 RDMAContext::~RDMAContext()
@@ -226,9 +241,6 @@ RDMAContext::~RDMAContext()
     if (ctrl_mr_ != nullptr) {
         munmap(ctrl_mr_->addr, ctrl_mr_->length);
         ibv_dereg_mr(ctrl_mr_);
-    }
-    if (ctrl_pd_ != nullptr) {
-        ibv_dealloc_pd(ctrl_pd_);
     }
     if (ctrl_cq_ != nullptr) {
         ibv_destroy_cq(ctrl_cq_);
@@ -241,9 +253,6 @@ RDMAContext::~RDMAContext()
         munmap(retr_mr_->addr, retr_mr_->length);
         ibv_dereg_mr(retr_mr_);
     }
-    if (retr_pd_ != nullptr) {
-        ibv_dealloc_pd(retr_pd_);
-    }
     if (retr_cq_ != nullptr) {
         ibv_destroy_cq(retr_cq_);
     }
@@ -254,10 +263,6 @@ RDMAContext::~RDMAContext()
     if (fifo_mr_ != nullptr) {
         munmap(fifo_mr_->addr, fifo_mr_->length);
         ibv_dereg_mr(fifo_mr_);
-    }
-
-    if (fifo_pd_ != nullptr) {
-        ibv_dealloc_pd(fifo_pd_);
     }
 
     if (fifo_cq_ != nullptr) {

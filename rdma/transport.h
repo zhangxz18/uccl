@@ -48,23 +48,6 @@ struct ConnID {
     int boostrap_id;      // Used for bootstrap connection with the peer.
 };
 
-struct alignas(64) PollCtx {
-    std::mutex mu;
-    std::condition_variable cv;
-    std::atomic<bool> fence;  // Sync rx/tx memcpy visibility.
-    std::atomic<bool> done;   // Sync cv wake-up.
-    uint64_t timestamp;       // Timestamp for request issuing.
-    PollCtx() : fence(false), done(false), timestamp(0) {};
-    ~PollCtx() { clear(); }
-    void clear() {
-        mu.~mutex();
-        cv.~condition_variable();
-        fence = false;
-        done = false;
-        timestamp = 0;
-    }
-};
-
 /**
  * @class Channel
  * @brief A channel is a command queue for application threads to submit rx and
@@ -84,9 +67,17 @@ class Channel {
         };
         Op opcode;
         FlowID flow_id;
-        void *data;
-        size_t len;
-        size_t *len_p;
+        union {
+            struct {
+                void *data[kMaxRecv];
+                size_t size[kMaxRecv];
+                int n;
+            } rx;
+            struct {
+                void *data;
+                size_t size;
+            } tx;
+        };
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -160,40 +151,15 @@ class UcclFlow {
 
    public:
     /**
-     * @brief Construct a new flow
-     *
-     * @param local_addr Local IP address.
-     * @param remote_addr Remote IP address.
-     * @param local_l2_addr Local L2 address.
-     * @param remote_l2_addr Remote L2 address.
-     * @param FlowID Connection ID for the flow.
-     */
-    UcclFlow(const uint32_t local_addr, const uint32_t remote_addr,
-             const char local_l2_addr[ETH_ALEN],
-             const char remote_l2_addr[ETH_ALEN], uint32_t local_engine_idx,
-             uint32_t remote_engine_idx, Channel *channel,
-             FlowID flow_id)
-        : local_addr_(local_addr),
-          remote_addr_(remote_addr),
-          local_engine_idx_(local_engine_idx),
-          remote_engine_idx_(remote_engine_idx),
-          channel_(channel),
-          flow_id_(flow_id),
-          pcb_() {
-        memcpy(local_l2_addr_, local_l2_addr, ETH_ALEN);
-        memcpy(remote_l2_addr_, remote_l2_addr, ETH_ALEN);
-    }
-
-    /**
      * @brief Construct a new Uccl Flow on RDMA
      * 
-     * @param local_engine_idx 
+     * @param engine 
      * @param channel 
      * @param flow_id 
      * @param rdma_ctx 
      */
-    UcclFlow(uint32_t local_engine_idx, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
-        local_engine_idx_(local_engine_idx), channel_(channel), flow_id_(flow_id), pcb_(), rdma_ctx_(rdma_ctx){};
+    UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
+        engine_(engine), channel_(channel), flow_id_(flow_id), pcb_(), rdma_ctx_(rdma_ctx){};
 
     ~UcclFlow() {}
 
@@ -213,7 +179,7 @@ class UcclFlow {
      */
     void rx_messages();
 
-    void rx_supply_app_buf(Channel::Msg &rx_work);
+    void app_supply_rx_buf(Channel::Msg &rx_work);
 
     /**
      * @brief Push a Message from the application onto the egress queue of
@@ -223,8 +189,11 @@ class UcclFlow {
      *
      * @param msg Pointer to the first message buffer on a train of buffers,
      * aggregating to a partial or a full Message.
+     * @return Returns true if this tx_work needs processing one more time.
      */
-    void tx_messages(Channel::Msg &tx_work);
+    bool tx_messages(Channel::Msg &tx_work);
+
+    void rdma_multi_send(int slot);
 
     void process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
                               uint64_t ts4);
@@ -276,6 +245,19 @@ class UcclFlow {
         return dst_ports_[next_port_idx_++ % kPortEntropy];
     }
 
+    /**
+     * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.
+     * These requests are transmitted through the underlyding fifo QP.
+     * @param req Pointer to the FlowRequest structure.
+     * @param data Array of data buffers.
+     * @param size Array of buffer sizes.
+     * @param n Number of buffers.
+     */
+    void post_fifo(struct FlowRequest *req, void **data, size_t *size, int n);
+
+    // Which Engine this flow belongs to.
+    UcclRDMAEngine *engine_;
+
     // Context for RDMA resources.
     RDMAContext *rdma_ctx_;
 
@@ -284,9 +266,6 @@ class UcclFlow {
     uint32_t remote_addr_;
     char local_l2_addr_[ETH_ALEN];
     char remote_l2_addr_[ETH_ALEN];
-    // Which engine (also NIC queue and xsk) this flow belongs to.
-    uint32_t local_engine_idx_;
-    uint32_t remote_engine_idx_;
 
     // The channel this flow belongs to.
     Channel *channel_;
@@ -328,11 +307,23 @@ class UcclRDMAEngine {
      */
     UcclRDMAEngine(int engine_id, Channel *channel, const std::string local_addr)
         : local_addr_(htonl(str_to_ip(local_addr))),
-          local_engine_idx_(engine_id),
+          engine_idx_(engine_id),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
+    }
+
+    void handle_async_recv(void);
+
+    void handle_async_send(void);
+
+    void handle_completion(void);
+
+    void handle_pending_tx_work(void);
+
+    inline void add_fifo_cq_polling(UcclFlow *flow) {
+        fifo_cq_list_.push_back(flow);
     }
 
     /**
@@ -397,12 +388,16 @@ class UcclRDMAEngine {
    private:
     uint32_t local_addr_;
     char local_l2_addr_[ETH_ALEN];
-    // Engine index, also NIC queue ID and xsk index.
-    uint32_t local_engine_idx_;
+    // Engine index
+    uint32_t engine_idx_;
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
     // Control plane channel with RDMAEndpoint.
     Channel *channel_;
+    // FIFO CQs need to be polled frequently, with frequent insertions and removals.
+    std::list<UcclFlow *> fifo_cq_list_;
+    // Pending tx work due to receiver not ready.
+    std::deque<Channel::Msg> pending_tx_work_;
     // Timestamp of last periodic process execution.
     uint64_t last_periodic_tsc_;
     // Clock ticks for the slow timer.
@@ -483,19 +478,20 @@ class RDMAEndpoint {
     // Deregistering a memory region.
     void uccl_deregmr(ConnID flow_id);
 
-    // Sending the data by leveraging multiple port combinations.
+    // Posting a buffer to engine for sending data asynchronously.
     PollCtx *uccl_send_async(ConnID flow_id, const void *data,
-                             const size_t len);
-    // Receiving the data by leveraging multiple port combinations.
-    PollCtx *uccl_recv_async(ConnID flow_id, void *data, size_t len);
+                             const size_t size);
+    // Posting n buffers to engine for receiving data asynchronously.
+    PollCtx *uccl_recv_async(ConnID flow_id, void **data, size_t *size, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);
     bool uccl_poll_once(PollCtx *ctx);
 
    private:
+
     void install_flow_on_engine_rdma(int dev, FlowID flow_id, const std::string &remote_ip,
-                                     uint32_t local_engine_idx, int bootstrap_fd);
+                                     uint32_t local_engine_idx, int bootstrap_fd, bool is_send);
     inline int find_least_loaded_engine_idx_and_update();
     inline void fence_and_clean_ctx(PollCtx *ctx);
 

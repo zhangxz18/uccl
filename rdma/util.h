@@ -26,10 +26,30 @@
 #include <random>
 #include <sstream>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 #include "util_jring.h"
 
 namespace uccl {
+
+struct alignas(64) PollCtx {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::atomic<bool> fence;  // Sync rx/tx memcpy visibility.
+    std::atomic<bool> done;   // Sync cv wake-up.
+    uint64_t timestamp;       // Timestamp for request issuing.
+    PollCtx() : fence(false), done(false), timestamp(0) {};
+    ~PollCtx() { clear(); }
+    void clear() {
+        mu.~mutex();
+        cv.~condition_variable();
+        fence = false;
+        done = false;
+        timestamp = 0;
+    }
+};
 
 template <class T>
 static inline T Percentile(std::vector<T>& vectorIn, double percent) {
@@ -117,6 +137,9 @@ class Spin {
     void Unlock() { pthread_spin_unlock(&spin_); }
     bool TryLock() { return pthread_spin_trylock(&spin_) == 0; }
 };
+
+#define DIVUP(x, y) \
+    (((x) + (y) - 1) / (y))
 
 #ifndef likely
 #define likely(X) __builtin_expect(!!(X), 1)
