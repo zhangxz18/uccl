@@ -179,16 +179,15 @@ class UcclFlow {
      */
     void rx_messages();
 
+    /**
+     * @brief Supply a buffer for the flow to receive data into.
+     * @param rx_work 
+     */
     void app_supply_rx_buf(Channel::Msg &rx_work);
 
     /**
-     * @brief Push a Message from the application onto the egress queue of
-     * the flow. Segments the message, and encrypts the packets, and adds
-     * all packets onto the egress queue. Caller is responsible for freeing
-     * the MsgBuf object.
-     *
-     * @param msg Pointer to the first message buffer on a train of buffers,
-     * aggregating to a partial or a full Message.
+     * @brief Transmit a message described by the tx_work.
+     * @param tx_work 
      * @return Returns true if this tx_work needs processing one more time.
      */
     bool tx_messages(Channel::Msg &tx_work);
@@ -247,7 +246,7 @@ class UcclFlow {
 
     /**
      * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.
-     * These requests are transmitted through the underlyding fifo QP.
+     * These requests are transmitted through the underlyding fifo QP (RC).
      * @param req Pointer to the FlowRequest structure.
      * @param data Array of data buffers.
      * @param size Array of buffer sizes.
@@ -314,14 +313,33 @@ class UcclRDMAEngine {
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
     }
 
+    /**
+     * @brief Handling async recv requests from Endpoint for all flows.
+     */
     void handle_async_recv(void);
 
+    /**
+     * @brief Handling aysnc send requests from Endpoint for all flows.
+     */
     void handle_async_send(void);
 
+    /**
+     * @brief Handling all completion events for all flows, including:
+     * 1. Occasinal completion events from FIFO CQs.
+     * 2. Frequent completion events from UC/Ctrl/Retr QPs.
+     */
     void handle_completion(void);
 
+    /**
+     * @brief Somtimes we can't send a message because the receiver is not ready.
+     * We store the pending tx work and try to send it later.
+     */
     void handle_pending_tx_work(void);
 
+    /**
+     * @brief Add a flow to the list for polling FIFO CQs in future.
+     * @param flow 
+     */
     inline void add_fifo_cq_polling(UcclFlow *flow) {
         fifo_cq_list_.push_back(flow);
     }
@@ -394,7 +412,7 @@ class UcclRDMAEngine {
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
     // Control plane channel with RDMAEndpoint.
     Channel *channel_;
-    // FIFO CQs need to be polled frequently, with frequent insertions and removals.
+    // FIFO CQs that need to be polled.
     std::list<UcclFlow *> fifo_cq_list_;
     // Pending tx work due to receiver not ready.
     std::deque<Channel::Msg> pending_tx_work_;

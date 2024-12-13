@@ -202,6 +202,9 @@ class RDMAContext {
         struct ibv_cq *fifo_cq_;
         // Memory region for Fifo.
         struct ibv_mr *fifo_mr_;
+
+        // Whether its FIFO CQ is under polling.
+        bool fifo_cq_polling_;
         
         // (high-priority) QP for control messages (e.g., ACK) based on Unreliable Datagram (UD).
         struct ibv_qp *ctrl_qp_;
@@ -228,28 +231,56 @@ class RDMAContext {
         // The device index that this context belongs to.
         int dev_;
 
+        // RDMA device context per device.
         struct ibv_context *context_;
+        // Local GID of this device.
         union ibv_gid local_gid_;
+        // MTU of this device.
         ibv_mtu mtu_;
+        // IB port number of this device.
         uint8_t ib_port_num_;
+        // GID index of this device.
         uint8_t sgid_index_;
         
+        /**
+         * @brief Communication abstraction for sending and receiving.
+         * Since data flow is unidirectional in NCCL, we use two different structures.
+         */
         union {
+            // For connection setup by connect().
             struct SendComm send_comm_;
+            // For connection setup by accept().
             struct RecvComm recv_comm_;
         };
 
-        // Whether its FIFO CQ is under polling.
-        bool fifo_cq_polling_;
+        // Whether this context is for sending or receiving.
+        bool is_send_;
 
+        /**
+         * @brief Figure out the request id.
+         * @param req 
+         * @param comm_base 
+         * @return int 
+         */
         inline int get_request_id(struct FlowRequest *req, struct NetCommBase *comm_base) {
             return req - comm_base->reqs;
         }
 
+        /**
+         * @brief Get the request by id.
+         * @param id 
+         * @param comm_base 
+         * @return struct FlowRequest* 
+         */
         inline struct FlowRequest *get_request_by_id(int id, struct NetCommBase *comm_base) {
             return &comm_base->reqs[id];
         }
 
+        /**
+         * @brief Get an unused request, if no request is available, return nullptr.
+         * @param comm_base 
+         * @return struct FlowRequest* 
+         */
         inline struct FlowRequest *get_request(struct NetCommBase *comm_base) {
             for (int i = 0; i < kMaxReq; i++) {
                 auto *req = &comm_base->reqs[i];
@@ -261,8 +292,6 @@ class RDMAContext {
             }
             return nullptr;
         }
-
-        bool is_send_;
 
         // When sync_cnt_ equals to kTotalQP, the flow is ready.
         uint32_t sync_cnt_;

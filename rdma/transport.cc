@@ -74,10 +74,6 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
     rem_fifo->fifo_tail++;
 }
 
-/**
- * @brief Application supplies a buffer to the flow for receiving data.
- * @param rx_work 
- */
 void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
     auto data = rx_work.rx.data;
     auto size = rx_work.rx.size;
@@ -86,11 +82,17 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
 
     auto recv_comm_ = &rdma_ctx_->recv_comm_;
 
-    auto req = rdma_ctx_->get_request(&recv_comm_->base);
-    if (!req) {
-        LOG(ERROR) << "Failed to get request";
+    if (unlikely(n > kMaxRecv)) {
+        LOG(ERROR) << "Number of buffers exceeds the limit.";
         return;
     }
+
+    auto req = rdma_ctx_->get_request(&recv_comm_->base);
+    if (unlikely(!req)) {
+        LOG(ERROR) << "Number of outstanding requests exceeds the limit.";
+        return;
+    }
+    
     req->type = FlowRequest::RECV;
     req->nreqs = n;
     req->poll_ctx = poll_ctx;
@@ -386,9 +388,13 @@ void UcclRDMAEngine::handle_pending_tx_work(void)
         if (flow->tx_messages(tx_work)) {
             tmp.push_back(tx_work);
             it++;
-        } else it = pending_tx_work_.erase(it);
+        } else {
+            // Good, the tx work is done.
+            it = pending_tx_work_.erase(it);
+        }
     }
 
+    // Unfortunatly, try them later.
     pending_tx_work_.insert(pending_tx_work_.begin(), tmp.begin(), tmp.end());
 }
 
