@@ -145,7 +145,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
 }
 
 RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), sync_cnt_(0)
+    dev_(dev), sync_cnt_(0),ctrl_pkt_pool_()
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -254,6 +254,28 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         for (int i = 0; i < kMaxReq * kMaxRecv; i++) {
             struct ibv_recv_wr *bad_wr;
             DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
+        }
+    }
+
+    // Set buffer pool address for control packets.
+    ctrl_pkt_pool_.set_pool_addr(ctrl_mr_);
+
+    // Populate recv work requests on Ctrl QP for consuming control packets.
+    struct ibv_sge sge;
+    for (int i = 0; i < CtrlPktBuffPool::kNumPkt >> 1; i++) {
+        uint64_t pkt_addr;
+        if (ctrl_pkt_pool_.alloc_buff(&pkt_addr))
+            throw std::runtime_error("Failed to allocate buffer for control packet");
+        sge.addr = pkt_addr;
+        sge.length = CtrlPktBuffPool::kPktSize;
+        sge.lkey = ctrl_pkt_pool_.get_lkey();
+        wr.wr_id = pkt_addr;
+        wr.next = nullptr;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        struct ibv_recv_wr *bad_wr;
+        if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr)) {
+            throw std::runtime_error("ibv_post_recv failed");
         }
     }
 }

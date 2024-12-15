@@ -25,6 +25,65 @@ class RDMAContext;
 class RDMAFactory;
 extern RDMAFactory rdma_ctl;
 
+/**
+ * @brief Buffer pool for Ctrl packet.
+ * - Each Ctrl packet is fixed size.
+ * - Single producer, single consumer.
+ */
+class CtrlPktBuffPool {
+    public:
+        static constexpr uint32_t kPktSize = 256;
+        static constexpr uint32_t kNumPkt = 2048;
+        static_assert((kNumPkt & (kNumPkt - 1)) == 0, "kNumPkt must be power of 2");
+
+        inline bool full(void) {
+            return ((tail_ + 1) & (kNumPkt - 1)) == head_;
+        }
+
+        inline bool empty(void) {
+            return head_ == tail_;
+        }
+
+        inline int alloc_buff(uint64_t *buff) {
+            if (empty()) return -1;
+
+            head_ = (head_ + 1) & (kNumPkt - 1);
+            *buff = (uint64_t)buff_addr_ + buffer_pool_[head_];
+            return 0;
+        }
+
+        inline void free_buff(uint64_t buff) {
+            if (full()) return;
+            buff -= (uint64_t)buff_addr_;
+            buffer_pool_[tail_] = buff;
+            tail_ = (tail_ + 1) & (kNumPkt - 1);
+        }
+
+        inline uint32_t get_lkey(void) {
+            return lkey;
+        }
+
+        void set_pool_addr(struct ibv_mr *mr) { 
+            buff_addr_ = mr->addr;
+            lkey = mr->lkey;
+        }
+
+        CtrlPktBuffPool() {
+            head_ = tail_ = 0;
+            for (uint32_t i = 0; i < kNumPkt - 1; i++) {
+                free_buff(i * kPktSize);
+            }
+        }
+        ~CtrlPktBuffPool() = default;
+    
+    private:
+        void *buff_addr_;
+        uint32_t lkey;
+        uint32_t head_;
+        uint32_t tail_;
+        uint64_t buffer_pool_[kNumPkt];
+};
+
 class IMMData{
     public:
         // High                              Low
@@ -227,7 +286,7 @@ class RDMAContext {
     public:
         constexpr static int kTotalQP = kPortEntropy + 3;
         constexpr static int kFifoMRSize = sizeof(struct RemFifo);
-        constexpr static int kCtrlMRSize = 128 * 1024;
+        constexpr static int kCtrlMRSize = CtrlPktBuffPool::kPktSize * CtrlPktBuffPool::kNumPkt;
         constexpr static int kRetrMRSize = 4096 * 1024;
         constexpr static int kCQSize = 4096;
 
@@ -312,6 +371,9 @@ class RDMAContext {
 
         // Whether this context is for sending or receiving.
         bool is_send_;
+
+        // Buffer pool for control packets.
+        CtrlPktBuffPool ctrl_pkt_pool_;
 
         /**
          * @brief Figure out the request id.

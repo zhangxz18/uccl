@@ -128,6 +128,66 @@ class Channel {
     jring_t *ctrl_rspq_;
 };
 
+/**
+ * Uccl Packet Header.
+ */
+struct __attribute__((packed)) UcclPktHdr {
+    static constexpr uint16_t kMagic = 0x4e53;
+    be16_t magic;         // Magic value tagged after initialization for the flow.
+    be16_t reserved1;     // Reserved for future use.
+    enum class UcclFlags : uint8_t {
+        kData = 0b0,              // Data packet.
+        kAck = 0b10,              // ACK packet.
+        kRssProbe = 0b100,        // RSS probing packet.
+        kRssProbeRsp = 0b1000,    // RSS probing rsp packet.
+        kDataRttProbe = 0b10000,  // RTT probing packet.
+        kAckRttProbe = 0b100000,  // RTT probing packet.
+    };
+    UcclFlags net_flags;  // Network flags.
+    uint8_t reserved2;    // Reserved for future use.
+    be16_t frame_len;     // Length of the frame.
+    be64_t flow_id;       // Flow ID to denote the connection.
+    be32_t seqno;  // Sequence number to denote the packet counter in the flow.
+    be32_t ackno;  // Sequence number to denote the packet counter in the flow.
+    uint64_t timestamp1;  // Filled by sender with calibration for output queue
+    uint64_t timestamp2;  // Filled by recver eBPF
+};
+struct __attribute__((packed)) UcclSackHdr {
+    uint64_t timestamp3;  // Filled by recer with calibration for output queue
+    uint64_t timestamp4;  // Filled by sender eBPF
+    be64_t sack_bitmap[kSackBitmapSize /
+                       swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
+                                                            // SACKs received.
+    be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
+};
+static const size_t kUcclHdrLen = sizeof(UcclPktHdr);
+static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
+static_assert(kUcclHdrLen == 40, "UcclPktHdr size mismatch");
+static_assert(kUcclSackHdrLen == 146, "UcclSackHdr size mismatch");
+static_assert(kUcclHdrLen + kUcclSackHdrLen <= 256, "UcclHdr + SackHdr size mismatch");
+
+#ifdef USE_TCP
+static const size_t kNetHdrLen =
+    sizeof(ethhdr) + sizeof(iphdr) + sizeof(tcphdr);
+#else
+static const size_t kNetHdrLen =
+    sizeof(ethhdr) + sizeof(iphdr) + sizeof(udphdr);
+#endif
+
+inline UcclPktHdr::UcclFlags operator|(UcclPktHdr::UcclFlags lhs,
+                                       UcclPktHdr::UcclFlags rhs) {
+    using UcclFlagsType = std::underlying_type<UcclPktHdr::UcclFlags>::type;
+    return UcclPktHdr::UcclFlags(static_cast<UcclFlagsType>(lhs) |
+                                 static_cast<UcclFlagsType>(rhs));
+}
+
+inline UcclPktHdr::UcclFlags operator&(UcclPktHdr::UcclFlags lhs,
+                                       UcclPktHdr::UcclFlags rhs) {
+    using UcclFlagsType = std::underlying_type<UcclPktHdr::UcclFlags>::type;
+    return UcclPktHdr::UcclFlags(static_cast<UcclFlagsType>(lhs) &
+                                 static_cast<UcclFlagsType>(rhs));
+}
+
 class UcclFlow;
 class UcclRDMAEngine;
 class RDMAEndpoint;
@@ -249,6 +309,7 @@ class UcclFlow {
     std::deque<std::pair<int, int> > pending_tx_msgs_;
 
     std::set<int> ready_csn_;
+    uint32_t prev_csn_ = 0;
 
     /**
      * @brief Deserialize a chunk of data from the application buffer and append

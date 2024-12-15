@@ -56,6 +56,10 @@ static void server_worker(void)
         assert(((uint32_t *)data)[i] == 0x123456);
     }
 
+    while (!quit) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
     ep.uccl_deregmr(conn_id);
 }
 

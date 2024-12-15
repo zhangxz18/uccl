@@ -177,19 +177,91 @@ void UcclFlow::rdma_multi_send(int slot)
     }
 }
 
-void UcclFlow::complete_ctrl_cq(void){}
+void UcclFlow::complete_ctrl_cq(void) {
+    struct ibv_wc wcs[kMaxBatchCQ];
+    int nb_post_recv = 0;
+    while (1) {
+        int nb_cqe = ibv_poll_cq(rdma_ctx_->ctrl_cq_, kMaxBatchCQ, wcs);
+        if (nb_cqe <= 0) break;
+        for (int i = 0; i < nb_cqe; i++) {
+            auto wc = wcs[i];
+            auto pkt_addr = wc.wr_id;
+            if (wc.opcode == IBV_WC_SEND) {
+                // Sending ACK is done.
+            } else if (wc.opcode == IBV_WC_RECV && wc.status == IBV_WC_SUCCESS) {
+                nb_post_recv++;
+                // Receiving an ACK.
+                auto *ucclh = reinterpret_cast<UcclPktHdr *>(pkt_addr);
+                auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
+
+                auto seqno = ucclh->seqno.value();
+                auto ackno = ucclh->ackno.value();
+
+                if (swift::seqno_lt(ackno, pcb_.snd_una)) {
+                    LOG(INFO) << "Received old ACK " << ackno;
+                } else if (swift::seqno_eq(ackno, pcb_.snd_una)) {
+                    LOG(INFO) << "Received duplicate ACK " << ackno;
+                } else if (swift::seqno_gt(ackno, pcb_.snd_nxt)) {
+                    LOG(INFO) << "Received ACK for untransmitted data.";
+                } else {
+                    LOG(INFO) << "Received valid ACK " << ackno;
+                    
+                    size_t num_acked_packets = ackno - pcb_.snd_una;
+
+                    /// TODO:
+
+                    pcb_.snd_una = ackno;
+                    pcb_.duplicate_acks = 0;
+                    pcb_.snd_ooo_acks = 0;
+                    pcb_.rto_rexmits_consectutive = 0;
+                    pcb_.rto_maybe_reset();
+                }
+            }
+            rdma_ctx_->ctrl_pkt_pool_.free_buff(pkt_addr);
+        }
+    }
+
+    // Populate recv work requests for consuming control packets.
+    struct ibv_sge sge;
+    struct ibv_recv_wr wr;
+    struct ibv_recv_wr *bad_wr;
+    for (int i = 0; i < nb_post_recv; i++) {
+        uint64_t pkt_addr;
+        if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
+            LOG(ERROR) << "Failed to allocate control packet buffer";
+            return;
+        }
+        sge.addr = pkt_addr;
+        sge.lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+        sge.length = CtrlPktBuffPool::kPktSize;
+        wr.wr_id = pkt_addr;
+        wr.next = nullptr;
+        wr.sg_list = &sge;
+        wr.num_sge = 1;
+        if (ibv_post_recv(rdma_ctx_->ctrl_qp_, &wr, &bad_wr)) {
+            LOG(ERROR) << "Failed to post recv";
+            return;
+        }
+    }
+    if (nb_post_recv)
+        LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
+
+}
 
 void UcclFlow::complete_retr_cq(void){}
 
 void UcclFlow::try_update_csn(void)
 {
     while (!ready_csn_.empty() && static_cast<uint32_t>(*ready_csn_.begin()) == pcb_.rcv_nxt) {
+        auto csn = *ready_csn_.begin();
         ready_csn_.erase(ready_csn_.begin());
         
         // Data is already DMAed to the application buffer.
         // Nothing more to do.
 
         pcb_.advance_rcv_nxt();
+        LOG(INFO) << "try_update_csn:" << " rcv_nxt: " << pcb_.rcv_nxt;
+        prev_csn_ = csn;
         pcb_.sack_bitmap_shift_left_one();
     }
 }
@@ -219,6 +291,7 @@ void UcclFlow::handle_uc_cq_wc(struct ibv_wc &wc)
     LOG(INFO) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << ", " << mid;
 
     // Compare CSN with the expected CSN.
+    /// TODO: Seqno and ackno should be 20 bits.
     auto ecsn = pcb_.rcv_nxt;
 
     // It's impossible to receive a chunk with a CSN less than the expected CSN.
@@ -260,18 +333,67 @@ void UcclFlow::handle_uc_cq_wc(struct ibv_wc &wc)
     try_update_csn();
 }
 
-void UcclFlow::send_ack(void) {}
+void UcclFlow::send_ack(void) {
+    uint64_t pkt_addr;
+    if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
+        LOG(ERROR) << "Failed to allocate control packet buffer";
+        return;
+    }
+    const size_t kControlPayloadBytes = kUcclHdrLen + kUcclSackHdrLen;
+    auto *ucclh = reinterpret_cast<UcclPktHdr* >(pkt_addr);
+    ucclh->magic = be16_t(UcclPktHdr::kMagic);
+    ucclh->net_flags = UcclPktHdr::UcclFlags::kAck;
+    ucclh->frame_len = be16_t(kControlPayloadBytes);
+    ucclh->seqno = be32_t(pcb_.seqno());
+    ucclh->ackno = be32_t(pcb_.ackno());
+    ucclh->flow_id= be64_t(flow_id_);
+    ucclh->timestamp1 = 0;
+    ucclh->timestamp2 = 0;
+
+    auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
+
+    ucclsackh->timestamp3 = 0;
+    ucclsackh->timestamp4 = 0;
+
+    for (size_t i = 0; i < sizeof(UcclSackHdr::sack_bitmap) /
+                               sizeof(UcclSackHdr::sack_bitmap[0]);
+         ++i) {
+        ucclsackh->sack_bitmap[i] = be64_t(pcb_.sack_bitmap[i]);
+    }
+    ucclsackh->sack_bitmap_count = be16_t(pcb_.sack_bitmap_count);
+
+    struct ibv_send_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    struct ibv_sge sge;
+    sge.addr = pkt_addr;
+    sge.lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+    sge.length = kControlPayloadBytes;
+
+    // We use wr_id to store the packet address for future freeing.
+    wr.wr_id = pkt_addr;
+    wr.next = nullptr;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_SEND;
+    wr.send_flags = IBV_SEND_SIGNALED;
+    auto qp = rdma_ctx_->ctrl_qp_;
+    struct ibv_send_wr *bad_wr;
+    if (ibv_post_send(qp, &wr, &bad_wr)) {
+        LOG(ERROR) << "Failed to post send";
+        return;
+    }
+}
 
 void UcclFlow::complete_uc_cq(void)
 {
     auto cq = rdma_ctx_->cq_;
     struct ibv_wc wcs[kMaxBatchCQ];
-    int nr_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
-    if (nr_cqe <= 0) return;
+    int nb_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
+    if (nb_cqe <= 0) return;
 
     std::list<int> populate_idx_list;
     
-    for (int i = 0; i < nr_cqe; i++) {
+    for (int i = 0; i < nb_cqe; i++) {
         handle_uc_cq_wc(wcs[i]);
         auto qp_num = wcs[i].qp_num;
         auto qp_idx = rdma_ctx_->qpn2idx_[qp_num];
@@ -291,7 +413,7 @@ void UcclFlow::complete_uc_cq(void)
         auto qp = rdma_ctx_->qp_vec_[idx];
         struct ibv_recv_wr *bad_wr;
         DCHECK(ibv_post_recv(qp, &wr[0], &bad_wr) == 0);
-        LOG(INFO) << "Populated recv work requests for QP: " << qp->qp_num;
+        LOG(INFO) << "Posted " << rdma_ctx_->fill_cnt_[idx] << " recv requests for UC QP#" << qp->qp_num;
         rdma_ctx_->fill_cnt_[idx] = 0;
     }
 
@@ -303,8 +425,8 @@ bool UcclFlow::complete_fifo_cq(void)
     FlowRequest *req = nullptr;
     auto cq = rdma_ctx_->fifo_cq_;
     struct ibv_wc wc;
-    int nr_cqe = ibv_poll_cq(cq, 1, &wc);
-    if (nr_cqe <= 0) return false;
+    int nb_cqe = ibv_poll_cq(cq, 1, &wc);
+    if (nb_cqe <= 0) return false;
     if (wc.status != IBV_WC_SUCCESS) {
         LOG(ERROR) << "Error in FIFO CQ completion:" << wc.status;
         return false;

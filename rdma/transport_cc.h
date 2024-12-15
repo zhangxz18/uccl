@@ -155,6 +155,7 @@ struct Pcb {
     bool rto_expired() const { return rto_timer >= kRtoExpireThresInTicks; }
 
     uint32_t get_rcv_nxt() const { return rcv_nxt; }
+    void advance_rcv_nxt(uint32_t n) { rcv_nxt += n; }
     void advance_rcv_nxt() { rcv_nxt++; }
     void rto_enable() { rto_timer = 0; }
     void rto_disable() { rto_timer = kRtoDisabled; }
