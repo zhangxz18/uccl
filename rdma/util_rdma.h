@@ -25,6 +25,59 @@ class RDMAContext;
 class RDMAFactory;
 extern RDMAFactory rdma_ctl;
 
+class IMMData{
+    public:
+        // High                              Low
+        //  |  HINT  |  CSN  |  RID  |  MID  |
+        //     1bit    20bit    8bit    3bit
+        constexpr static int kHint = 31;
+        constexpr static int kCSN = 11;
+        constexpr static int kRID = 3;
+        constexpr static int kMID = 0;
+
+        IMMData(uint32_t imm_data):imm_data_(imm_data) {}
+        ~IMMData() = default;
+
+        inline uint32_t GetHint(void) {
+            return (imm_data_ >> kHint) & 0x1;
+        }
+
+        inline uint32_t GetCSN(void) {
+            return (imm_data_ >> kCSN) & 0xFFFFF;
+        }
+
+        inline uint32_t GetRID(void) {
+            return (imm_data_ >> kRID) & 0xFF;
+        }
+
+        inline uint32_t GetMID(void) {
+            return (imm_data_ >> kMID) & 0x7;
+        }
+
+        inline void SetHint(uint32_t hint) {
+            imm_data_ |= (hint & 0x1) << kHint;
+        }
+
+        inline void SetCSN(uint32_t psn) {
+            imm_data_ |= (psn & 0xFFFFF) << kCSN;
+        }
+
+        inline void SetRID(uint32_t mid) {
+            imm_data_ |= (mid & 0xFF) << kRID;
+        }
+
+        inline void SetMID(uint32_t rid) {
+            imm_data_ |= (rid & 0x7) << kMID;
+        }
+
+        inline uint32_t GetImmData(void) {
+            return imm_data_;
+        }
+
+    private:
+        uint32_t imm_data_;    
+};
+
 /// @brief Exchange format between EndPoint and Engine.
 struct RDMAExchangeFormatLocal {
     union {
@@ -69,20 +122,19 @@ struct RDMAExchangeFormatRemote {
 
 struct FifoItem {
     uint64_t addr;
-    int size;
+    uint32_t size;
     uint32_t rkey;
-    uint32_t nreqs;
-    uint32_t tag;
+    uint32_t nmsgs;
     uint64_t idx;
+    uint32_t msg_id;
     char padding[28];
 };
+static_assert(sizeof(struct FifoItem) == 64, "FifoItem size is not 64 bytes");
 
 struct RemFifo {
     // FIFO elements prepared for sending to remote peer.
     struct FifoItem elems[kMaxReq][kMaxRecv];
-    // Sizes are zero when sending FIFO elements. After FIFO elements reach the remote peer, 
-    // the sizes here are updated as a notification.
-    int sizes[kMaxReq][kMaxRecv];
+    uint32_t received_bytes[kMaxReq][kMaxRecv];
     // Tail pointer of the FIFO.
     uint64_t fifo_tail;
 };
@@ -103,7 +155,7 @@ struct FlowRequest {
     };
 
     enum type type;
-    int nreqs;
+    int nmsgs;
     PollCtx *poll_ctx;
 
     union {
@@ -111,11 +163,13 @@ struct FlowRequest {
             int size;
             void *data;
             uint32_t lkey;
-            int offset;
+            int sent_offset;
         } send;
 
         struct {
-            int *sizes;
+            uint32_t *received_bytes;
+            struct FifoItem *elems;
+            uint32_t fin_msg;
         } recv;
     };
 };
@@ -185,6 +239,9 @@ class RDMAContext {
 
         // QPs for data transfer based on Unreliable Connection (UC).
         std::vector<struct ibv_qp *> qp_vec_;
+        // QPN to index mapping.
+        std::unordered_map<uint32_t, int> qpn2idx_;
+        uint32_t fill_cnt_[kPortEntropy] = {0};
         // Local PSN for UC QPs.
         std::vector<uint32_t> local_psn_;
         // Remote PSN for UC QPs.
@@ -276,6 +333,10 @@ class RDMAContext {
             return &comm_base->reqs[id];
         }
 
+        inline void free_request(struct FlowRequest *req) {
+            req->type = FlowRequest::UNUSED;
+        }
+
         /**
          * @brief Get an unused request, if no request is available, return nullptr.
          * @param comm_base 
@@ -285,12 +346,16 @@ class RDMAContext {
             for (int i = 0; i < kMaxReq; i++) {
                 auto *req = &comm_base->reqs[i];
                 if (req->type == FlowRequest::UNUSED) {
-                    req->nreqs = 0;
+                    req->nmsgs = 0;
                     req->poll_ctx = nullptr;
                     return req;
                 }
             }
             return nullptr;
+        }
+
+        inline struct ibv_qp *select_qp(void) {
+            return qp_vec_[std::rand() % qp_vec_.size()];
         }
 
         // When sync_cnt_ equals to kTotalQP, the flow is ready.
@@ -512,7 +577,18 @@ static inline int util_rdma_get_ip_from_ib_name(const char *ib_name, std::string
     return *ip == "" ? -1 : 0;
 }
 
+static inline int util_rdma_get_mtu_from_ibv_mtu(ibv_mtu mtu)
+{
+    switch (mtu) {
+        case IBV_MTU_256: return 256;
+        case IBV_MTU_512: return 512;
+        case IBV_MTU_1024: return 1024;
+        case IBV_MTU_2048: return 2048;
+        case IBV_MTU_4096: return 4096;
+        default: return 0;
+    }
+} 
 
-} // namespace uccl
+}// namespace uccl
 
 #endif

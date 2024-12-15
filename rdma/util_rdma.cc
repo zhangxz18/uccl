@@ -181,6 +181,17 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     cq_ = ibv_create_cq(context_, kCQSize, nullptr, nullptr, 0);
     if (cq_ == nullptr)
         throw std::runtime_error("ibv_create_cq failed");
+    
+    // Configure CQ moderation.
+    struct ibv_modify_cq_attr cq_attr;
+    cq_attr.attr_mask = IBV_CQ_ATTR_MODERATE;
+    cq_attr.moderate.cq_count = kCQMODCount;
+    cq_attr.moderate.cq_period = kCQMODPeriod;
+
+    int ret = ibv_modify_cq(cq_, &cq_attr);
+    if (ret) {
+        throw std::runtime_error("ibv_modify_cq failed");
+    }
 
     // Create up to kPortEntropy UC QPs.
     for (int i = 0; i < kPortEntropy; i++) {
@@ -194,8 +205,8 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
 
         qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv;
         qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
-        qp_init_attr.cap.max_send_sge = 1;
-        qp_init_attr.cap.max_recv_sge = 1;
+        qp_init_attr.cap.max_send_sge = kMaxSge;
+        qp_init_attr.cap.max_recv_sge = kMaxSge;
         qp_init_attr.cap.max_inline_data = 0;
 
         struct ibv_qp *qp = ibv_create_qp(pd_, &qp_init_attr);
@@ -234,6 +245,17 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
             kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     comm_base->fifo = reinterpret_cast<struct RemFifo *>(fifo_mr_->addr);
+
+    // Populate recv work requests on all UC QPs for consuming immediate data.
+    struct ibv_recv_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    for (int i = 0; i < kPortEntropy; i++) {
+        auto qp = qp_vec_[i];
+        for (int i = 0; i < kMaxReq * kMaxRecv; i++) {
+            struct ibv_recv_wr *bad_wr;
+            DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
+        }
+    }
 }
 
 RDMAContext::~RDMAContext()

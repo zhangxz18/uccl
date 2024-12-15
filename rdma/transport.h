@@ -18,6 +18,7 @@
 #include <future>
 #include <list>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -148,7 +149,9 @@ class RDMAEndpoint;
  */
 class UcclFlow {
     const static uint32_t kMaxReadyMsgbufs = MAX_UNACKED_PKTS;
-
+    constexpr static int kMaxBatchCQ = 32;
+    // 256-bit SACK bitmask => we can track up to 256 packets
+    static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
    public:
     /**
      * @brief Construct a new Uccl Flow on RDMA
@@ -159,7 +162,7 @@ class UcclFlow {
      * @param rdma_ctx 
      */
     UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
-        engine_(engine), channel_(channel), flow_id_(flow_id), pcb_(), rdma_ctx_(rdma_ctx){};
+        engine_(engine), channel_(channel), flow_id_(flow_id), pcb_(), rdma_ctx_(rdma_ctx) {};
 
     ~UcclFlow() {}
 
@@ -188,9 +191,29 @@ class UcclFlow {
     /**
      * @brief Transmit a message described by the tx_work.
      * @param tx_work 
-     * @return Returns true if this tx_work needs processing one more time.
+     * @return Return true if this tx_work needs processing one more time.
      */
     bool tx_messages(Channel::Msg &tx_work);
+
+    /**
+     * @brief complete the FIFO CQ polling for this flow.
+     * @return Return true if polling is done for this flow, Engine should remove it from the polling list.
+     */
+    bool complete_fifo_cq(void);
+
+    void complete_uc_cq(void);
+
+    void handle_uc_cq_wc(struct ibv_wc &wc);
+
+    void send_ack(void);
+
+    void complete_ctrl_cq(void);
+
+    void complete_retr_cq(void);
+
+    void try_update_csn(void);
+
+    void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid, uint32_t rid);
 
     void rdma_multi_send(int slot);
 
@@ -217,17 +240,15 @@ class UcclFlow {
     void rto_retransmit();
 
     /**
-     * @brief Helper function to transmit a number of packets from the queue
+     * @brief Helper function to transmit a number of chunks from the queue
      * of pending TX data.
      */
-    void transmit_pending_packets();
+    void transmit_pending_chunks();
 
-    struct pending_tx_msg_t {
-        Channel::Msg tx_work;
-        size_t cur_offset = 0;
-    };
+    // <Slot, i>
+    std::deque<std::pair<int, int> > pending_tx_msgs_;
 
-    std::deque<pending_tx_msg_t> pending_tx_msgs_;
+    std::set<int> ready_csn_;
 
     /**
      * @brief Deserialize a chunk of data from the application buffer and append
@@ -293,6 +314,7 @@ class UcclRDMAEngine {
    public:
     // Slow timer (periodic processing) interval in microseconds.
     const size_t kSlowTimerIntervalUs = 2000;  // 2ms
+
     UcclRDMAEngine() = delete;
     UcclRDMAEngine(UcclRDMAEngine const &) = delete;
 
@@ -324,17 +346,19 @@ class UcclRDMAEngine {
     void handle_async_send(void);
 
     /**
-     * @brief Handling all completion events for all flows, including:
-     * 1. Occasinal completion events from FIFO CQs.
-     * 2. Frequent completion events from UC/Ctrl/Retr QPs.
-     */
-    void handle_completion(void);
-
-    /**
-     * @brief Somtimes we can't send a message because the receiver is not ready.
+     * @brief Somtimes we can't send a message because the receiver is not ready. 
      * We store the pending tx work and try to send it later.
      */
     void handle_pending_tx_work(void);
+
+    /**
+     * @brief Handling all completion events for all flows, including:
+     * High-priority completion events from Ctrl QPs.
+     * Datapath completion events from UC QPs.
+     * Occasinal completion events from FIFO CQs.
+     * Retransmission completion events from Retr QPs.
+     */
+    void handle_completion(void);
 
     /**
      * @brief Add a flow to the list for polling FIFO CQs in future.

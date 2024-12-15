@@ -1,7 +1,9 @@
 #include "transport.h"
 #include "transport_config.h"
 #include "util_rdma.h"
+#include <cstdlib>
 #include <infiniband/verbs.h>
+#include <utility>
 
 namespace uccl {
 
@@ -26,18 +28,21 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
 
     auto recv_comm_ = &rdma_ctx_->recv_comm_;
 
-    // Clear sizes.
-    req->recv.sizes = rem_fifo->sizes[slot];
-    for (int i = 0; i < n; i++) req->recv.sizes[i] = 0;
+    // Reset received bytes and fin requests.
+    req->recv.fin_msg = 0;
+    req->recv.received_bytes = rem_fifo->received_bytes[slot];
+    memset(req->recv.received_bytes, 0, sizeof(uint64_t) * kMaxRecv);
+    req->recv.elems = elems;
     
     for (int i = 0; i < n; i++) {
         elems[i].addr = reinterpret_cast<uint64_t>(data[i]);
         elems[i].rkey = rdma_ctx_->data_mr_->rkey;
-        elems[i].nreqs = n;
+        elems[i].nmsgs = n;
         // For sender to check if the receiver is ready.
         elems[i].idx = rem_fifo->fifo_tail + 1;
         elems[i].size = size[i];
-        elems[i].tag = 0;
+        // For sender to encode the message id in the immediate data.
+        elems[i].msg_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
 
         LOG(INFO) << "Post Recv: addr: " << elems[i].addr << ", rkey: " << elems[i].rkey << ", size: " << elems[i].size;
     }
@@ -61,7 +66,6 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
     if (slot == 0) {
         wr.send_flags = IBV_SEND_SIGNALED;
         wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
-        // Polling the CQ.
         if (!rdma_ctx_->fifo_cq_polling_) {
             engine_->add_fifo_cq_polling(this);
             rdma_ctx_->fifo_cq_polling_ = true;
@@ -92,105 +96,233 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
         LOG(ERROR) << "Number of outstanding requests exceeds the limit.";
         return;
     }
-    
-    req->type = FlowRequest::RECV;
-    req->nreqs = n;
-    req->poll_ctx = poll_ctx;
 
-    // Post recvs to consume immediate data.
-    struct ibv_recv_wr wr;
-    memset(&wr, 0, sizeof(wr));
-    wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
-    wr.sg_list = nullptr;
-    wr.num_sge = 0;
-    struct ibv_recv_wr *bad_wr;
-    auto qp = rdma_ctx_->qp_vec_[0];
-    
-    if (ibv_post_recv(qp, &wr, &bad_wr)) {
-        LOG(ERROR) << "Failed to post recv";
-    }
+    req->type = FlowRequest::RECV;
+    req->nmsgs = n;
+    req->poll_ctx = poll_ctx;
 
     // Push buffer information to FIFO queue and notify the remote peer.
     post_fifo(req, data, size, n);
+}
+
+void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid, uint32_t rid)
+{
+    auto *sent_offset = &req->send.sent_offset;
+    auto *size = &req->send.size;
+    auto data = req->send.data;
+    auto lkey = req->send.lkey;
+    auto rkey = slot.rkey;
+    auto remote_addr = slot.addr;
+    struct ibv_sge sge[kMaxSge];
+    struct ibv_send_wr wr;
+
+    /// TODO: Congestion control
+    while (*size) {
+        int sent_cnt = 0;
+
+        int i;
+        for (i = 0; i < kMaxSge; i++) {
+            if (*size == 0) break;
+            sge[i].addr = (uintptr_t)data;
+            sge[i].lkey = lkey;
+            sge[i].length = std::min(*size, util_rdma_get_mtu_from_ibv_mtu(rdma_ctx_->mtu_));
+            *size -= sge[i].length;
+            sent_cnt += sge[i].length; 
+            data = static_cast<char*>(data) + sge[i].length;
+        }
+
+        memset(&wr, 0, sizeof(wr));
+        wr.wr.rdma.remote_addr = remote_addr + *sent_offset;
+        wr.wr.rdma.rkey = rkey;
+        wr.sg_list = sge;
+        wr.num_sge = i;
+        wr.next = nullptr;
+
+        wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        IMMData imm_data(0);
+
+        imm_data.SetHint(0);
+        imm_data.SetCSN(pcb_.get_snd_nxt());
+        imm_data.SetMID(mid);
+        imm_data.SetRID(rid);
+
+        LOG(INFO) << "Sending: csn: " << pcb_.seqno() - 1 << ", mid: " << mid << ", rid: " << rid;
+
+        wr.imm_data = htonl(imm_data.GetImmData());
+
+        auto qp = rdma_ctx_->select_qp();
+        struct ibv_send_wr *bad_wr;
+        if (ibv_post_send(qp, &wr, &bad_wr)) {
+            LOG(ERROR) << "Failed to post send";
+            return;
+        }
+
+        LOG(INFO) << "Sent " << sent_cnt << " bytes";
+        
+        *sent_offset += sent_cnt;
+    }
+
 }
 
 void UcclFlow::rdma_multi_send(int slot)
 {
     auto send_comm_ = &rdma_ctx_->send_comm_;
     auto reqs = send_comm_->fifo_reqs[slot];
-    
     auto rem_fifo = send_comm_->base.fifo;
-
     auto slots = rem_fifo->elems[slot];
+    auto nmsgs = slots[0].nmsgs;
 
-    int nreqs = slots[0].nreqs;
-
-    uint64_t wr_id = 0ULL;
-    for (int i = 0; i < nreqs; i++) {
-        struct ibv_send_wr *wr = send_comm_->wrs + i;
-        memset(wr, 0, sizeof(struct ibv_send_wr));
-
-        struct ibv_sge *sge = send_comm_->sges + i;
-        sge->addr = (uintptr_t)reqs[i]->send.data;
-        wr->opcode = IBV_WR_RDMA_WRITE;
-        wr->send_flags = 0;
-        wr->wr.rdma.remote_addr = slots[i].addr;
-        wr->next = wr + 1;
-        wr_id += (reqs[i] - send_comm_->base.reqs) << (i * 8);
+    for (int i = 0; i < nmsgs; i++) {
+        rdma_single_send(reqs[i], slots[i], slot, i);
     }
+}
 
-    uint32_t imm_data = 0;
-    if (nreqs == 1) {
-        imm_data = reqs[0]->send.size;
-    } else {
+void UcclFlow::complete_ctrl_cq(void){}
 
-    }
+void UcclFlow::complete_retr_cq(void){}
 
-    struct ibv_send_wr *last_wr = send_comm_->wrs + nreqs - 1;
-
-    last_wr->wr_id = wr_id;
-    last_wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-    last_wr->imm_data = imm_data;
-    last_wr->next = nullptr;
-    last_wr->send_flags = IBV_SEND_SIGNALED;
-
-    /// TODO:
-    const int align = 128;
-    auto qp = rdma_ctx_->qp_vec_[0];
-    for (int i = 0; i < nreqs; i++) {
+void UcclFlow::try_update_csn(void)
+{
+    while (!ready_csn_.empty() && static_cast<uint32_t>(*ready_csn_.begin()) == pcb_.rcv_nxt) {
+        ready_csn_.erase(ready_csn_.begin());
         
-        send_comm_->wrs[i].wr.rdma.rkey = slots[i].rkey;
+        // Data is already DMAed to the application buffer.
+        // Nothing more to do.
 
-        LOG(INFO) << "Post Send Remote addr: " << slots[i].addr << ", rkey: " << slots[i].rkey << ", Local addr: " << (uint64_t)reqs[i]->send.data << ", lkey: " << reqs[i]->send.lkey;
+        pcb_.advance_rcv_nxt();
+        pcb_.sack_bitmap_shift_left_one();
+    }
+}
 
-        int chunk_size = DIVUP(reqs[i]->send.size, align) * align;
-        int length = std::min(reqs[i]->send.size - reqs[i]->send.offset, chunk_size);
+void UcclFlow::handle_uc_cq_wc(struct ibv_wc &wc)
+{
+    if (unlikely(wc.status != IBV_WC_SUCCESS)) {
+        LOG(ERROR) << "Error in UC CQ completion:" << wc.status;
+        return;
+    }
 
-        if (length <= 0) {
-            send_comm_->wrs[i].sg_list = nullptr;
-            send_comm_->wrs[i].num_sge = 0;
-        } else {
-            send_comm_->sges[i].lkey = reqs[i]->send.lkey;
-            send_comm_->sges[i].length = length;
-            send_comm_->wrs[i].sg_list = send_comm_->sges + i;
-            send_comm_->wrs[i].num_sge = 1;
+    if (wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM)
+        return;
+    
+    DCHECK(rdma_ctx_->is_send_ == false);
+    
+    auto recv_comm = &rdma_ctx_->recv_comm_;
+    auto byte_len = wc.byte_len;
+    auto imm_data = IMMData(ntohl(wc.imm_data));
+    auto qp_num = wc.qp_num;
+
+    auto hint = imm_data.GetHint();
+    auto csn = imm_data.GetCSN();
+    auto rid = imm_data.GetRID();
+    auto mid = imm_data.GetMID();
+
+    LOG(INFO) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << ", " << mid;
+
+    // Compare CSN with the expected CSN.
+    auto ecsn = pcb_.rcv_nxt;
+
+    // It's impossible to receive a chunk with a CSN less than the expected CSN.
+    // For CSN that lags behind, RNIC has already handled it.
+    DCHECK(!swift::seqno_lt(csn, ecsn));
+
+    auto distance = csn - ecsn;
+
+    if (distance > kReassemblyMaxSeqnoDistance) {
+        LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn;
+        return;
+    }
+
+    ready_csn_.insert(csn);
+
+    pcb_.sack_bitmap_bit_set(distance);
+
+    // Locate request by rid
+    auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
+    auto msg_size = req->recv.elems[mid].size;
+    uint32_t *received_bytes = req->recv.received_bytes;
+
+    received_bytes[mid] += byte_len;
+    if (msg_size == received_bytes[mid]) req->recv.fin_msg++;
+    if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
+        LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
+        auto poll_ctx = req->poll_ctx;
+        // Wakeup app thread waiting one endpoint.
+        {
+            std::lock_guard<std::mutex> lock(poll_ctx->mu);
+            poll_ctx->done = true;
+            poll_ctx->cv.notify_one();
         }
+        // Free the request.
+        rdma_ctx_->free_request(req);
     }
 
-    if (nreqs > 1) {
+    try_update_csn();
+}
+
+void UcclFlow::send_ack(void) {}
+
+void UcclFlow::complete_uc_cq(void)
+{
+    auto cq = rdma_ctx_->cq_;
+    struct ibv_wc wcs[kMaxBatchCQ];
+    int nr_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
+    if (nr_cqe <= 0) return;
+
+    std::list<int> populate_idx_list;
+    
+    for (int i = 0; i < nr_cqe; i++) {
+        handle_uc_cq_wc(wcs[i]);
+        auto qp_num = wcs[i].qp_num;
+        auto qp_idx = rdma_ctx_->qpn2idx_[qp_num];
+        if (rdma_ctx_->fill_cnt_[qp_idx]++ == 0)
+            populate_idx_list.push_back(qp_idx);
     }
 
-    struct ibv_send_wr *bad_wr;
-    if (ibv_post_send(qp, send_comm_->wrs, &bad_wr)) {
-        LOG(ERROR) << "Failed to post send";
+    // Populate recv work requests for consuming immediate data.
+    struct ibv_recv_wr wr[kMaxBatchCQ];
+    for (auto idx: populate_idx_list) {
+        for (int i = 0; i < rdma_ctx_->fill_cnt_[idx]; i++) {
+            wr[i].wr_id = 0;
+            wr[i].num_sge = 0;
+            wr[i].sg_list = nullptr;
+            wr[i].next = (i == rdma_ctx_->fill_cnt_[idx] - 1) ? nullptr : &wr[i + 1];
+        }
+        auto qp = rdma_ctx_->qp_vec_[idx];
+        struct ibv_recv_wr *bad_wr;
+        DCHECK(ibv_post_recv(qp, &wr[0], &bad_wr) == 0);
+        LOG(INFO) << "Populated recv work requests for QP: " << qp->qp_num;
+        rdma_ctx_->fill_cnt_[idx] = 0;
     }
 
-    for (int i = 0; i < nreqs; i++) {
-        int chunksize = DIVUP(reqs[i]->send.size, align) * align;
-        reqs[i]->send.offset += chunksize;
-        send_comm_->sges[i].addr += chunksize;
-        send_comm_->wrs[i].wr.rdma.remote_addr += chunksize;
+    send_ack();
+}
+
+bool UcclFlow::complete_fifo_cq(void)
+{
+    FlowRequest *req = nullptr;
+    auto cq = rdma_ctx_->fifo_cq_;
+    struct ibv_wc wc;
+    int nr_cqe = ibv_poll_cq(cq, 1, &wc);
+    if (nr_cqe <= 0) return false;
+    if (wc.status != IBV_WC_SUCCESS) {
+        LOG(ERROR) << "Error in FIFO CQ completion:" << wc.status;
+        return false;
     }
+
+    req = rdma_ctx_->get_request_by_id(wc.wr_id & 0xff, &rdma_ctx_->recv_comm_.base);
+    if (req == nullptr) {
+        LOG(ERROR) << "Request not found";
+        return false;
+    }
+
+    if (req->type != FlowRequest::RECV) {
+        LOG(ERROR) << "Unexpected request type";
+        return false;
+    }
+    
+    rdma_ctx_->fifo_cq_polling_ = false;
+    return true;
 }
 
 bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
@@ -214,14 +346,14 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     }
     
     // Wait until all slots are ready
-    auto nreqs = slots[0].nreqs;
-    for (int i = 1; i < nreqs; i++) while(slots[i].idx != idx) {}
+    auto nmsgs = slots[0].nmsgs;
+    for (int i = 1; i < nmsgs; i++) while(slots[i].idx != idx) {}
 
     LOG(INFO) << "Receiver is ready to receive";
 
     __sync_synchronize();
 
-    for (int i = 0; i < nreqs; i++) {
+    for (int i = 0; i < nmsgs; i++) {
         if (reqs[i] != nullptr) continue;
         if (slots[i].size < 0 || slots[i].addr == 0 || slots[i].rkey == 0) {
             LOG(ERROR) << "Receiver posted incorrect receive info";
@@ -237,21 +369,18 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
         }
 
         req->type = FlowRequest::SEND;
-        req->nreqs = nreqs;
+        req->nmsgs = nmsgs;
         req->poll_ctx = poll_ctx;
         req->send.size = size;
+        req->send.sent_offset = 0;
         req->send.data = data;
-        req->send.offset = 0;
-
-        /// TODO:
-        auto qp = rdma_ctx_->qp_vec_[0];
         req->send.lkey = rdma_ctx_->data_mr_->lkey;
 
         // Track this request.
         reqs[i] = req;
 
         // If this is a multi-recv, send only when all requests have matched.
-        for (int i = 0; i < nreqs; i++) {
+        for (int i = 0; i < nmsgs; i++) {
             if (reqs[i] == nullptr) return false;
         }
 
@@ -298,10 +427,11 @@ void UcclFlow::rto_retransmit() {
 }
 
 /**
- * @brief Helper function to transmit a number of packets from the queue
+ * @brief Helper function to transmit a number of chunks from the queue
  * of pending TX data.
  */
-void UcclFlow::transmit_pending_packets() {
+void UcclFlow::transmit_pending_chunks() {
+
 }
 
 void UcclFlow::deserialize_and_append_to_txtracking() {
@@ -400,91 +530,25 @@ void UcclRDMAEngine::handle_pending_tx_work(void)
 
 void UcclRDMAEngine::handle_completion(void) 
 {
-    // Polling infrequent FIFO CQ events.
-    for (auto it = fifo_cq_list_.begin(); it != fifo_cq_list_.end();) {
-        FlowRequest *req = nullptr;
-        auto rdma_ctx = (*it)->rdma_ctx_;
-        auto cq = rdma_ctx->fifo_cq_;
-        struct ibv_wc wc;
-        int nr_cqe = ibv_poll_cq(cq, 1, &wc);
-        if (nr_cqe <= 0) goto next_flow;
-        if (wc.status != IBV_WC_SUCCESS) {
-            LOG(ERROR) << "Error in FIFO CQ completion:" << wc.status;
-            goto next_flow;
-        }
-
-        req = rdma_ctx->get_request_by_id(wc.wr_id & 0xff, &rdma_ctx->recv_comm_.base);
-        if (req == nullptr) {
-            LOG(ERROR) << "Request not found";
-            goto next_flow;
-        }
-
-        if (req->type != FlowRequest::RECV) {
-            LOG(ERROR) << "Unexpected request type";
-            goto next_flow;
-        }
-        
-        rdma_ctx->fifo_cq_polling_ = false;
-        it = fifo_cq_list_.erase(it);
-        
-        continue;
-
-        next_flow:
-            ++it;
+    // First, poll the CQ for Ctrl QPs.
+    for (auto flow: active_flows_map_) {
+        flow.second->complete_ctrl_cq();
     }
 
-    // Polling the CQ for UC QPs.
+    // Second, poll FIFO CQ.
+    for (auto it = fifo_cq_list_.begin(); it != fifo_cq_list_.end();) {
+        auto flow = *it;
+        if (flow->complete_fifo_cq()) {
+            it = fifo_cq_list_.erase(it);
+        } else {
+            it++;
+        }
+    }
+    
+    // Third, poll the CQ for UC QPs and Retr QPs.
     for (auto flow: active_flows_map_) {
-        auto rdma_ctx = flow.second->rdma_ctx_;
-        auto send_comm = &rdma_ctx->send_comm_;
-        auto cq = rdma_ctx->cq_;
-        struct ibv_wc wc;
-        int nr_cqe = ibv_poll_cq(cq, 1, &wc);
-        if (nr_cqe <= 0) continue;
-        if (wc.status != IBV_WC_SUCCESS) {
-            LOG(ERROR) << "Error in UC CQ completion:" << wc.status;
-            continue;
-        }
-
-        auto req = rdma_ctx->get_request_by_id(wc.wr_id & 0xff, &rdma_ctx->send_comm_.base);
-        if (req == nullptr) {
-            LOG(ERROR) << "Request not found";
-            continue;
-        }
-
-        if (req->type != FlowRequest::SEND && req->type != FlowRequest::RECV) {
-            LOG(ERROR) << "Unexpected request type";
-            continue;
-        }
-
-        if (req->type == FlowRequest::RECV && wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-            req->recv.sizes[0] = wc.imm_data;
-            LOG(INFO) << "IMM data: " << wc.imm_data;
-            // Wakeup app thread waiting on this request.
-            {
-                std::lock_guard<std::mutex> lock(req->poll_ctx->mu);
-                req->poll_ctx->done = true;
-                req->poll_ctx->cv.notify_one();
-            }
-            continue;
-        } else if (req->type == FlowRequest::RECV && wc.opcode != IBV_WC_RECV_RDMA_WITH_IMM) {
-            LOG(ERROR) << "Unexpected opcode for RECV request";
-            continue;
-        }
-
-
-        for (int i = 0; i < req->nreqs; i++) {
-            auto send_req = send_comm->base.reqs + ((wc.wr_id >> (i * 8)) & 0xff);
-
-            LOG(INFO) << "Send request completed";
-
-            // Wakeup app thread waiting on this request.
-            {
-                std::lock_guard<std::mutex> lock(send_req->poll_ctx->mu);
-                send_req->poll_ctx->done = true;
-                send_req->poll_ctx->cv.notify_one();
-            }
-        }
+        flow.second->complete_uc_cq();
+        flow.second->complete_retr_cq();
     }
 
 }
@@ -537,8 +601,9 @@ void UcclRDMAEngine::run() {
         handle_async_recv();
 
         handle_async_send();
-
+        
         handle_completion();
+    
     }
     std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
 }
@@ -747,6 +812,8 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
         ctrl_work_rsp[i].meta.ToEndPoint.local_psn = rdma_ctx->local_psn_[i];
         ctrl_work_rsp[i].meta.ToEndPoint.local_qpn = qp->qp_num;
         ctrl_work_rsp[i].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
+
+        rdma_ctx->qpn2idx_.insert({qp->qp_num, i});
     }
 
     ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_psn = rdma_ctx->ctrl_local_psn_;
