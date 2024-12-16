@@ -327,4 +327,25 @@ RDMAContext::~RDMAContext()
     LOG(INFO) << "RDMAContext destroyed";
 }
 
+void TXTracking::ack_chunks(uint32_t num_acked_chunks)
+{
+    DCHECK(num_acked_chunks <= unacked_chunks_.size());
+    
+    while (num_acked_chunks) {
+        auto &chunk = unacked_chunks_.front();
+        if (chunk.last_chunk) {
+            auto poll_ctx = chunk.req->poll_ctx;
+            // Wakeup app thread waiting one endpoint
+            {
+                std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                poll_ctx->done = true;
+                poll_ctx->cv.notify_one();
+            }
+            LOG(INFO) << "Message complete";
+        }
+        unacked_chunks_.erase(unacked_chunks_.begin());
+        num_acked_chunks--;
+    }
+}
+
 } // namespace uccl

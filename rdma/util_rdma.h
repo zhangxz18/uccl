@@ -122,12 +122,12 @@ class IMMData{
             imm_data_ |= (psn & 0xFFFFF) << kCSN;
         }
 
-        inline void SetRID(uint32_t mid) {
-            imm_data_ |= (mid & 0xFF) << kRID;
+        inline void SetRID(uint32_t rid) {
+            imm_data_ |= (rid & 0xFF) << kRID;
         }
 
-        inline void SetMID(uint32_t rid) {
-            imm_data_ |= (rid & 0x7) << kMID;
+        inline void SetMID(uint32_t mid) {
+            imm_data_ |= (mid & 0x7) << kMID;
         }
 
         inline uint32_t GetImmData(void) {
@@ -186,7 +186,7 @@ struct FifoItem {
     uint32_t rkey;
     uint32_t nmsgs;
     uint64_t idx;
-    uint32_t msg_id;
+    uint32_t rid;
     char padding[28];
 };
 static_assert(sizeof(struct FifoItem) == 64, "FifoItem size is not 64 bytes");
@@ -276,12 +276,36 @@ struct RecvComm {
     struct NetCommBase base;
 };
 
+class TXTracking {
+    public:
+        struct ChunkTrack {
+            struct FlowRequest *req;
+            uint32_t csn;
+            void *chunk_addr;
+            uint32_t chunk_size;
+            bool last_chunk;
+        };
+
+        TXTracking() = default;
+        ~TXTracking() = default;
+
+        void ack_chunks(uint32_t num_acked_chunks);
+
+        inline void track_chunk(struct FlowRequest *req, uint32_t csn, void *chunk_addr, uint32_t chunk_size, bool last_chunk) {
+            unacked_chunks_.push_back({req, csn, chunk_addr, chunk_size, last_chunk});
+        }
+
+    private:
+        std::vector<TXTracking::ChunkTrack> unacked_chunks_;
+};
+
 struct UCQPWrapper {
     struct ibv_qp *qp;
     uint32_t local_psn;
     uint32_t remote_psn;
     uint32_t fill_cnt;
     swift::Pcb pcb;
+    TXTracking txtracking;
 };
 
 /**
@@ -371,9 +395,6 @@ class RDMAContext {
         // Buffer pool for control packets.
         CtrlPktBuffPool ctrl_pkt_pool_;
 
-        // Swift CC protocol control block.
-        swift::Pcb pcb_;
-
         /**
          * @brief Figure out the request id.
          * @param req 
@@ -396,6 +417,11 @@ class RDMAContext {
 
         inline void free_request(struct FlowRequest *req) {
             req->type = FlowRequest::UNUSED;
+            if (!is_send_) {
+                req->recv.received_bytes = 0;
+                req->recv.fin_msg = 0;
+                req->recv.elems = nullptr;
+            }
         }
 
         /**
@@ -561,7 +587,7 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
     qp_init_attr.cap.max_recv_wr = max_recv_wr;
     qp_init_attr.cap.max_send_sge = 1;
     qp_init_attr.cap.max_recv_sge = 1;
-    qp_init_attr.cap.max_inline_data = 0;
+    qp_init_attr.cap.max_inline_data = kMaxRecv * sizeof(struct FifoItem);
 
     // Creating QP
     *qp = ibv_create_qp(pd, &qp_init_attr);

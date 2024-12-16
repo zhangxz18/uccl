@@ -228,7 +228,11 @@ class UcclFlow {
 
     friend class UcclRDMAEngine;
 
-    inline void shutdown() { rdma_ctx_->pcb_.rto_disable(); }
+    inline void shutdown() { 
+        for (int i = 0; i < kPortEntropy; i++) {
+            rdma_ctx_->uc_qps_[i].pcb.rto_disable(); 
+        }
+    }
 
     /**
      * @brief Push the received packet onto the ingress queue of the flow.
@@ -270,7 +274,7 @@ class UcclFlow {
 
     void try_update_csn(struct UCQPWrapper *qpw);
 
-    void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid, uint32_t rid);
+    void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid);
 
     void rdma_multi_send(int slot);
 

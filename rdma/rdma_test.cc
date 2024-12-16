@@ -40,21 +40,22 @@ static void server_worker(void)
 
     ep.uccl_regmr(conn_id, data, 65536, 0);
 
-    size_t len = 65536;
-    void *recv_data = data;
+    for (int i = 0; i < 100; i++) {
+        size_t len = 65536;
+        void *recv_data = data;
 
-    auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
+        auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
 
-    while (!quit) {
-        if (ep.uccl_poll(poll_ctx)) {
-            break;
+        ep.uccl_poll(poll_ctx);
+
+        // verify data
+        for (int i = 0; i < 65536 / 4; i++) {
+            assert(((uint32_t *)data)[i] == 0x123456);
         }
+
+        LOG(INFO) << "Iteration " << i << " done";
     }
 
-    // verify data
-    for (int i = 0; i < 65536 / 4; i++) {
-        assert(((uint32_t *)data)[i] == 0x123456);
-    }
 
     while (!quit) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -81,10 +82,14 @@ static void client_worker(void)
         ((uint32_t *)data)[i] = 0x123456;
     }
 
-    void *send_data = data;
-    auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 65536);
+    for (int i = 0; i < 100; i++) {
+        void *send_data = data;
+        auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 65536);
 
-    ep.uccl_poll(poll_ctx);
+        ep.uccl_poll(poll_ctx);
+
+        LOG(INFO) << "Iteration " << i << " done";
+    }
 
     ep.uccl_deregmr(conn_id);
 }
