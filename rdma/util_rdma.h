@@ -16,6 +16,7 @@
 #include <infiniband/verbs.h>
 
 #include "transport_config.h"
+#include "transport_cc.h"
 
 #include "util.h"
 
@@ -275,6 +276,14 @@ struct RecvComm {
     struct NetCommBase base;
 };
 
+struct UCQPWrapper {
+    struct ibv_qp *qp;
+    uint32_t local_psn;
+    uint32_t remote_psn;
+    uint32_t fill_cnt;
+    swift::Pcb pcb;
+};
+
 /**
  * @brief  RDMA context for each UcclFlow, which is produced by RDMAFactory. It contains:
  *   - Multiple Unreliable Connection (UC) QPs and a shared CQ.
@@ -297,14 +306,9 @@ class RDMAContext {
         struct ibv_mr *data_mr_ = nullptr;
 
         // QPs for data transfer based on Unreliable Connection (UC).
-        std::vector<struct ibv_qp *> qp_vec_;
-        // QPN to index mapping.
+        struct UCQPWrapper uc_qps_[kPortEntropy];
+        // UC QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;
-        uint32_t fill_cnt_[kPortEntropy] = {0};
-        // Local PSN for UC QPs.
-        std::vector<uint32_t> local_psn_;
-        // Remote PSN for UC QPs.
-        std::vector<uint32_t> remote_psn_;
         // Shared CQ for all UC QPs.
         struct ibv_cq *cq_;
 
@@ -375,6 +379,9 @@ class RDMAContext {
         // Buffer pool for control packets.
         CtrlPktBuffPool ctrl_pkt_pool_;
 
+        // Swift CC protocol control block.
+        swift::Pcb pcb_;
+
         /**
          * @brief Figure out the request id.
          * @param req 
@@ -416,8 +423,8 @@ class RDMAContext {
             return nullptr;
         }
 
-        inline struct ibv_qp *select_qp(void) {
-            return qp_vec_[std::rand() % qp_vec_.size()];
+        inline struct UCQPWrapper *select_qpw(void) {
+            return &uc_qps_[std::rand() % kPortEntropy];
         }
 
         // When sync_cnt_ equals to kTotalQP, the flow is ready.

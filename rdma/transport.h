@@ -222,14 +222,13 @@ class UcclFlow {
      * @param rdma_ctx 
      */
     UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
-        engine_(engine), channel_(channel), flow_id_(flow_id), pcb_(), rdma_ctx_(rdma_ctx) {};
+        engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {};
 
     ~UcclFlow() {}
 
     friend class UcclRDMAEngine;
 
-    std::string to_string() const;
-    inline void shutdown() { pcb_.rto_disable(); }
+    inline void shutdown() { rdma_ctx_->pcb_.rto_disable(); }
 
     /**
      * @brief Push the received packet onto the ingress queue of the flow.
@@ -265,13 +264,13 @@ class UcclFlow {
 
     void handle_uc_cq_wc(struct ibv_wc &wc);
 
-    void send_ack(void);
+    void send_ack(struct UCQPWrapper *qpw, int qpidx);
 
     void complete_ctrl_cq(void);
 
     void complete_retr_cq(void);
 
-    void try_update_csn(void);
+    void try_update_csn(struct UCQPWrapper *qpw);
 
     void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid, uint32_t rid);
 
@@ -357,8 +356,6 @@ class UcclFlow {
     // Index in dst_ports_ for the next port to use.
     uint32_t next_port_idx_ = 0;
 
-    // Swift CC protocol control block.
-    swift::Pcb pcb_;
     // Measure the distribution of probed RTT.
     Latency rtt_stats_;
     uint64_t rtt_probe_count_ = 0;

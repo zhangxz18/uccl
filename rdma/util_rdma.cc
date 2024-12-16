@@ -145,7 +145,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
 }
 
 RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), sync_cnt_(0),ctrl_pkt_pool_()
+    dev_(dev), sync_cnt_(0), ctrl_pkt_pool_()
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -167,10 +167,6 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     comm_base->remote_ctx.remote_gid = meta.ToEngine.remote_gid;
     
     mtu_ = meta.ToEngine.mtu;
-
-    qp_vec_.resize(kPortEntropy);
-    local_psn_.resize(kPortEntropy);
-    remote_psn_.resize(kPortEntropy);
 
     // Crate PD.
     pd_ = ibv_alloc_pd(context_);
@@ -213,7 +209,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         if (qp == nullptr)
             throw std::runtime_error("ibv_create_qp failed");
         
-        local_psn_[i] = 0xDEADBEEF + i;
+        uc_qps_[i].local_psn = 0xDEADBEEF + i;
         
         // Modify QP state to INIT.
         struct ibv_qp_attr qpAttr;
@@ -226,7 +222,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
             throw std::runtime_error("ibv_modify_qp failed");
         }
 
-        qp_vec_[i] = qp;
+        uc_qps_[i].qp = qp;
     }
 
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
@@ -250,7 +246,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     struct ibv_recv_wr wr;
     memset(&wr, 0, sizeof(wr));
     for (int i = 0; i < kPortEntropy; i++) {
-        auto qp = qp_vec_[i];
+        auto qp = uc_qps_[i].qp;
         for (int i = 0; i < kMaxReq * kMaxRecv; i++) {
             struct ibv_recv_wr *bad_wr;
             DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
@@ -317,8 +313,8 @@ RDMAContext::~RDMAContext()
         ibv_destroy_qp(fifo_qp_);
     }
 
-    for (auto qp : qp_vec_) {
-        ibv_destroy_qp(qp);
+    for (int i = 0; i < kPortEntropy; i++) {
+        ibv_destroy_qp(uc_qps_[i].qp);
     }
 
     if (pd_ != nullptr) {
