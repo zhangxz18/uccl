@@ -245,8 +245,6 @@ void UcclFlow::complete_ctrl_cq(void) {
 
 }
 
-void UcclFlow::complete_retr_cq(void){}
-
 void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
 {
     while (!ready_csn_.empty() && static_cast<uint32_t>(*ready_csn_.begin()) == qpw->pcb.rcv_nxt) {
@@ -650,10 +648,9 @@ void UcclRDMAEngine::handle_completion(void)
         }
     }
     
-    // Third, poll the CQ for UC QPs and Retr QPs.
+    // Third, poll the CQ for UC QPs.
     for (auto flow: active_flows_map_) {
         flow.second->complete_uc_cq();
-        flow.second->complete_retr_cq();
     }
 
 }
@@ -847,7 +844,7 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         // UC QPs.
         auto qp = rdma_ctx->uc_qps_[rdma_ctx->sync_cnt_].qp;
         rdma_ctx->uc_qps_[rdma_ctx->sync_cnt_].remote_psn = meta.ToEngine.remote_psn;
-        ret = modify_qp_rtr(qp, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, false);
+        ret = modify_qp_rtr(qp, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn);
         DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
         ret = modify_qp_rts(qp, rdma_ctx, rdma_ctx->uc_qps_[rdma_ctx->sync_cnt_].local_psn, false);
         DCHECK(ret == 0) << "Failed to modify UC QP to RTS";
@@ -855,23 +852,15 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
     } else if (rdma_ctx->sync_cnt_ == kPortEntropy) {
         // Ctrl QP.
         rdma_ctx->ctrl_remote_psn_ = meta.ToEngine.remote_psn;
-        ret = modify_qp_rtr(rdma_ctx->ctrl_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, false);
+        ret = modify_qp_rtr(rdma_ctx->ctrl_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn);
         DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
         ret = modify_qp_rts(rdma_ctx->ctrl_qp_, rdma_ctx, rdma_ctx->ctrl_local_psn_, false);
         DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTS";
         rdma_ctx->sync_cnt_++;
     } else if (rdma_ctx->sync_cnt_ == kPortEntropy + 1) {
-        // Retr QP.
-        rdma_ctx->retr_remote_psn_ = meta.ToEngine.remote_psn;
-        ret = modify_qp_rtr(rdma_ctx->retr_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, true);
-        DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
-        ret = modify_qp_rts(rdma_ctx->retr_qp_, rdma_ctx, rdma_ctx->retr_local_psn_, true);
-        DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
-        rdma_ctx->sync_cnt_++;
-    } else if (rdma_ctx->sync_cnt_ == kPortEntropy + 2) {
-        // Fifo Qp.
+        // Fifo QP.
         rdma_ctx->fifo_remote_psn_ = meta.ToEngine.remote_psn;
-        ret = modify_qp_rtr(rdma_ctx->fifo_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn, true);
+        ret = modify_qp_rtr(rdma_ctx->fifo_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn);
         DCHECK(ret == 0) << "Failed to modify Fifo QP to RTR";
         ret = modify_qp_rts(rdma_ctx->fifo_qp_, rdma_ctx, rdma_ctx->fifo_local_psn_, true);
         DCHECK(ret == 0) << "Failed to modify Fifo QP to RTS";
@@ -923,18 +912,15 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
 
     ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_psn = rdma_ctx->ctrl_local_psn_;
     ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.local_qpn = rdma_ctx->ctrl_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy].meta.ToEndPoint.fifo = false;
     ctrl_work_rsp[kPortEntropy].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
-    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_psn = rdma_ctx->retr_local_psn_;
-    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_qpn = rdma_ctx->retr_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_psn = rdma_ctx->fifo_local_psn_;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.local_qpn = rdma_ctx->fifo_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.fifo = true;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.fifo_key = rdma_ctx->fifo_mr_->rkey;
+    ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.fifo_addr = reinterpret_cast<uint64_t>(rdma_ctx->fifo_mr_->addr);
     ctrl_work_rsp[kPortEntropy + 1].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
-
-    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_psn = rdma_ctx->fifo_local_psn_;
-    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_qpn = rdma_ctx->fifo_qp_->qp_num;
-    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo = true;
-    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo_key = rdma_ctx->fifo_mr_->rkey;
-    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo_addr = reinterpret_cast<uint64_t>(rdma_ctx->fifo_mr_->addr);
-    ctrl_work_rsp[kPortEntropy + 2].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
     while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
     }

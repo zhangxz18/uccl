@@ -288,12 +288,12 @@ struct UCQPWrapper {
  * @brief  RDMA context for each UcclFlow, which is produced by RDMAFactory. It contains:
  *   - Multiple Unreliable Connection (UC) QPs and a shared CQ.
  *   - A high-priority QP for control messages and a dedicated CQ, PD, and MR.
- *   - A QP for retransmission and a dedicated CQ, PD, and MR.
  *   - A Reliable Connection (RC) QP for FIFO and a dedicated CQ, PD, and MR.
+ *   - A MR for retransmission.
  */
 class RDMAContext {
     public:
-        constexpr static int kTotalQP = kPortEntropy + 3;
+        constexpr static int kTotalQP = kPortEntropy + 2;
         constexpr static int kFifoMRSize = sizeof(struct RemFifo);
         constexpr static int kCtrlMRSize = CtrlPktBuffPool::kPktSize * CtrlPktBuffPool::kNumPkt;
         constexpr static int kRetrMRSize = 4096 * 1024;
@@ -337,14 +337,6 @@ class RDMAContext {
         // Memory region for control messages.
         struct ibv_mr *ctrl_mr_;
 
-        // QP for retransmission based on Reliable Connection (RC).
-        struct ibv_qp *retr_qp_;
-        // Local PSN for retransmission.
-        uint32_t retr_local_psn_;
-        // Remote PSN for retransmission.
-        uint32_t retr_remote_psn_;
-        // Dedicated CQ for retransmission.
-        struct ibv_cq *retr_cq_;
         // Memory region for retransmission.
         struct ibv_mr *retr_mr_;
 
@@ -476,7 +468,7 @@ class RDMAFactory {
         std::string to_string(void) const;
 };
 
-static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32_t remote_qpn, uint32_t remote_psn, bool rc)
+static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32_t remote_qpn, uint32_t remote_psn)
 {
     struct ibv_qp_attr attr;
     int attr_mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
@@ -494,7 +486,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = remote_psn;
 
-    if (rc) {
+    if (qp->qp_type == IBV_QPT_RC) {
         attr.min_rnr_timer = 12;
         attr.max_dest_rd_atomic = 1;
         attr_mask |= IBV_QP_MIN_RNR_TIMER | IBV_QP_MAX_DEST_RD_ATOMIC;

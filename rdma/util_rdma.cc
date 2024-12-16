@@ -225,22 +225,28 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         uc_qps_[i].qp = qp;
     }
 
+    // Create Ctrl QP, CQ, and MR.
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
     util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, 
         &ctrl_cq_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
             kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
-    retr_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
-    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_RC, 
-        &retr_cq_, kCQSize, pd_, &retr_mr_, kRetrMRSize, 
-            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
-
-    fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 2;
+    // Create FIFO QP, CQ, and MR.
+    fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
     util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, 
         &fifo_cq_, kCQSize, pd_, &fifo_mr_, kFifoMRSize, 
             kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     comm_base->fifo = reinterpret_cast<struct RemFifo *>(fifo_mr_->addr);
+
+    // Create MR for retransmission.
+    void *retr_addr = mmap(nullptr, kRetrMRSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (retr_addr == MAP_FAILED)
+        throw std::runtime_error("mmap failed");
+
+    retr_mr_ = ibv_reg_mr(pd_, retr_addr, kRetrMRSize, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    if (retr_mr_ == nullptr)
+        throw std::runtime_error("ibv_reg_mr failed");
 
     // Populate recv work requests on all UC QPs for consuming immediate data.
     struct ibv_recv_wr wr;
@@ -292,12 +298,6 @@ RDMAContext::~RDMAContext()
     if (retr_mr_ != nullptr) {
         munmap(retr_mr_->addr, retr_mr_->length);
         ibv_dereg_mr(retr_mr_);
-    }
-    if (retr_cq_ != nullptr) {
-        ibv_destroy_cq(retr_cq_);
-    }
-    if (retr_qp_ != nullptr) {
-        ibv_destroy_qp(retr_qp_);
     }
 
     if (fifo_mr_ != nullptr) {

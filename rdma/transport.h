@@ -268,8 +268,6 @@ class UcclFlow {
 
     void complete_ctrl_cq(void);
 
-    void complete_retr_cq(void);
-
     void try_update_csn(struct UCQPWrapper *qpw);
 
     void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid, uint32_t rid);
@@ -414,7 +412,6 @@ class UcclRDMAEngine {
      * High-priority completion events from Ctrl QPs.
      * Datapath completion events from UC QPs.
      * Occasinal completion events from FIFO CQs.
-     * Retransmission completion events from Retr QPs.
      */
     void handle_completion(void);
 
