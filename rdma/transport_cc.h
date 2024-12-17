@@ -33,6 +33,81 @@ constexpr bool seqno_gt(uint32_t a, uint32_t b) {
 }
 
 /**
+ * @brief A 20-bit unsigned integer used for Chunk Sequence Number (CSN).
+ */
+class UINT_20 {
+    public:
+        UINT_20() : value_(0) {}
+        UINT_20(uint32_t value) : value_(value & 0xFFFFF) {}
+        UINT_20(const UINT_20 &other) : value_(other.value_) {}
+
+        static inline bool uint20_seqno_le(UINT_20 a, UINT_20 b) {
+            return seqno_le(a.value_, b.value_);
+        }
+
+        static inline bool uint20_seqno_lt(UINT_20 a, UINT_20 b) {
+            return seqno_lt(a.value_, b.value_);
+        }
+
+        static inline bool uint20_seqno_eq(UINT_20 a, UINT_20 b) {
+            return seqno_eq(a.value_, b.value_);
+        }
+
+        static inline bool uint20_seqno_ge(UINT_20 a, UINT_20 b) {
+            return seqno_ge(a.value_, b.value_);
+        }
+
+        static inline bool uint20_seqno_gt(UINT_20 a, UINT_20 b) {
+            return seqno_gt(a.value_, b.value_);
+        }
+
+        UINT_20 &operator=(const UINT_20 &other) {
+            value_ = other.value_;
+            return *this;
+        }
+        bool operator==(const UINT_20 &other) const {
+            return value_ == other.value_;
+        }
+        UINT_20 operator+(const UINT_20 &other) const {
+            return UINT_20(value_ + other.value_);
+        }
+        UINT_20 operator-(const UINT_20 &other) const {
+            return UINT_20(value_ - other.value_);
+        }
+        UINT_20 &operator+=(const UINT_20 &other) {
+            value_ += other.value_;
+            return *this;
+        }
+        UINT_20 &operator-=(const UINT_20 &other) {
+            value_ -= other.value_;
+            return *this;
+        }
+        bool operator<(const UINT_20 &other) const {
+            return seqno_lt(value_, other.value_);
+        }
+        bool operator<=(const UINT_20 &other) const {
+            return seqno_le(value_, other.value_);
+        }
+        bool operator>(const UINT_20 &other) const {
+            return seqno_gt(value_, other.value_);
+        }
+        bool operator>=(const UINT_20 &other) const {
+            return seqno_ge(value_, other.value_);
+        }
+
+        std::string to_string() const {
+            std::stringstream ss;
+            ss << std::hex << std::setw(5) << std::setfill('0') << value_;
+            return ss.str();
+        }
+
+        inline uint32_t to_uint32() const { return value_; }
+
+    private:
+        uint32_t value_;
+};
+
+/**
  * @brief Swift Congestion Control (SWCC) protocol control block.
  */
 struct Pcb {
@@ -113,9 +188,9 @@ struct Pcb {
     // Return the sender effective window in # of packets.
     uint32_t effective_wnd() const {
         if (snd_nxt < snd_una + snd_ooo_acks) return 1;
-        uint32_t inflight = snd_nxt - snd_una - snd_ooo_acks;
-        if (cwnd <= inflight) return 1;
-        uint32_t effective_wnd = std::ceil((cwnd - inflight) * ecn_alpha);
+        auto inflight = snd_nxt - snd_una - snd_ooo_acks;
+        if (cwnd <= inflight.to_uint32()) return 1;
+        uint32_t effective_wnd = std::ceil((cwnd - inflight.to_uint32()) * ecn_alpha);
         return effective_wnd == 0 ? 1 : effective_wnd;
     }
 
@@ -125,10 +200,10 @@ struct Pcb {
         if (ecn_alpha > 1.0) ecn_alpha = 1.0;
     }
 
-    uint32_t seqno() const { return snd_nxt; }
-    uint32_t get_snd_nxt() {
-        uint32_t seqno = snd_nxt;
-        snd_nxt++;
+    UINT_20 seqno() const { return snd_nxt; }
+    UINT_20 get_snd_nxt() {
+        UINT_20 seqno = snd_nxt;
+        snd_nxt += 1;
         return seqno;
     }
 
@@ -136,9 +211,9 @@ struct Pcb {
         auto avg_rtt_diff = timely.get_avg_rtt_diff();
         auto rate_gbps = timely.get_rate_gbps();
         std::string s;
-        s += "[CC] snd_nxt: " + std::to_string(snd_nxt) +
-             " snd_una: " + std::to_string(snd_una) +
-             " rcv_nxt: " + std::to_string(rcv_nxt) +
+        s += "[CC] snd_nxt: " + snd_nxt.to_string() +
+             " snd_una: " + snd_una.to_string() +
+             " rcv_nxt: " + rcv_nxt.to_string() +
              " fast_rexmits: " + std::to_string(fast_rexmits) +
              " rto_rexmits: " + std::to_string(rto_rexmits) +
              Format(" timely prev_rtt: %.2lf us ", timely.prev_rtt_) +
@@ -147,16 +222,17 @@ struct Pcb {
         return s;
     }
 
-    uint32_t ackno() const { return rcv_nxt; }
+    UINT_20 ackno() const { return rcv_nxt; }
     bool max_rto_rexmits_consectutive_reached() const {
         return rto_rexmits_consectutive >= kRtoMaxRexmitConsectutiveAllowed;
     }
     bool rto_disabled() const { return rto_timer == kRtoDisabled; }
     bool rto_expired() const { return rto_timer >= kRtoExpireThresInTicks; }
 
-    uint32_t get_rcv_nxt() const { return rcv_nxt; }
-    void advance_rcv_nxt(uint32_t n) { rcv_nxt += n; }
-    void advance_rcv_nxt() { rcv_nxt++; }
+    UINT_20 get_rcv_nxt() const { return rcv_nxt; }
+    void advance_rcv_nxt(UINT_20 n) { rcv_nxt += n; }
+    void advance_rcv_nxt() { rcv_nxt += 1; }
+
     void rto_enable() { rto_timer = 0; }
     void rto_disable() { rto_timer = kRtoDisabled; }
     void rto_reset() { rto_enable(); }
@@ -204,10 +280,10 @@ struct Pcb {
     }
 
     uint32_t target_delay{0};
-    uint32_t snd_nxt{0};
-    uint32_t snd_una{0};
-    uint32_t snd_ooo_acks{0};
-    uint32_t rcv_nxt{0};
+    UINT_20 snd_nxt{0};
+    UINT_20 snd_una{0};
+    UINT_20 snd_ooo_acks{0};
+    UINT_20 rcv_nxt{0};
     uint64_t sack_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{0};
     uint8_t sack_bitmap_count{0};
     uint16_t cwnd{kInitialCwnd};

@@ -1,4 +1,5 @@
 #include "transport.h"
+#include "transport_cc.h"
 #include "transport_config.h"
 #include "util_rdma.h"
 #include <cstdlib>
@@ -129,7 +130,7 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
 
         // Track this chunk.
         auto last_chunk = *size == 0;
-        qpw->txtracking.track_chunk(req, qpw->pcb.seqno(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk);
+        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk);
 
         memset(&wr, 0, sizeof(wr));
         wr.wr.rdma.remote_addr = remote_addr + *sent_offset;
@@ -138,22 +139,26 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
         wr.num_sge = i;
         wr.next = nullptr;
 
+        // Occasionally post a request with the IBV_SEND_SIGNALED flag.
+        if (last_chunk)
+            wr.send_flags = IBV_SEND_SIGNALED;
+
         wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
         IMMData imm_data(0);
 
         imm_data.SetHint(0);
-        imm_data.SetCSN(qpw->pcb.get_snd_nxt());
+        imm_data.SetCSN(qpw->pcb.get_snd_nxt().to_uint32());
         auto rid = slot.rid;
         imm_data.SetRID(rid);
         imm_data.SetMID(mid);
 
-        LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno() - 1 << ", mid: " << mid << ", rid: " << rid << "with QP#" << qpw->qp->qp_num;
+        LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", mid: " << mid << ", rid: " << rid << "with QP#" << qpw->qp->qp_num;
 
         wr.imm_data = htonl(imm_data.GetImmData());
 
         struct ibv_send_wr *bad_wr;
         if (ibv_post_send(qpw->qp, &wr, &bad_wr)) {
-            LOG(ERROR) << "Failed to post send";
+            LOG(ERROR) << "Failed to post send: ";
             return;
         }
 
@@ -183,6 +188,7 @@ void UcclFlow::complete_ctrl_cq(void) {
     while (1) {
         int nb_cqe = ibv_poll_cq(rdma_ctx_->ctrl_cq_, kMaxBatchCQ, wcs);
         if (nb_cqe <= 0) break;
+        LOG(INFO) << "Received " << nb_cqe << " CQEs from Ctrl CQ";
         for (int i = 0; i < nb_cqe; i++) {
             auto wc = wcs[i];
             auto pkt_addr = wc.wr_id;
@@ -199,16 +205,16 @@ void UcclFlow::complete_ctrl_cq(void) {
                 auto seqno = ucclh->seqno.value();
                 auto ackno = ucclh->ackno.value();
 
-                if (swift::seqno_lt(ackno, qpw->pcb.snd_una)) {
+                if (swift::UINT_20::uint20_seqno_lt(ackno, qpw->pcb.snd_una)) {
                     LOG(INFO) << "Received old ACK " << ackno << " from QP#" << rdma_ctx_->uc_qps_[qpidx].qp->qp_num << " by Ctrl QP";
-                } else if (swift::seqno_eq(ackno, qpw->pcb.snd_una)) {
+                } else if (swift::UINT_20::uint20_seqno_eq(ackno, qpw->pcb.snd_una)) {
                     LOG(INFO) << "Received duplicate ACK " << ackno << " from QP#" << rdma_ctx_->uc_qps_[qpidx].qp->qp_num << " by Ctrl QP";
-                } else if (swift::seqno_gt(ackno, qpw->pcb.snd_nxt)) {
-                    LOG(INFO) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " << qpw->pcb.snd_nxt << " from QP#" << rdma_ctx_->uc_qps_[qpidx].qp->qp_num << " by Ctrl QP";
+                } else if (swift::UINT_20::uint20_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
+                    LOG(INFO) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " << qpw->pcb.snd_nxt.to_uint32() << " from QP#" << rdma_ctx_->uc_qps_[qpidx].qp->qp_num << " by Ctrl QP";
                 } else {
                     LOG(INFO) << "Received valid ACK " << ackno << " from QP#" << rdma_ctx_->uc_qps_[qpidx].qp->qp_num << " by Ctrl QP";
                     
-                    size_t num_acked_chunks = ackno - qpw->pcb.snd_una;
+                    size_t num_acked_chunks = ackno - qpw->pcb.snd_una.to_uint32();
 
                     qpw->txtracking.ack_chunks(num_acked_chunks);
 
@@ -252,7 +258,7 @@ void UcclFlow::complete_ctrl_cq(void) {
 
 void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
 {
-    while (!ready_csn_.empty() && static_cast<uint32_t>(*ready_csn_.begin()) == qpw->pcb.rcv_nxt) {
+    while (!ready_csn_.empty() && static_cast<uint32_t>(*ready_csn_.begin()) == qpw->pcb.rcv_nxt.to_uint32()) {
         auto csn = *ready_csn_.begin();
         ready_csn_.erase(ready_csn_.begin());
         
@@ -260,7 +266,7 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
         // Nothing more to do.
 
         qpw->pcb.advance_rcv_nxt();
-        LOG(INFO) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt;
+        LOG(INFO) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt.to_uint32();
         prev_csn_ = csn;
         qpw->pcb.sack_bitmap_shift_left_one();
     }
@@ -292,8 +298,7 @@ void UcclFlow::handle_uc_cq_wc(struct ibv_wc &wc)
     LOG(INFO) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << ", " << mid;
 
     // Compare CSN with the expected CSN.
-    /// TODO: Seqno and ackno should be 20 bits.
-    auto ecsn = qpw->pcb.rcv_nxt;
+    auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
 
     // It's impossible to receive a chunk with a CSN less than the expected CSN.
     // For CSN that lags behind, RNIC has already handled it.
@@ -345,8 +350,8 @@ void UcclFlow::send_ack(struct UCQPWrapper *qpw, int qpidx) {
     ucclh->magic = be16_t(UcclPktHdr::kMagic);
     ucclh->net_flags = UcclPktHdr::UcclFlags::kAck;
     ucclh->frame_len = be16_t(kControlPayloadBytes);
-    ucclh->seqno = be32_t(qpw->pcb.seqno());
-    ucclh->ackno = be32_t(qpw->pcb.ackno());
+    ucclh->seqno = be32_t(qpw->pcb.seqno().to_uint32());
+    ucclh->ackno = be32_t(qpw->pcb.ackno().to_uint32());
     ucclh->flow_id= be64_t(flow_id_);
     ucclh->timestamp1 = 0;
     ucclh->timestamp2 = 0;
@@ -384,6 +389,8 @@ void UcclFlow::send_ack(struct UCQPWrapper *qpw, int qpidx) {
         LOG(ERROR) << "Failed to post send";
         return;
     }
+
+    LOG(INFO) << "send_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpw->qp->qp_num;
 }
 
 void UcclFlow::complete_uc_cq(void)
@@ -397,6 +404,7 @@ void UcclFlow::complete_uc_cq(void)
     
     for (int i = 0; i < nb_cqe; i++) {
         handle_uc_cq_wc(wcs[i]);
+        if (wcs[i].opcode == IBV_WC_RDMA_WRITE) continue;
         auto qp_num = wcs[i].qp_num;
         auto qp_idx = rdma_ctx_->qpn2idx_[qp_num];
         if (rdma_ctx_->uc_qps_[qp_idx].fill_cnt++ == 0)

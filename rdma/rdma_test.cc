@@ -25,6 +25,7 @@ void interrupt_handler(int signal) {
 
 DEFINE_bool(server, false, "Whether this is a server receiving traffic.");
 DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
+DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
 
 static void server_worker(void)
 {
@@ -40,7 +41,7 @@ static void server_worker(void)
 
     ep.uccl_regmr(conn_id, data, 65536, 0);
 
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < FLAGS_iterations; i++) {
         size_t len = 65536;
         void *recv_data = data;
 
@@ -53,7 +54,8 @@ static void server_worker(void)
             assert(((uint32_t *)data)[i] == 0x123456);
         }
 
-        LOG(INFO) << "Iteration " << i << " done";
+        // LOG(INFO) << "Iteration " << i << " done";
+        std::cout << "Iteration " << i << " done" << std::endl;
     }
 
 
@@ -82,13 +84,14 @@ static void client_worker(void)
         ((uint32_t *)data)[i] = 0x123456;
     }
 
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < FLAGS_iterations; i++) {
         void *send_data = data;
         auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 65536);
 
         ep.uccl_poll(poll_ctx);
 
-        LOG(INFO) << "Iteration " << i << " done";
+        // LOG(INFO) << "Iteration " << i << " done";
+        std::cout << "Iteration " << i << " done" << std::endl;
     }
 
     ep.uccl_deregmr(conn_id);
@@ -96,7 +99,7 @@ static void client_worker(void)
 
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
-    google::SetStderrLogging(google::GLOG_INFO);
+    // google::SetStderrLogging(google::GLOG_INFO);
     FLAGS_v = 1;
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
