@@ -25,7 +25,7 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
     // Reset received bytes and fin requests.
     req->recv.fin_msg = 0;
     req->recv.received_bytes = rem_fifo->received_bytes[slot];
-    memset(req->recv.received_bytes, 0, sizeof(uint64_t) * kMaxRecv);
+    memset(req->recv.received_bytes, 0, sizeof(uint32_t) * kMaxRecv);
     req->recv.elems = elems;
     
     for (int i = 0; i < n; i++) {
@@ -613,7 +613,6 @@ void UcclFlow::prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
 
 void UcclRDMAEngine::handle_pending_tx_work(void)
 {
-    std::deque<Channel::Msg> tmp;
     for (auto it = pending_tx_work_.begin(); it != pending_tx_work_.end();) {
         auto tx_work = *it;
         auto flow = active_flows_map_[tx_work.flow_id];
@@ -624,16 +623,12 @@ void UcclRDMAEngine::handle_pending_tx_work(void)
         }
 
         if (flow->tx_messages(tx_work)) {
-            tmp.push_back(tx_work);
             it++;
         } else {
             // Good, the tx work is done.
             it = pending_tx_work_.erase(it);
         }
     }
-
-    // Unfortunatly, try them later.
-    pending_tx_work_.insert(pending_tx_work_.begin(), tmp.begin(), tmp.end());
 }
 
 void UcclRDMAEngine::handle_completion(void) 

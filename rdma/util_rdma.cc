@@ -223,6 +223,8 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         }
 
         uc_qps_[i].qp = qp;
+
+        uc_qps_[i].txtracking.set_rdma_ctx(this);
     }
 
     // Create Ctrl QP, CQ, and MR.
@@ -342,6 +344,8 @@ void TXTracking::ack_chunks(uint32_t num_acked_chunks)
                 poll_ctx->cv.notify_one();
             }
             LOG(INFO) << "Message complete";
+            // Free the request.
+            rdma_ctx_->free_request(chunk.req);
         }
         unacked_chunks_.erase(unacked_chunks_.begin());
         num_acked_chunks--;

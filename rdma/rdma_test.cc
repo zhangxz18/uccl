@@ -40,7 +40,7 @@ static void server_worker(void)
 
     ep.uccl_regmr(conn_id, data, 65536, 0);
 
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 1000; i++) {
         size_t len = 65536;
         void *recv_data = data;
 
@@ -82,7 +82,7 @@ static void client_worker(void)
         ((uint32_t *)data)[i] = 0x123456;
     }
 
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 1000; i++) {
         void *send_data = data;
         auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 65536);
 

@@ -295,7 +295,12 @@ class TXTracking {
             unacked_chunks_.push_back({req, csn, chunk_addr, chunk_size, last_chunk});
         }
 
+        inline void set_rdma_ctx(struct RDMAContext *rdma_ctx) {
+            rdma_ctx_ = rdma_ctx;
+        }
+
     private:
+        struct RDMAContext *rdma_ctx_ = nullptr;
         std::vector<TXTracking::ChunkTrack> unacked_chunks_;
 };
 
