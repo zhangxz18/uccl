@@ -76,10 +76,12 @@ class UINT_20 {
         }
         UINT_20 &operator+=(const UINT_20 &other) {
             value_ += other.value_;
+            value_ &= 0xFFFFF;
             return *this;
         }
         UINT_20 &operator-=(const UINT_20 &other) {
             value_ -= other.value_;
+            value_ &= 0xFFFFF;
             return *this;
         }
         bool operator<(const UINT_20 &other) const {
