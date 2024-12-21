@@ -112,6 +112,8 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
     struct ibv_send_wr wr;
 
     /// TODO: Congestion control
+    int sge_size = util_rdma_get_mtu_from_ibv_mtu(rdma_ctx_->mtu_) << kSgeSizeShift;
+
     while (*size) {
 
         int chunk_size = 0;
@@ -122,7 +124,7 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
             if (*size == 0) break;
             sge[i].addr = (uintptr_t)data;
             sge[i].lkey = lkey;
-            sge[i].length = std::min(*size, util_rdma_get_mtu_from_ibv_mtu(rdma_ctx_->mtu_));
+            sge[i].length = std::min(*size, sge_size);
             *size -= sge[i].length;
             chunk_size += sge[i].length; 
             data = static_cast<char*>(data) + sge[i].length;
