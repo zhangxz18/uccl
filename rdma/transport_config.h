@@ -11,7 +11,7 @@ static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t MAX_UNACKED_PKTS = 512;
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 // CC parameters.
-static const uint32_t kPortEntropy = 32;
+static const uint32_t kPortEntropy = 128;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 5;
 
@@ -27,7 +27,7 @@ static const uint8_t NUM_DEVICES = 2;
 
 static const uint32_t kCQMODCount = 16;
 static const uint32_t kCQMODPeriod = 10;
-static const uint32_t kMaxSge = 4;
+static const uint32_t kMaxSge = 32;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
