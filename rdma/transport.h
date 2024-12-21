@@ -312,6 +312,8 @@ class UcclFlow {
     std::set<int> ready_csn_;
     uint32_t prev_csn_ = 0;
 
+    uint32_t signal_cnt_ = 0;
+
     /**
      * @brief Deserialize a chunk of data from the application buffer and append
      * to the tx tracking.

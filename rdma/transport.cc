@@ -140,7 +140,7 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
         wr.next = nullptr;
 
         // Occasionally post a request with the IBV_SEND_SIGNALED flag.
-        if (last_chunk)
+        if (signal_cnt_++ % kSignalInterval == 0)
             wr.send_flags = IBV_SEND_SIGNALED;
 
         wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
