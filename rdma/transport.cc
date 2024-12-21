@@ -465,6 +465,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     auto data = tx_work.tx.data;
     auto size = tx_work.tx.size;
     auto poll_ctx = tx_work.poll_ctx;
+    auto tx_ready_poll_ctx = tx_work.tx_ready_poll_ctx;
 
     auto send_comm_ = &rdma_ctx_->send_comm_;
 
@@ -486,6 +487,13 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     for (int i = 1; i < nmsgs; i++) while(slots[i].idx != idx) {}
 
     LOG(INFO) << "Receiver is ready to receive";
+
+    // Wakeup the application thread waiting for the receiver to be ready.
+    {
+        std::lock_guard<std::mutex> lock(tx_ready_poll_ctx->mu);
+        tx_ready_poll_ctx->done = true;
+        tx_ready_poll_ctx->cv.notify_one();
+    }
 
     __sync_synchronize();
 
@@ -932,7 +940,7 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.fifo_addr = reinterpret_cast<uint64_t>(rdma_ctx->fifo_mr_->addr);
     ctrl_work_rsp[kPortEntropy + 1].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
-    while (jring_mp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
+    while (jring_sp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
     }
 
 }
@@ -1178,10 +1186,12 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
 PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
                                    const size_t size) {
     auto *poll_ctx = ctx_pool_->pop();
+    auto *tx_ready_poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
         .flow_id = conn_id.flow_id,
         .poll_ctx = poll_ctx,
+        .tx_ready_poll_ctx = tx_ready_poll_ctx,
     };
     
     msg.tx.data = const_cast<void *>(data);
@@ -1191,6 +1201,10 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
                                std::memory_order_release);
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->tx_cmdq_,
                                  &msg, 1, nullptr) != 1);
+
+    // Wait until tx is ready.
+    uccl_poll(tx_ready_poll_ctx);
+
     return poll_ctx;
 }
 
@@ -1309,7 +1323,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     int qidx = 0;
     while (qidx < RDMAContext::kTotalQP) {
         Channel::CtrlMsg rsp_msg;
-        while (jring_sc_dequeue_bulk(channel_vec_[local_engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) != 1);
+        while (jring_mc_dequeue_bulk(channel_vec_[local_engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) != 1);
         if (rsp_msg.opcode != Channel::CtrlMsg::Op::kCompleteFlowRDMA) continue;
         xchg_meta[qidx].qpn = rsp_msg.meta.ToEndPoint.local_qpn;
         xchg_meta[qidx].psn = rsp_msg.meta.ToEndPoint.local_psn;
