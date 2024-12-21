@@ -172,7 +172,7 @@ static void client_tpt(RDMAEndpoint &ep, ConnID conn_id, void *data)
         while (!quit) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             std::cout << "Throughput: " << std::fixed << std::setprecision(2) << 
-                (cur_sec_bytes - prev_sec_bytes) * 8.0 / 1024 / 1024 / 1024 << " Gbps" << std::endl;
+                (cur_sec_bytes - prev_sec_bytes) * 8.0 / 1000 / 1000 / 1000 << " Gbps" << std::endl;
             prev_sec_bytes = cur_sec_bytes;
         }
     });
