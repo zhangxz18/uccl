@@ -224,7 +224,9 @@ class UcclFlow {
      * @param rdma_ctx 
      */
     UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
-        engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {};
+        engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {
+            for (int i = 0; i < kMaxBatchCQ; i++) wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &wrs_[i + 1];
+        };
 
     ~UcclFlow() {}
 
@@ -315,6 +317,9 @@ class UcclFlow {
     uint32_t prev_csn_ = 0;
 
     uint32_t signal_cnt_ = 0;
+
+    // Pre-allocated WQEs for consuming immediate data.
+    struct ibv_recv_wr wrs_[kMaxBatchCQ];
 
     /**
      * @brief Deserialize a chunk of data from the application buffer and append

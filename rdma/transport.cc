@@ -412,24 +412,27 @@ void UcclFlow::complete_uc_cq(void)
         if (rdma_ctx_->uc_qps_[qp_idx].fill_cnt++ == 0)
             populate_idx_list.push_back(qp_idx);
     }
-
-    // Populate recv work requests for consuming immediate data.
-    struct ibv_recv_wr wr[kMaxBatchCQ];
+    
+    // Send coalescing ACKs.
     for (auto idx: populate_idx_list) {
         auto qpw = &rdma_ctx_->uc_qps_[idx];
-        for (int i = 0; i < qpw->fill_cnt; i++) {
-            wr[i].wr_id = 0;
-            wr[i].num_sge = 0;
-            wr[i].sg_list = nullptr;
-            wr[i].next = (i == qpw->fill_cnt - 1) ? nullptr : &wr[i + 1];
-        }
+        send_ack(qpw, idx);
+    }
+
+    // Populate recv work requests for consuming immediate data.
+    for (auto idx: populate_idx_list) {
+        auto qpw = &rdma_ctx_->uc_qps_[idx];
+        wrs_[qpw->fill_cnt - 1].next = nullptr;
         auto qp = qpw->qp;
         struct ibv_recv_wr *bad_wr;
-        DCHECK(ibv_post_recv(qp, &wr[0], &bad_wr) == 0);
+        DCHECK(ibv_post_recv(qp, &wrs_[0], &bad_wr) == 0);
         LOG(INFO) << "Posted " << qpw->fill_cnt << " recv requests for UC QP#" << qp->qp_num;
-        qpw->fill_cnt = 0;
         
-        send_ack(qpw, idx);
+        // Restore
+        {
+            wrs_[qpw->fill_cnt - 1].next = (qpw->fill_cnt == kMaxBatchCQ) ? nullptr : &wrs_[qpw->fill_cnt];
+            qpw->fill_cnt = 0;
+        }
     }
 
 }
