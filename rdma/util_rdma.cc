@@ -30,7 +30,10 @@ void RDMAFactory::init_dev(int gid_idx)
     DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
 
     // Get IP address from Infiniband name.
-    DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) == 0);
+    if (!H100_IP.empty())
+        dev.local_ip_str = H100_IP;
+    else
+        DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) == 0);
 
     // Get the list of RDMA devices.
     device_list = ibv_get_device_list(&nb_devices);

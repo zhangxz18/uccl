@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <thread>
+#include <string>
 
 static const uint32_t NUM_ENGINES = 1;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
@@ -16,6 +17,7 @@ static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 5;
 
 // IB interface.
+static std::string H100_IP("");
 static const uint32_t MAX_IB_DEVICES = 32;
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {
