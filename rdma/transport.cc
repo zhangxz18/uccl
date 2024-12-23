@@ -455,17 +455,6 @@ bool UcclFlow::complete_fifo_cq(void)
         LOG(ERROR) << "Error in FIFO CQ completion:" << wc.status;
         return false;
     }
-
-    req = rdma_ctx_->get_request_by_id(wc.wr_id & 0xff, &rdma_ctx_->recv_comm_.base);
-    if (req == nullptr) {
-        LOG(ERROR) << "Request not found";
-        return false;
-    }
-
-    if (req->type != FlowRequest::RECV) {
-        LOG(ERROR) << "Unexpected request type";
-        return false;
-    }
     
     rdma_ctx_->fifo_cq_polling_ = false;
     return true;
