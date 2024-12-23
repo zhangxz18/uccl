@@ -134,8 +134,8 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     size_t len[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     void *recv_data[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     std::vector<std::vector<PollCtx *>> poll_ctx_vec(FLAGS_nflow);
-    for (int i = 0; i < FLAGS_nreq; i++) {
-        poll_ctx_vec[i].resize(FLAGS_nmsg);
+    for (int i = 0; i < FLAGS_nflow; i++) {
+        poll_ctx_vec[i].resize(FLAGS_nreq);
     }
     
     for (int f = 0; f < FLAGS_nflow; f++) {
