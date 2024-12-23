@@ -185,9 +185,18 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         throw std::runtime_error("ibv_alloc_pd failed");
 
     // Create a dedicated CQ for UC QPs.
-    cq_ = ibv_create_cq(context_, kCQSize, nullptr, nullptr, 0);
-    if (cq_ == nullptr)
-        throw std::runtime_error("ibv_create_cq failed");
+    struct ibv_cq_init_attr_ex cq_ex_attr;
+    cq_ex_attr.cqe = kCQSize;
+    cq_ex_attr.cq_context = nullptr;
+    cq_ex_attr.channel = nullptr;
+    cq_ex_attr.comp_vector = 0;
+    cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
+        IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
+    cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
+    cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
+    cq_ex_ = ibv_create_cq_ex(context_, &cq_ex_attr);
+    if (cq_ex_ == nullptr)
+        throw std::runtime_error("ibv_create_cq_ex failed");
     
     // Configure CQ moderation.
     struct ibv_modify_cq_attr cq_attr;
@@ -195,7 +204,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     cq_attr.moderate.cq_count = kCQMODCount;
     cq_attr.moderate.cq_period = kCQMODPeriod;
 
-    int ret = ibv_modify_cq(cq_, &cq_attr);
+    int ret = ibv_modify_cq(ibv_cq_ex_to_cq(cq_ex_), &cq_attr);
     if (ret) {
         throw std::runtime_error("ibv_modify_cq failed");
     }
@@ -206,8 +215,8 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         memset(&qp_init_attr, 0, sizeof(qp_init_attr));
 
         qp_init_attr.qp_context = this;
-        qp_init_attr.send_cq = cq_;
-        qp_init_attr.recv_cq = cq_;
+        qp_init_attr.send_cq = ibv_cq_ex_to_cq(cq_ex_);
+        qp_init_attr.recv_cq = ibv_cq_ex_to_cq(cq_ex_);
         qp_init_attr.qp_type = IBV_QPT_UC;
 
         qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv;
@@ -240,13 +249,13 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
 
     // Create Ctrl QP, CQ, and MR.
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
-    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, 
-        &ctrl_cq_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
+    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, true,
+        (struct ibv_cq **)&ctrl_cq_ex_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
             kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
     // Create FIFO QP, CQ, and MR.
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
-    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, 
+    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, false,
         &fifo_cq_, kCQSize, pd_, &fifo_mr_, kFifoMRSize, 
             kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
 
@@ -301,8 +310,8 @@ RDMAContext::~RDMAContext()
         munmap(ctrl_mr_->addr, ctrl_mr_->length);
         ibv_dereg_mr(ctrl_mr_);
     }
-    if (ctrl_cq_ != nullptr) {
-        ibv_destroy_cq(ctrl_cq_);
+    if (ibv_cq_ex_to_cq(ctrl_cq_ex_) != nullptr) {
+        ibv_destroy_cq(ibv_cq_ex_to_cq(ctrl_cq_ex_));
     }
     if (ctrl_qp_ != nullptr) {
         ibv_destroy_qp(ctrl_qp_);
@@ -333,8 +342,8 @@ RDMAContext::~RDMAContext()
     if (pd_ != nullptr) {
         ibv_dealloc_pd(pd_);
     }
-    if (cq_ != nullptr) {
-        ibv_destroy_cq(cq_);
+    if (ibv_cq_ex_to_cq(cq_ex_) != nullptr) {
+        ibv_destroy_cq(ibv_cq_ex_to_cq(cq_ex_));
     }
 
     LOG(INFO) << "RDMAContext destroyed";

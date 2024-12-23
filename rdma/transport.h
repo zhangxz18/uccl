@@ -277,7 +277,9 @@ class UcclFlow {
 
     void complete_uc_cq(void);
 
-    void handle_uc_cq_wc(struct ibv_wc &wc);
+    void handle_uc_cq_wc(void);
+
+    bool handle_ctrl_cq_wc(void);
 
     // Send one ACK for a UC QP using the given WR index. ACKs are finally transmitted calling flush_acks.
     void send_ack(int qpidx, int wr_idx);

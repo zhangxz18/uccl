@@ -341,7 +341,7 @@ class RDMAContext {
         // UC QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;
         // Shared CQ for all UC QPs.
-        struct ibv_cq *cq_;
+        struct ibv_cq_ex *cq_ex_;
 
         // Fifo QP based on Reliable Connection (RC).
         struct ibv_qp *fifo_qp_;
@@ -364,7 +364,7 @@ class RDMAContext {
         // Remote PSN for control messages.
         uint32_t ctrl_remote_psn_;
         // Dedicated CQ for control messages.
-        struct ibv_cq *ctrl_cq_;
+        struct ibv_cq_ex *ctrl_cq_ex_;
         // Memory region for control messages.
         struct ibv_mr *ctrl_mr_;
 
@@ -581,13 +581,29 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
-static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type,
+static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex,
     struct ibv_cq **cq, uint32_t cqsize, struct ibv_pd *pd, struct ibv_mr **mr, size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr)
 {
     // Creating CQ
-    *cq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
-    if (*cq == nullptr)
-        throw std::runtime_error("ibv_create_cq failed");
+    if (cq_ex) {
+        struct ibv_cq_init_attr_ex cq_ex_attr;
+        cq_ex_attr.cqe = cqsize;
+        cq_ex_attr.cq_context = nullptr;
+        cq_ex_attr.channel = nullptr;
+        cq_ex_attr.comp_vector = 0;
+        cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
+            IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
+        cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
+        cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
+        auto cq_ex = (struct ibv_cq_ex **)cq;
+        *cq_ex= ibv_create_cq_ex(context, &cq_ex_attr);
+        if (*cq_ex == nullptr)
+            throw std::runtime_error("ibv_create_cq_ex failed");
+    } else {
+        *cq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
+        if (*cq == nullptr)
+            throw std::runtime_error("ibv_create_cq failed");
+    }
     
     // Creating MR
     void *addr = mmap(nullptr, mr_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
