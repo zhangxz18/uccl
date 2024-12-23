@@ -185,9 +185,10 @@ void UcclFlow::rdma_multi_send(int slot)
 }
 
 void UcclFlow::complete_ctrl_cq(void) {
-    struct ibv_wc wcs[kMaxBatchCQ];
-    int nb_post_recv = 0;
+    
     while (1) {
+        struct ibv_wc wcs[kMaxBatchCQ];
+        int nb_post_recv = 0;
         int nb_cqe = ibv_poll_cq(rdma_ctx_->ctrl_cq_, kMaxBatchCQ, wcs);
         if (nb_cqe <= 0) break;
         LOG(INFO) << "Received " << nb_cqe << " CQEs from Ctrl CQ";
@@ -229,29 +230,28 @@ void UcclFlow::complete_ctrl_cq(void) {
             }
             rdma_ctx_->ctrl_pkt_pool_.free_buff(pkt_addr);
         }
-    }
-
-    // Populate recv work requests for consuming control packets.
-    struct ibv_recv_wr *bad_wr;
-    for (int i = 0; i < nb_post_recv; i++) {
-        uint64_t pkt_addr;
-        if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
-            LOG(ERROR) << "Failed to allocate control packet buffer";
-            return;
+        // Populate recv work requests for consuming control packets.
+        struct ibv_recv_wr *bad_wr;
+        for (int i = 0; i < nb_post_recv; i++) {
+            uint64_t pkt_addr;
+            if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
+                LOG(ERROR) << "Failed to allocate control packet buffer";
+                return;
+            }
+            rx_ack_sges_[i].addr = pkt_addr;
+            rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+            rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
+            rx_ack_wrs_[i].wr_id = pkt_addr;
+            rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
+            rx_ack_wrs_[i].num_sge = 1;
         }
-        rx_ack_sges_[i].addr = pkt_addr;
-        rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
-        rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
-        rx_ack_wrs_[i].wr_id = pkt_addr;
-        rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
-        rx_ack_wrs_[i].num_sge = 1;
-    }
-    rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
-    if (nb_post_recv) {
-        DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        // Restore
-        rx_ack_wrs_[nb_post_recv - 1].next = nb_post_recv == kMaxBatchCQ ? nullptr : &rx_ack_wrs_[nb_post_recv];
-        LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
+        rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
+        if (nb_post_recv) {
+            DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
+            // Restore
+            rx_ack_wrs_[nb_post_recv - 1].next = nb_post_recv == kMaxBatchCQ ? nullptr : &rx_ack_wrs_[nb_post_recv];
+            LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
+        }
     }
 
 }
