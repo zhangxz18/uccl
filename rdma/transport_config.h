@@ -17,7 +17,10 @@ static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 5;
 
 // IB interface.
-static std::string H100_IP("");
+// If USE_ROCE is set, RoCE will be used instead of IB.
+static const bool USE_ROCE = true;
+// If SINGLE_IP is set, all devices will use the same IP.
+static std::string SINGLE_IP("");
 static const uint32_t MAX_IB_DEVICES = 32;
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {

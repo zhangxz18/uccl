@@ -30,8 +30,8 @@ void RDMAFactory::init_dev(int gid_idx)
     DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
 
     // Get IP address from Infiniband name.
-    if (!H100_IP.empty())
-        dev.local_ip_str = H100_IP;
+    if (!SINGLE_IP.empty())
+        dev.local_ip_str = SINGLE_IP;
     else
         DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) == 0);
 
@@ -77,10 +77,16 @@ void RDMAFactory::init_dev(int gid_idx)
         goto close_device;
     }
 
-    // Currently, we only support RoCEv2.
-    if (port_attr.state != IBV_PORT_ACTIVE ||
-        (port_attr.link_layer != IBV_LINK_LAYER_ETHERNET)) {
-        fprintf(stderr, "Port is not active or not Ethernet\n");
+    if (port_attr.state != IBV_PORT_ACTIVE) {
+        fprintf(stderr, "Port is not active\n");
+        goto close_device;
+    }
+
+    if (USE_ROCE && port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
+        fprintf(stderr, "RoCE is not supported\n");
+        goto close_device;
+    } else if (!USE_ROCE && port_attr.link_layer != IBV_LINK_LAYER_INFINIBAND) {
+        fprintf(stderr, "IB is not supported\n");
         goto close_device;
     }
 
@@ -164,10 +170,12 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     local_gid_ = factory_dev->gid;
     ib_port_num_ = factory_dev->ib_port_num;
     sgid_index_ = factory_dev->gid_idx;
+    port_attr_ = factory_dev->port_attr;
 
     // Copy fields from from Endpoint.
     // fifo_key and fifo_addr are set later.
     comm_base->remote_ctx.remote_gid = meta.ToEngine.remote_gid;
+    comm_base->remote_ctx.remote_port_attr = meta.ToEngine.remote_port_attr;
     
     mtu_ = meta.ToEngine.mtu;
 

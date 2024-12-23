@@ -146,6 +146,7 @@ struct RDMAExchangeFormatLocal {
             bool is_send;
             int dev;
             union ibv_gid remote_gid;
+            struct ibv_port_attr remote_port_attr;
             uint32_t remote_qpn;
             uint32_t remote_psn;
             ibv_mtu mtu;
@@ -201,6 +202,7 @@ struct RemFifo {
 
 struct RemoteRDMAContext {
     union ibv_gid remote_gid;
+    struct ibv_port_attr remote_port_attr;
     uint32_t fifo_key;
     uint64_t fifo_addr;
 };
@@ -376,6 +378,8 @@ class RDMAContext {
         struct ibv_context *context_;
         // Local GID of this device.
         union ibv_gid local_gid_;
+        // Port attributes of this device.
+        struct ibv_port_attr port_attr_;
         // MTU of this device.
         ibv_mtu mtu_;
         // IB port number of this device.
@@ -499,6 +503,11 @@ class RDMAFactory {
         std::string to_string(void) const;
 };
 
+static inline uint16_t util_rdma_extract_local_subnet_prefix(uint64_t subnet_prefix)
+{
+    return (be64toh(subnet_prefix) & 0xffff);
+}
+
 static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32_t remote_qpn, uint32_t remote_psn)
 {
     struct ibv_qp_attr attr;
@@ -509,11 +518,20 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
     attr.path_mtu = rdma_ctx->mtu_;
-    attr.ah_attr.is_global = 1;
-    attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
-    attr.ah_attr.grh.dgid = comm_base->remote_ctx.remote_gid;
-    attr.ah_attr.grh.sgid_index = rdma_ctx->sgid_index_;
-    attr.ah_attr.grh.hop_limit = 0xff;
+    if (USE_ROCE) {
+        attr.ah_attr.is_global = 1;
+        attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
+        attr.ah_attr.grh.dgid = comm_base->remote_ctx.remote_gid;
+        attr.ah_attr.grh.sgid_index = rdma_ctx->sgid_index_;
+        attr.ah_attr.grh.hop_limit = 0xff;
+    } else {
+        if (util_rdma_extract_local_subnet_prefix(rdma_ctx->local_gid_.global.subnet_prefix) != 
+            util_rdma_extract_local_subnet_prefix(comm_base->remote_ctx.remote_gid.global.subnet_prefix)) {
+                LOG(ERROR) << "Only support same subnet communication for now.";
+        }
+        attr.ah_attr.is_global = 0;
+        attr.ah_attr.dlid = comm_base->remote_ctx.remote_port_attr.lid;
+    }
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = remote_psn;
 
@@ -679,7 +697,7 @@ static inline int util_rdma_get_mtu_from_ibv_mtu(ibv_mtu mtu)
         case IBV_MTU_4096: return 4096;
         default: return 0;
     }
-} 
+}
 
 }// namespace uccl
 

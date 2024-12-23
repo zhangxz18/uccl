@@ -1272,6 +1272,14 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     ret = receive_message(bootstrap_fd, &buf, 16);
     DCHECK(ret == 16);
     memcpy(&to_engine_meta->remote_gid.raw, buf, 16);
+
+    // Sync PortAttr with remote peer.
+    ret = send_message(bootstrap_fd, &factory_dev->port_attr, sizeof(ibv_port_attr));
+    DCHECK(ret == sizeof(ibv_port_attr));
+    struct ibv_port_attr remote_port_attr;
+    ret = receive_message(bootstrap_fd, &remote_port_attr, sizeof(ibv_port_attr));
+    DCHECK(ret == sizeof(ibv_port_attr));
+    to_engine_meta->remote_port_attr = remote_port_attr;
     
     if (FLAGS_v >= 1) {
         std::ostringstream oss;
