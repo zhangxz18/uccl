@@ -696,8 +696,6 @@ void UcclRDMAEngine::handle_async_send(void)
 }
 
 void UcclRDMAEngine::run() {
-    Channel::Msg rx_work;
-    Channel::Msg tx_work;
 
     while (!shutdown_) {
         // Calculate the cycles elapsed since last periodic processing.

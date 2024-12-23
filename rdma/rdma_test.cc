@@ -250,6 +250,7 @@ static void server_worker(void)
     }
 
     ep.uccl_deregmr(conn_id);
+    munmap(data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
 }
 
 static void client_worker(void)
@@ -276,6 +277,8 @@ static void client_worker(void)
     }
 
     ep.uccl_deregmr(conn_id);
+
+    munmap(data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
 }
 
 int main(int argc, char* argv[]) {
