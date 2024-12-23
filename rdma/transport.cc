@@ -385,14 +385,13 @@ void UcclFlow::send_ack(int qpidx, int wr_idx)
     }
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
-    struct ibv_sge sge;
-    sge.addr = pkt_addr;
-    sge.lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
-    sge.length = kControlPayloadBytes;
+    ack_sges_[wr_idx].addr = pkt_addr;
+    ack_sges_[wr_idx].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+    ack_sges_[wr_idx].length = kControlPayloadBytes;
 
     // We use wr_id to store the packet address for future freeing.
     ack_wrs_[wr_idx].wr_id = pkt_addr;
-    ack_wrs_[wr_idx].sg_list = &sge;
+    ack_wrs_[wr_idx].sg_list = &ack_sges_[wr_idx];
     ack_wrs_[wr_idx].num_sge = 1;
     ack_wrs_[wr_idx].opcode = IBV_WR_SEND_WITH_IMM;
     ack_wrs_[wr_idx].imm_data = qpidx;

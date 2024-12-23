@@ -226,7 +226,10 @@ class UcclFlow {
     UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
         engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {
             for (int i = 0; i < kMaxBatchCQ; i++) {
+                imm_wrs_[i].num_sge = 0;
+                imm_wrs_[i].sg_list = nullptr;
                 imm_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &imm_wrs_[i + 1];
+                
                 ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &ack_wrs_[i + 1];
             }
         };
@@ -333,6 +336,9 @@ class UcclFlow {
 
     // Pre-allocated WQEs for sending ACKs.
     struct ibv_send_wr ack_wrs_[kMaxBatchCQ];
+
+    // Pre-allocted SGEs for sending ACKs.
+    struct ibv_sge ack_sges_[kMaxBatchCQ];
 
     /**
      * @brief Deserialize a chunk of data from the application buffer and append
