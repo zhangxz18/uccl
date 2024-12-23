@@ -530,6 +530,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
                 LOG(ERROR) << "Only support same subnet communication for now.";
         }
         attr.ah_attr.is_global = 0;
+        attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
         attr.ah_attr.dlid = comm_base->remote_ctx.remote_port_attr.lid;
     }
     attr.dest_qp_num = remote_qpn;
