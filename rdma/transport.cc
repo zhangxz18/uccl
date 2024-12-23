@@ -232,8 +232,6 @@ void UcclFlow::complete_ctrl_cq(void) {
     }
 
     // Populate recv work requests for consuming control packets.
-    struct ibv_sge sge;
-    struct ibv_recv_wr wr;
     struct ibv_recv_wr *bad_wr;
     for (int i = 0; i < nb_post_recv; i++) {
         uint64_t pkt_addr;
@@ -241,20 +239,20 @@ void UcclFlow::complete_ctrl_cq(void) {
             LOG(ERROR) << "Failed to allocate control packet buffer";
             return;
         }
-        sge.addr = pkt_addr;
-        sge.lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
-        sge.length = CtrlPktBuffPool::kPktSize;
-        wr.wr_id = pkt_addr;
-        wr.next = nullptr;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        if (ibv_post_recv(rdma_ctx_->ctrl_qp_, &wr, &bad_wr)) {
-            LOG(ERROR) << "Failed to post recv";
-            return;
-        }
+        rx_ack_sges_[i].addr = pkt_addr;
+        rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+        rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
+        rx_ack_wrs_[i].wr_id = pkt_addr;
+        rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
+        rx_ack_wrs_[i].num_sge = 1;
     }
-    if (nb_post_recv)
+    rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
+    if (nb_post_recv) {
+        DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
+        // Restore
+        rx_ack_wrs_[nb_post_recv - 1].next = nb_post_recv == kMaxBatchCQ ? nullptr : &rx_ack_wrs_[nb_post_recv];
         LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
+    }
 
 }
 
@@ -345,13 +343,10 @@ void UcclFlow::flush_acks(int size)
 {
     if (size == 0) return;
     struct ibv_send_wr *bad_wr;
-    ack_wrs_[size - 1].next = nullptr;
-    if (ibv_post_send(rdma_ctx_->ctrl_qp_, &ack_wrs_[0], &bad_wr)) {
-        LOG(ERROR) << "Failed to post send for ACKs";
-        return;
-    }
+    tx_ack_wrs_[size - 1].next = nullptr;
+    DCHECK(ibv_post_send(rdma_ctx_->ctrl_qp_, &tx_ack_wrs_[0], &bad_wr) == 0);
     // Restore
-    ack_wrs_[size - 1].next = size == kMaxBatchCQ ? nullptr : &ack_wrs_[size];
+    tx_ack_wrs_[size - 1].next = size == kMaxBatchCQ ? nullptr : &tx_ack_wrs_[size];
 }
 
 void UcclFlow::send_ack(int qpidx, int wr_idx)
@@ -385,17 +380,17 @@ void UcclFlow::send_ack(int qpidx, int wr_idx)
     }
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
-    ack_sges_[wr_idx].addr = pkt_addr;
-    ack_sges_[wr_idx].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
-    ack_sges_[wr_idx].length = kControlPayloadBytes;
+    tx_ack_sges_[wr_idx].addr = pkt_addr;
+    tx_ack_sges_[wr_idx].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+    tx_ack_sges_[wr_idx].length = kControlPayloadBytes;
 
     // We use wr_id to store the packet address for future freeing.
-    ack_wrs_[wr_idx].wr_id = pkt_addr;
-    ack_wrs_[wr_idx].sg_list = &ack_sges_[wr_idx];
-    ack_wrs_[wr_idx].num_sge = 1;
-    ack_wrs_[wr_idx].opcode = IBV_WR_SEND_WITH_IMM;
-    ack_wrs_[wr_idx].imm_data = qpidx;
-    ack_wrs_[wr_idx].send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+    tx_ack_wrs_[wr_idx].wr_id = pkt_addr;
+    tx_ack_wrs_[wr_idx].sg_list = &tx_ack_sges_[wr_idx];
+    tx_ack_wrs_[wr_idx].num_sge = 1;
+    tx_ack_wrs_[wr_idx].opcode = IBV_WR_SEND_WITH_IMM;
+    tx_ack_wrs_[wr_idx].imm_data = qpidx;
+    tx_ack_wrs_[wr_idx].send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
 
     LOG(INFO) << "send_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpw->qp->qp_num;
 }

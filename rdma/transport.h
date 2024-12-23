@@ -230,7 +230,8 @@ class UcclFlow {
                 imm_wrs_[i].sg_list = nullptr;
                 imm_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &imm_wrs_[i + 1];
                 
-                ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &ack_wrs_[i + 1];
+                tx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &tx_ack_wrs_[i + 1];
+                rx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &rx_ack_wrs_[i + 1];
             }
         };
 
@@ -335,10 +336,14 @@ class UcclFlow {
     struct ibv_recv_wr imm_wrs_[kMaxBatchCQ];
 
     // Pre-allocated WQEs for sending ACKs.
-    struct ibv_send_wr ack_wrs_[kMaxBatchCQ];
-
+    struct ibv_send_wr tx_ack_wrs_[kMaxBatchCQ];
     // Pre-allocted SGEs for sending ACKs.
-    struct ibv_sge ack_sges_[kMaxBatchCQ];
+    struct ibv_sge tx_ack_sges_[kMaxBatchCQ];
+    
+    // Pre-allocated WQEs for receiving ACKs.
+    struct ibv_recv_wr rx_ack_wrs_[kMaxBatchCQ];
+    // Pre-allocted SGEs for receiving ACKs.
+    struct ibv_sge rx_ack_sges_[kMaxBatchCQ];
 
     /**
      * @brief Deserialize a chunk of data from the application buffer and append
