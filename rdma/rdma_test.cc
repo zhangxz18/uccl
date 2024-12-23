@@ -141,7 +141,6 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     for (int f = 0; f < FLAGS_nflow; f++) {
         for (int r = 0; r < FLAGS_nreq; r++)
             for (int m = 0; m < FLAGS_nmsg; m++) {
-                // First half of the buffer
                 len[f][r][m] = FLAGS_msize;
                 recv_data[f][r][m] = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + m * FLAGS_msize;
             }
