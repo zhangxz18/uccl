@@ -130,10 +130,6 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
             data = static_cast<char*>(data) + sge[i].length;
         }
 
-        // Track this chunk.
-        auto last_chunk = *size == 0;
-        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk);
-
         memset(&wr, 0, sizeof(wr));
         wr.wr.rdma.remote_addr = remote_addr + *sent_offset;
         wr.wr.rdma.rkey = rkey;
@@ -163,6 +159,10 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
             LOG(ERROR) << "Failed to post send: ";
             return;
         }
+
+        // Track this chunk.
+        auto last_chunk = *size == 0;
+        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk);
 
         LOG(INFO) << "Sent " << chunk_size << " bytes";
         
@@ -341,7 +341,22 @@ void UcclFlow::handle_uc_cq_wc(struct ibv_wc &wc)
     try_update_csn(qpw);
 }
 
-void UcclFlow::send_ack(struct UCQPWrapper *qpw, int qpidx) {
+void UcclFlow::flush_acks(int size)
+{
+    if (size == 0) return;
+    struct ibv_send_wr *bad_wr;
+    ack_wrs_[size - 1].next = nullptr;
+    if (ibv_post_send(rdma_ctx_->ctrl_qp_, &ack_wrs_[0], &bad_wr)) {
+        LOG(ERROR) << "Failed to post send for ACKs";
+        return;
+    }
+    // Restore
+    ack_wrs_[size - 1].next = size == kMaxBatchCQ ? nullptr : &ack_wrs_[size];
+}
+
+void UcclFlow::send_ack(int qpidx, int wr_idx)
+{
+    auto qpw = &rdma_ctx_->uc_qps_[qpidx];
     uint64_t pkt_addr;
     if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
         LOG(ERROR) << "Failed to allocate control packet buffer";
@@ -370,27 +385,18 @@ void UcclFlow::send_ack(struct UCQPWrapper *qpw, int qpidx) {
     }
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
-    struct ibv_send_wr wr;
-    memset(&wr, 0, sizeof(wr));
     struct ibv_sge sge;
     sge.addr = pkt_addr;
     sge.lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
     sge.length = kControlPayloadBytes;
 
     // We use wr_id to store the packet address for future freeing.
-    wr.wr_id = pkt_addr;
-    wr.next = nullptr;
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-    wr.opcode = IBV_WR_SEND_WITH_IMM;
-    wr.imm_data = qpidx;
-    wr.send_flags = IBV_SEND_SIGNALED;
-    auto qp = rdma_ctx_->ctrl_qp_;
-    struct ibv_send_wr *bad_wr;
-    if (ibv_post_send(qp, &wr, &bad_wr)) {
-        LOG(ERROR) << "Failed to post send";
-        return;
-    }
+    ack_wrs_[wr_idx].wr_id = pkt_addr;
+    ack_wrs_[wr_idx].sg_list = &sge;
+    ack_wrs_[wr_idx].num_sge = 1;
+    ack_wrs_[wr_idx].opcode = IBV_WR_SEND_WITH_IMM;
+    ack_wrs_[wr_idx].imm_data = qpidx;
+    ack_wrs_[wr_idx].send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
 
     LOG(INFO) << "send_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpw->qp->qp_num;
 }
@@ -399,10 +405,10 @@ void UcclFlow::complete_uc_cq(void)
 {
     auto cq = rdma_ctx_->cq_;
     struct ibv_wc wcs[kMaxBatchCQ];
+    int post_imm_qpidx_list[kMaxBatchCQ];
+    int num_post_imm = 0;
     int nb_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
     if (nb_cqe <= 0) return;
-
-    std::list<int> populate_idx_list;
     
     for (int i = 0; i < nb_cqe; i++) {
         handle_uc_cq_wc(wcs[i]);
@@ -410,31 +416,33 @@ void UcclFlow::complete_uc_cq(void)
         auto qp_num = wcs[i].qp_num;
         auto qp_idx = rdma_ctx_->qpn2idx_[qp_num];
         if (rdma_ctx_->uc_qps_[qp_idx].fill_cnt++ == 0)
-            populate_idx_list.push_back(qp_idx);
+            post_imm_qpidx_list[num_post_imm++] = qp_idx;
     }
     
     // Send coalescing ACKs.
-    for (auto idx: populate_idx_list) {
+    for (auto i = 0; i < num_post_imm; i++) {
+        auto idx = post_imm_qpidx_list[i];
         auto qpw = &rdma_ctx_->uc_qps_[idx];
-        send_ack(qpw, idx);
+        send_ack(idx, i);
     }
+    flush_acks(num_post_imm);
 
     // Populate recv work requests for consuming immediate data.
-    for (auto idx: populate_idx_list) {
+    for (auto i = 0; i < num_post_imm; i++) {
+        auto idx = post_imm_qpidx_list[i];
         auto qpw = &rdma_ctx_->uc_qps_[idx];
-        wrs_[qpw->fill_cnt - 1].next = nullptr;
+        imm_wrs_[qpw->fill_cnt - 1].next = nullptr;
         auto qp = qpw->qp;
         struct ibv_recv_wr *bad_wr;
-        DCHECK(ibv_post_recv(qp, &wrs_[0], &bad_wr) == 0);
+        DCHECK(ibv_post_recv(qp, &imm_wrs_[0], &bad_wr) == 0);
         LOG(INFO) << "Posted " << qpw->fill_cnt << " recv requests for UC QP#" << qp->qp_num;
         
         // Restore
         {
-            wrs_[qpw->fill_cnt - 1].next = (qpw->fill_cnt == kMaxBatchCQ) ? nullptr : &wrs_[qpw->fill_cnt];
+            imm_wrs_[qpw->fill_cnt - 1].next = (qpw->fill_cnt == kMaxBatchCQ) ? nullptr : &imm_wrs_[qpw->fill_cnt];
             qpw->fill_cnt = 0;
         }
     }
-
 }
 
 bool UcclFlow::complete_fifo_cq(void)

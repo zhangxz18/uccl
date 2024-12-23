@@ -225,7 +225,10 @@ class UcclFlow {
      */
     UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
         engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {
-            for (int i = 0; i < kMaxBatchCQ; i++) wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &wrs_[i + 1];
+            for (int i = 0; i < kMaxBatchCQ; i++) {
+                imm_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &imm_wrs_[i + 1];
+                ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &ack_wrs_[i + 1];
+            }
         };
 
     ~UcclFlow() {}
@@ -272,7 +275,11 @@ class UcclFlow {
 
     void handle_uc_cq_wc(struct ibv_wc &wc);
 
-    void send_ack(struct UCQPWrapper *qpw, int qpidx);
+    // Send one ACK for a UC QP using the given WR index. ACKs are finally transmitted calling flush_acks.
+    void send_ack(int qpidx, int wr_idx);
+
+    // Flush all ACKs in the batch.
+    void flush_acks(int size);
 
     void complete_ctrl_cq(void);
 
@@ -318,8 +325,14 @@ class UcclFlow {
 
     uint32_t signal_cnt_ = 0;
 
+    // Index of QPs that need to post recv requests for consuming immediate data.
+    // std::vector<int> post_imm_qpidx_list_;
+
     // Pre-allocated WQEs for consuming immediate data.
-    struct ibv_recv_wr wrs_[kMaxBatchCQ];
+    struct ibv_recv_wr imm_wrs_[kMaxBatchCQ];
+
+    // Pre-allocated WQEs for sending ACKs.
+    struct ibv_send_wr ack_wrs_[kMaxBatchCQ];
 
     /**
      * @brief Deserialize a chunk of data from the application buffer and append
