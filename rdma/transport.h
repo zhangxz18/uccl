@@ -274,7 +274,7 @@ class UcclFlow {
 
     void complete_uc_cq(void);
 
-    void uc_receive_data(void);
+    void uc_receive_data(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
 
     void uc_tx_complete(void);
 

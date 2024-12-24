@@ -245,6 +245,9 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         uc_qps_[i].qp = qp;
 
         uc_qps_[i].txtracking.set_rdma_ctx(this);
+
+        INIT_LIST_HEAD(&uc_qps_[i].ack.ack_link); 
+        uc_qps_[i].ack.qpidx = i;
     }
 
     // Create Ctrl QP, CQ, and MR.

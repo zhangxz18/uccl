@@ -19,6 +19,7 @@
 #include "transport_cc.h"
 
 #include "util.h"
+#include "util_list.h"
 
 namespace uccl {
 
@@ -278,6 +279,38 @@ struct RecvComm {
     struct NetCommBase base;
 };
 
+class RXTracking {
+        static constexpr uint32_t kMAXWQE = 4;
+        static constexpr uint32_t kMAXBytes = 256 * 1024;
+    public:
+        
+        RXTracking() = default;
+        ~RXTracking() = default;
+
+        // Immediate Acknowledgement.
+        inline void cumulate_wqe(void) { cumulative_wqe_++;}
+        inline void cumulate_bytes(uint32_t bytes) { cumulative_bytes_ += bytes;}
+        inline void encounter_ooo(void) { ooo_ = true;}
+        
+        inline bool need_imm_ack(void) { return ooo_ || cumulative_wqe_ == kMAXWQE || cumulative_bytes_ >= kMAXBytes;}
+        inline void clear_imm_ack(void) {
+            ooo_ = false;
+            cumulative_wqe_ = 0;
+            cumulative_bytes_ = 0;
+        }
+        
+        // Post recv WQEs.
+        inline uint32_t need_fill(void) { return fill_cnt_++;}
+        inline uint32_t fill_count(void) { return fill_cnt_;}
+        inline void clear_fill(void) { fill_cnt_ = 0;}
+    
+    private:
+        bool ooo_ = false;
+        uint32_t cumulative_wqe_ = 0;
+        uint32_t cumulative_bytes_ = 0;
+        uint32_t fill_cnt_ = 0;
+};
+
 class TXTracking {
     public:
         struct ChunkTrack {
@@ -315,13 +348,19 @@ class TXTracking {
         std::vector<TXTracking::ChunkTrack> unacked_chunks_;
 };
 
+struct ack_item {
+    uint32_t qpidx;
+    struct list_head ack_link;
+};
+
 struct UCQPWrapper {
     struct ibv_qp *qp;
     uint32_t local_psn;
     uint32_t remote_psn;
-    uint32_t fill_cnt;
     swift::Pcb pcb;
     TXTracking txtracking;
+    RXTracking rxtracking;
+    struct ack_item ack;
 };
 
 /**

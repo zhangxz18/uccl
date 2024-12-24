@@ -3,6 +3,7 @@
 #include "transport_config.h"
 #include "util_rdma.h"
 #include "util_timer.h"
+#include "util_list.h"
 #include <cstdlib>
 #include <endian.h>
 #include <infiniband/verbs.h>
@@ -232,6 +233,10 @@ bool UcclFlow::handle_ctrl_cq_wc(void)
             LOG(INFO) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
                 ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
                 ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
+            
+            qpw->pcb.update_rate(rdtsc(), fabric_delay_tsc);
+
+            LOG(INFO) << "CC rate: " << qpw->pcb.timely.get_rate_gbps() << " Gbps";
 
             qpw->pcb.snd_una = ackno;
             qpw->pcb.duplicate_acks = 0;
@@ -311,7 +316,7 @@ void UcclFlow::uc_tx_complete(void)
     // Do nothing here.
 }
 
-void UcclFlow::uc_receive_data(void)
+void UcclFlow::uc_receive_data(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
     
@@ -321,7 +326,8 @@ void UcclFlow::uc_receive_data(void)
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
     auto qp_num = ibv_wc_read_qp_num(cq_ex);
-    auto qpw = &rdma_ctx_->uc_qps_[rdma_ctx_->qpn2idx_[qp_num]];
+    auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
+    auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
     auto hint = imm_data.GetHint();
     auto csn = imm_data.GetCSN();
@@ -347,6 +353,9 @@ void UcclFlow::uc_receive_data(void)
 
     ready_csn_.insert(csn);
 
+    // Always use the latest timestamp.
+    qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
+
     qpw->pcb.sack_bitmap_bit_set(distance);
 
     // Locate request by rid
@@ -370,6 +379,28 @@ void UcclFlow::uc_receive_data(void)
     }
 
     try_update_csn(qpw);
+
+    if (distance)
+        qpw->rxtracking.encounter_ooo();
+    
+    qpw->rxtracking.cumulate_wqe();
+    qpw->rxtracking.cumulate_bytes(byte_len);
+
+    if (list_empty(&qpw->ack.ack_link))
+        list_add_tail(&qpw->ack.ack_link, ack_list);
+
+    // Send ACK if needed.
+    if (qpw->rxtracking.need_imm_ack()) {
+        send_ack(qpidx, 0);
+        flush_acks(1);
+
+        qpw->rxtracking.clear_imm_ack();
+        list_del(&qpw->ack.ack_link);
+    }
+
+    if (qpw->rxtracking.need_fill() == 0) {
+        post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+    }
 }
 
 void UcclFlow::flush_acks(int size)
@@ -432,29 +463,22 @@ void UcclFlow::complete_uc_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
     struct ibv_wc wcs[kMaxBatchCQ];
-    int post_imm_qpidx_list[kMaxBatchCQ];
+    int post_recv_qidx_list[kMaxBatchCQ];
+    LIST_HEAD(ack_list);
     int cq_budget = 0;
-    int num_post_imm = 0;
+    int num_post_recv = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {0};
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+    
     while (1) {
         DCHECK(cq_ex->status == IBV_WC_SUCCESS);
         if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV_RDMA_WITH_IMM) {
             // Receive data.
-            uc_receive_data();
-            auto qp_num = ibv_wc_read_qp_num(cq_ex);
-            auto qp_idx = rdma_ctx_->qpn2idx_[qp_num];
-            auto t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
-            // Always use the latest timestamp.
-            rdma_ctx_->uc_qps_[qp_idx].pcb.t_remote_nic_rx = t_remote_nic_rx;
-            if (rdma_ctx_->uc_qps_[qp_idx].fill_cnt++ == 0) {
-                post_imm_qpidx_list[num_post_imm++] = qp_idx;
-            }
+            uc_receive_data(&ack_list, post_recv_qidx_list, &num_post_recv);
         } else {
-            // Handle TX completion.
             DCHECK(ibv_wc_read_opcode(cq_ex) == IBV_WC_RDMA_WRITE);
-
+            // Handle TX completion.
             uc_tx_complete();
         }
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
@@ -462,28 +486,32 @@ void UcclFlow::complete_uc_cq(void)
     ibv_end_poll(cq_ex);
     
     // Send coalescing ACKs.
-    auto batch_tsc = rdtsc();
-    for (auto i = 0; i < num_post_imm; i++) {
-        auto idx = post_imm_qpidx_list[i];
-        auto qpw = &rdma_ctx_->uc_qps_[idx];
-        send_ack(idx, i);
+    {
+        int wr_idx = 0;
+        struct list_head *pos, *n;
+        list_for_each_safe(pos, n, &ack_list) {
+            auto ack_item = list_entry(pos, struct ack_item, ack_link);
+            auto qpidx = ack_item->qpidx;
+            send_ack(qpidx, wr_idx++);
+            list_del(pos);
+        }
+        flush_acks(wr_idx);
     }
-    flush_acks(num_post_imm);
 
     // Populate recv work requests for consuming immediate data.
-    for (auto i = 0; i < num_post_imm; i++) {
-        auto idx = post_imm_qpidx_list[i];
+    for (auto i = 0; i < num_post_recv; i++) {
+        auto idx = post_recv_qidx_list[i];
         auto qpw = &rdma_ctx_->uc_qps_[idx];
-        imm_wrs_[qpw->fill_cnt - 1].next = nullptr;
+        imm_wrs_[qpw->rxtracking.fill_count() - 1].next = nullptr;
         auto qp = qpw->qp;
         struct ibv_recv_wr *bad_wr;
         DCHECK(ibv_post_recv(qp, &imm_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << qpw->fill_cnt << " recv requests for UC QP#" << qp->qp_num;
+        LOG(INFO) << "Posted " << qpw->rxtracking.fill_count() << " recv requests for UC QP#" << qp->qp_num;
         
         // Restore
         {
-            imm_wrs_[qpw->fill_cnt - 1].next = (qpw->fill_cnt == kMaxBatchCQ) ? nullptr : &imm_wrs_[qpw->fill_cnt];
-            qpw->fill_cnt = 0;
+            imm_wrs_[qpw->rxtracking.fill_count() - 1].next = (qpw->rxtracking.fill_count() == kMaxBatchCQ) ? nullptr : &imm_wrs_[qpw->rxtracking.fill_count()];
+            qpw->rxtracking.clear_fill();
         }
     }
 }
