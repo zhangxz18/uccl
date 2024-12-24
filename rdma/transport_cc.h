@@ -281,6 +281,9 @@ struct Pcb {
         sack_bitmap_count++;
     }
 
+    uint64_t t_remote_nic_rx{0};
+    uint64_t t_remote_host_rx{0};
+
     uint32_t target_delay{0};
     UINT_20 snd_nxt{0};
     UINT_20 snd_una{0};

@@ -151,12 +151,9 @@ struct __attribute__((packed)) UcclPktHdr {
     be64_t flow_id;       // Flow ID to denote the connection.
     be32_t seqno;  // Sequence number to denote the packet counter in the flow.
     be32_t ackno;  // Sequence number to denote the packet counter in the flow.
-    uint64_t timestamp1;  // Filled by sender with calibration for output queue
-    uint64_t timestamp2;  // Filled by recver eBPF
 };
 struct __attribute__((packed)) UcclSackHdr {
-    uint64_t timestamp3;  // Filled by recer with calibration for output queue
-    uint64_t timestamp4;  // Filled by sender eBPF
+    be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
     be64_t sack_bitmap[kSackBitmapSize /
                        swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
                                                             // SACKs received.
@@ -164,8 +161,8 @@ struct __attribute__((packed)) UcclSackHdr {
 };
 static const size_t kUcclHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
-static_assert(kUcclHdrLen == 40, "UcclPktHdr size mismatch");
-static_assert(kUcclSackHdrLen == 146, "UcclSackHdr size mismatch");
+static_assert(kUcclHdrLen == 24, "UcclPktHdr size mismatch");
+static_assert(kUcclSackHdrLen == 138, "UcclSackHdr size mismatch");
 static_assert(kUcclHdrLen + kUcclSackHdrLen <= 256, "UcclHdr + SackHdr size mismatch");
 
 #ifdef USE_TCP
@@ -277,7 +274,9 @@ class UcclFlow {
 
     void complete_uc_cq(void);
 
-    void handle_uc_cq_wc(void);
+    void uc_receive_data(void);
+
+    void uc_tx_complete(void);
 
     bool handle_ctrl_cq_wc(void);
 
@@ -415,19 +414,28 @@ class UcclRDMAEngine {
 
     /**
      * @brief Construct a new UcclRDMAEngine object.
-     *
+     * @param dev           Device index.
      * @param engine_id     Engine index.
      * @param channel       Uccl channel the engine will be responsible for.
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclRDMAEngine(int engine_id, Channel *channel, const std::string local_addr)
+    UcclRDMAEngine(int dev, int engine_id, Channel *channel, const std::string local_addr)
         : local_addr_(htonl(str_to_ip(local_addr))),
           engine_idx_(engine_id),
+          dev_(dev),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
+          last_sync_clock_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
+            auto context = RDMAFactory::get_factory_dev(dev_)->context;
+            struct ibv_values_ex values;
+            values.comp_mask = IBV_VALUES_MASK_RAW_CLOCK;
+            ibv_query_rt_values_ex(context, &values);
+            auto nic_clock = values.raw_clock.tv_sec * 1e9 + values.raw_clock.tv_nsec;
+            last_nic_clock_ = nic_clock;
+            last_host_clock_ = rdtsc();
     }
 
     /**
@@ -502,6 +510,34 @@ class UcclRDMAEngine {
      */
     void handle_deregmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
 
+    inline bool need_sync(uint64_t now) {
+        return now - last_sync_clock_tsc_ > ns_to_cycles(kSyncClockIntervalNS, freq_ghz);
+    }
+
+    inline void sync_clock(void) {
+        auto host_clock = rdtsc();
+        if (need_sync(host_clock)) {
+            auto context = RDMAFactory::get_factory_dev(dev_)->context;
+            struct ibv_values_ex values;
+            values.comp_mask = IBV_VALUES_MASK_RAW_CLOCK;
+            ibv_query_rt_values_ex(context, &values);
+
+            auto nic_clock = values.raw_clock.tv_sec * 1e9 + values.raw_clock.tv_nsec;
+
+            // Update ratio and offset
+            ratio_ = (1.0 * (int64_t)host_clock - (int64_t)last_host_clock_) / ((int64_t)nic_clock - (int64_t)last_nic_clock_);
+            offset_ = host_clock - ratio_ * nic_clock;
+            
+            last_sync_clock_tsc_ = host_clock;
+        }
+    }
+
+    // Convert NIC clock to host clock (TSC).
+    inline uint64_t convert_nic_to_host(uint64_t host_clock, uint64_t nic_clock) {
+        if (need_sync(host_clock)) sync_clock();
+        return ratio_ * nic_clock + offset_;
+    }
+
     // Called by application to shutdown the engine. App will need to join
     // the engine thread.
     inline void shutdown() { shutdown_ = true; }
@@ -524,6 +560,8 @@ class UcclRDMAEngine {
    private:
     uint32_t local_addr_;
     char local_l2_addr_[ETH_ALEN];
+    // Device index
+    int dev_;
     // Engine index
     uint32_t engine_idx_;
     // UcclFlow map
@@ -540,6 +578,14 @@ class UcclRDMAEngine {
     uint64_t periodic_ticks_;
     // Slow timer interval in TSC.
     uint64_t kSlowTimerIntervalTsc_;
+
+    // Timestamp of last clock synchronization.
+    uint64_t last_sync_clock_tsc_;
+    uint64_t last_host_clock_;
+    uint64_t last_nic_clock_;
+    double ratio_ = 0;
+    double offset_ = 0;
+
     // Whether shutdown is requested.
     std::atomic<bool> shutdown_{false};
 };
@@ -574,7 +620,8 @@ class RDMAEndpoint {
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
     // The first CPU to run the engine thread belongs to the RDMAEndpoint.
-    // The range of CPUs to run the engine thread is [engine_cpu_start_, engine_cpu_start_ + num_engines_per_dev_).
+    // The range of CPUs for one device to run engine threads is 
+    // [engine_cpu_start_ + i*dev, engine_cpu_start_ + i*dev + num_engines_per_dev_). 
     int engine_cpu_start_;
 
     // RDMA devices.
@@ -606,8 +653,12 @@ class RDMAEndpoint {
 
     // Connecting to a remote address; thread-safe
     ConnID uccl_connect(int dev, std::string remote_ip);
+    // Explicitly specifying the engine_id to install the flow.
+    ConnID uccl_connect(int dev, int engine_id, std::string remote_ip);
     // Accepting a connection from a remote address; thread-safe
     ConnID uccl_accept(int dev, std::string &remote_ip);
+    // Explicitly specifying the engine_id to install the flow.
+    ConnID uccl_accept(int dev, int engine_id, std::string &remote_ip);  
     
     // Registering a memory region.
     bool uccl_regmr(ConnID flow_id, void *data, size_t len, int type);
@@ -628,6 +679,7 @@ class RDMAEndpoint {
 
     void install_flow_on_engine_rdma(int dev, FlowID flow_id, const std::string &remote_ip,
                                      uint32_t local_engine_idx, int bootstrap_fd, bool is_send);
+    inline void put_load_on_engine(int engine_id);
     inline int find_least_loaded_engine_idx_and_update();
     inline void fence_and_clean_ctx(PollCtx *ctx);
 

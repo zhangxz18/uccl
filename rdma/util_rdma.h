@@ -286,15 +286,24 @@ class TXTracking {
             void *chunk_addr;
             uint32_t chunk_size;
             bool last_chunk;
+            uint64_t timestamp;
         };
 
         TXTracking() = default;
         ~TXTracking() = default;
 
-        void ack_chunks(uint32_t num_acked_chunks);
+        uint64_t ack_chunks(uint32_t num_acked_chunks);
 
-        inline void track_chunk(struct FlowRequest *req, uint32_t csn, void *chunk_addr, uint32_t chunk_size, bool last_chunk) {
-            unacked_chunks_.push_back({req, csn, chunk_addr, chunk_size, last_chunk});
+        inline void track_chunk(struct FlowRequest *req, uint32_t csn, void *chunk_addr, uint32_t chunk_size, bool last_chunk, uint64_t timestamp) {
+            unacked_chunks_.push_back({req, csn, chunk_addr, chunk_size, last_chunk, timestamp});
+        }
+
+        inline size_t track_size(void) {
+            return unacked_chunks_.size();
+        }
+
+        inline uint64_t track_lookup_ts(uint32_t track_idx) {
+            return unacked_chunks_[track_idx].timestamp;
         }
 
         inline void set_rdma_ctx(struct RDMAContext *rdma_ctx) {
@@ -450,8 +459,8 @@ class RDMAContext {
             return nullptr;
         }
 
-        inline struct UCQPWrapper *select_qpw(void) {
-            return &uc_qps_[std::rand() % kPortEntropy];
+        inline uint32_t select_qpidx(void) {
+            return std::rand() % kPortEntropy;
         }
 
         // When sync_cnt_ equals to kTotalQP, the flow is ready.
@@ -498,6 +507,7 @@ class RDMAFactory {
         static void init_dev(int gid_idx);
         static RDMAContext *CreateContext(int dev, struct RDMAExchangeFormatLocal meta);
         static struct FactoryDevice *get_factory_dev(int dev);
+        static bool need_sync_clock(int dev);
         static void shutdown(void);
         
         std::string to_string(void) const;

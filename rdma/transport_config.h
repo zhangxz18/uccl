@@ -33,6 +33,7 @@ static const uint8_t NUM_DEVICES = 2;
 // SgeSize = MTU << kSgeSizeShift
 static const uint32_t kSgeSizeShift = 6;
 static const uint32_t kSignalInterval = 256;
+static const uint32_t kSyncClockIntervalNS = 100000;
 static const uint32_t kCQMODCount = 16;
 static const uint32_t kCQMODPeriod = 10;
 static const uint32_t kMaxSge = 32;

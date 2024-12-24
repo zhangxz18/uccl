@@ -2,7 +2,9 @@
 #include "transport_cc.h"
 #include "transport_config.h"
 #include "util_rdma.h"
+#include "util_timer.h"
 #include <cstdlib>
+#include <endian.h>
 #include <infiniband/verbs.h>
 #include <utility>
 
@@ -117,7 +119,8 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
     while (*size) {
 
         int chunk_size = 0;
-        auto qpw = rdma_ctx_->select_qpw();
+        auto qpidx = rdma_ctx_->select_qpidx();
+        auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
         int i;
         for (i = 0; i < kMaxSge; i++) {
@@ -137,7 +140,8 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
         wr.num_sge = i;
         wr.next = nullptr;
 
-        // Occasionally post a request with the IBV_SEND_SIGNALED flag.
+        // There is no need to signal every WQE since we don't handle TX completions.
+        // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
         if (signal_cnt_++ % kSignalInterval == 0)
             wr.send_flags = IBV_SEND_SIGNALED;
 
@@ -154,6 +158,8 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
 
         wr.imm_data = htonl(imm_data.GetImmData());
 
+        auto t1 = rdtsc();
+
         struct ibv_send_wr *bad_wr;
         if (ibv_post_send(qpw->qp, &wr, &bad_wr)) {
             LOG(ERROR) << "Failed to post send: ";
@@ -162,7 +168,7 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
 
         // Track this chunk.
         auto last_chunk = *size == 0;
-        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk);
+        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk, t1);
 
         LOG(INFO) << "Sent " << chunk_size << " bytes";
         
@@ -179,9 +185,7 @@ void UcclFlow::rdma_multi_send(int slot)
     auto slots = rem_fifo->elems[slot];
     auto nmsgs = slots[0].nmsgs;
 
-    for (int i = 0; i < nmsgs; i++) {
-        rdma_single_send(reqs[i], slots[i], i);
-    }
+    for (int i = 0; i < nmsgs; i++) rdma_single_send(reqs[i], slots[i], i);
 }
 
 bool UcclFlow::handle_ctrl_cq_wc(void)
@@ -196,6 +200,7 @@ bool UcclFlow::handle_ctrl_cq_wc(void)
         // Sending ACK is done.
     } else if (wc_opcode == IBV_WC_RECV && cq_ex->status == IBV_WC_SUCCESS) {
         // Receiving an ACK.
+        auto t6 = rdtsc();
         auto qpidx = ibv_wc_read_imm_data(cq_ex);
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
         ret = true;
@@ -216,7 +221,17 @@ bool UcclFlow::handle_ctrl_cq_wc(void)
             
             size_t num_acked_chunks = ackno - qpw->pcb.snd_una.to_uint32();
 
-            qpw->txtracking.ack_chunks(num_acked_chunks);
+            auto t1 = qpw->txtracking.ack_chunks(num_acked_chunks);
+            auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
+            auto t5 = engine_->convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
+
+            /// TODO: Congestion control
+            auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
+            auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
+
+            LOG(INFO) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
+                ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
+                ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
 
             qpw->pcb.snd_una = ackno;
             qpw->pcb.duplicate_acks = 0;
@@ -291,16 +306,14 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
     }
 }
 
-void UcclFlow::handle_uc_cq_wc(void)
+void UcclFlow::uc_tx_complete(void)
+{
+    // Do nothing here.
+}
+
+void UcclFlow::uc_receive_data(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
-
-    if (unlikely(cq_ex->status != IBV_WC_SUCCESS)) {
-        LOG(ERROR) << "Error in UC CQ completion:" << cq_ex->status;
-        return;
-    }
-    if (ibv_wc_read_opcode(cq_ex) != IBV_WC_RECV_RDMA_WITH_IMM)
-        return;
     
     DCHECK(rdma_ctx_->is_send_ == false);
     
@@ -385,13 +398,13 @@ void UcclFlow::send_ack(int qpidx, int wr_idx)
     ucclh->seqno = be32_t(qpw->pcb.seqno().to_uint32());
     ucclh->ackno = be32_t(qpw->pcb.ackno().to_uint32());
     ucclh->flow_id= be64_t(flow_id_);
-    ucclh->timestamp1 = 0;
-    ucclh->timestamp2 = 0;
 
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
 
-    ucclsackh->timestamp3 = 0;
-    ucclsackh->timestamp4 = 0;
+    auto t4 = rdtsc();
+    auto t2 = engine_->convert_nic_to_host(t4, rdma_ctx_->uc_qps_[qpidx].pcb.t_remote_nic_rx);
+
+    ucclsackh->remote_queueing = be64_t(to_usec(t4 - t2, freq_ghz));
 
     for (size_t i = 0; i < sizeof(UcclSackHdr::sack_bitmap) /
                                sizeof(UcclSackHdr::sack_bitmap[0]);
@@ -426,18 +439,30 @@ void UcclFlow::complete_uc_cq(void)
     struct ibv_poll_cq_attr poll_cq_attr = {0};
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
     while (1) {
-        handle_uc_cq_wc();
+        DCHECK(cq_ex->status == IBV_WC_SUCCESS);
         if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV_RDMA_WITH_IMM) {
+            // Receive data.
+            uc_receive_data();
             auto qp_num = ibv_wc_read_qp_num(cq_ex);
             auto qp_idx = rdma_ctx_->qpn2idx_[qp_num];
-            if (rdma_ctx_->uc_qps_[qp_idx].fill_cnt++ == 0)
+            auto t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
+            // Always use the latest timestamp.
+            rdma_ctx_->uc_qps_[qp_idx].pcb.t_remote_nic_rx = t_remote_nic_rx;
+            if (rdma_ctx_->uc_qps_[qp_idx].fill_cnt++ == 0) {
                 post_imm_qpidx_list[num_post_imm++] = qp_idx;
+            }
+        } else {
+            // Handle TX completion.
+            DCHECK(ibv_wc_read_opcode(cq_ex) == IBV_WC_RDMA_WRITE);
+
+            uc_tx_complete();
         }
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }
     ibv_end_poll(cq_ex);
     
     // Send coalescing ACKs.
+    auto batch_tsc = rdtsc();
     for (auto i = 0; i < num_post_imm; i++) {
         auto idx = post_imm_qpidx_list[i];
         auto qpw = &rdma_ctx_->uc_qps_[idx];
@@ -732,6 +757,8 @@ void UcclRDMAEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
+        sync_clock();
+
         handle_pending_tx_work();
 
         handle_async_recv();
@@ -991,10 +1018,11 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
          engine_id < total_num_engines; engine_id++, engine_cpu_id++) {
         
-        auto local_ip_str = rdma_dev_list_[engine_id % num_devices].local_ip_str;
+        auto dev = engine_id / num_engines_per_dev;
+        auto local_ip_str = rdma_dev_list_[dev].local_ip_str;
         
         engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
-            engine_id, channel_vec_[engine_id], local_ip_str));
+            dev, engine_id, channel_vec_[engine_id], local_ip_str));
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {
@@ -1135,6 +1163,79 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
+ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip) {
+    struct sockaddr_in serv_addr;
+    struct hostent *server;
+    int bootstrap_fd;
+
+    bootstrap_fd = socket(AF_INET, SOCK_STREAM, 0);
+    DCHECK(bootstrap_fd >= 0);
+
+    server = gethostbyname(remote_ip.c_str());
+    DCHECK(server);
+
+    bzero((char *)&serv_addr, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
+          server->h_length);
+    serv_addr.sin_port = htons(kBootstrapPort);
+
+    // Force the socket to bind to the local IP address.
+    sockaddr_in localaddr = {0};
+    localaddr.sin_family = AF_INET;
+    auto local_ip_str = rdma_dev_list_[dev].local_ip_str;
+    localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
+    bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
+
+    LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
+              << kBootstrapPort;
+
+    // Connect and set nonblocking and nodelay
+    while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
+                   sizeof(serv_addr))) {
+        LOG(INFO) << "[Endpoint] connecting... Make sure the server is up.";
+        sleep(1);
+    }
+
+    fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
+    int flag = 1;
+    setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
+               sizeof(int));
+
+    auto local_engine_idx = engine_id;
+    DCHECK(local_engine_idx < num_engines_per_dev_);
+    put_load_on_engine(local_engine_idx);
+    CHECK_GE(local_engine_idx, 0);
+
+    FlowID flow_id;
+    while (true) {
+        int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+        DCHECK(ret == sizeof(FlowID));
+        LOG(INFO) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
+                  << "0x" << flow_id;
+
+        // Check if the flow ID is unique, and return it to the server.
+        bool unique;
+        {
+            std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
+            unique =
+                (bootstrap_fd_map_.find(flow_id) == bootstrap_fd_map_.end());
+            if (unique) bootstrap_fd_map_[flow_id] = bootstrap_fd;
+        }
+
+        ret = send_message(bootstrap_fd, &unique, sizeof(bool));
+        DCHECK(ret == sizeof(bool));
+
+        if (unique) break;
+    }
+    
+    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, true);
+
+    return ConnID{.flow_id = flow_id,
+                  .engine_idx = (uint32_t)local_engine_idx,
+                  .boostrap_id = bootstrap_fd};
+}
+
 ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
     struct sockaddr_in cli_addr;
     socklen_t clilen = sizeof(cli_addr);
@@ -1154,6 +1255,72 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
                sizeof(int));
 
     auto local_engine_idx = find_least_loaded_engine_idx_and_update();
+    CHECK_GE(local_engine_idx, 0);
+
+    // Generate unique flow ID for both client and server.
+    FlowID flow_id;
+    while (true) {
+        flow_id = U64Rand(0, std::numeric_limits<FlowID>::max());
+        bool unique;
+        {
+            std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
+            unique =
+                (bootstrap_fd_map_.find(flow_id) == bootstrap_fd_map_.end());
+            if (unique) {
+                // Speculatively insert the flow ID.
+                bootstrap_fd_map_[flow_id] = bootstrap_fd;
+            } else {
+                continue;
+            }
+        }
+
+        LOG(INFO) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
+                  << flow_id;
+
+        // Ask client if this is unique
+        int ret = send_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+        DCHECK(ret == sizeof(FlowID));
+        bool unique_from_client;
+        ret = receive_message(bootstrap_fd, &unique_from_client, sizeof(bool));
+        DCHECK(ret == sizeof(bool));
+
+        if (unique_from_client) {
+            break;
+        } else {
+            // Remove the speculatively inserted flow ID.
+            std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
+            DCHECK(1 == bootstrap_fd_map_.erase(flow_id));
+        }
+    }
+
+    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, false);
+
+    return ConnID{.flow_id = flow_id,
+                  .engine_idx = (uint32_t)local_engine_idx,
+                  .boostrap_id = bootstrap_fd};
+}
+
+ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip) {
+    struct sockaddr_in cli_addr;
+    socklen_t clilen = sizeof(cli_addr);
+    int bootstrap_fd;
+
+    // Accept connection and set nonblocking and nodelay
+    bootstrap_fd = accept(listen_fd_, (struct sockaddr *)&cli_addr, &clilen);
+    DCHECK(bootstrap_fd >= 0);
+    remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
+
+    LOG(INFO) << "[Endpoint] accept from " << remote_ip << ":"
+              << cli_addr.sin_port;
+
+    fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
+    int flag = 1;
+    setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
+               sizeof(int));
+
+    auto local_engine_idx = engine_id;
+    DCHECK(local_engine_idx < num_engines_per_dev_);
+    put_load_on_engine(local_engine_idx);
     CHECK_GE(local_engine_idx, 0);
 
     // Generate unique flow ID for both client and server.
@@ -1272,6 +1439,8 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     // We use this pointer to fill meta data.
     auto *to_engine_meta = &meta.ToEngine;
     struct RDMAExchangeFormatRemote xchg_meta[RDMAContext::kTotalQP];
+
+    DCHECK(dev < num_devices_);
 
     auto factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -1402,6 +1571,11 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
 
     // sync so to receive flow_id packets.
     net_barrier(bootstrap_fd);
+}
+
+inline void RDMAEndpoint::put_load_on_engine(int engine_id)
+{
+    engine_load_vec_[engine_id]++;
 }
 
 inline int RDMAEndpoint::find_least_loaded_engine_idx_and_update() {

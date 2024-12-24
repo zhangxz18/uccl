@@ -349,9 +349,11 @@ RDMAContext::~RDMAContext()
     LOG(INFO) << "RDMAContext destroyed";
 }
 
-void TXTracking::ack_chunks(uint32_t num_acked_chunks)
+uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
+
+    uint64_t timestamp = 0;
     
     while (num_acked_chunks) {
         auto &chunk = unacked_chunks_.front();
@@ -367,9 +369,13 @@ void TXTracking::ack_chunks(uint32_t num_acked_chunks)
             // Free the request.
             rdma_ctx_->free_request(chunk.req);
         }
+        if (timestamp == 0)
+            timestamp = chunk.timestamp;
         unacked_chunks_.erase(unacked_chunks_.begin());
         num_acked_chunks--;
     }
+
+    return timestamp;
 }
 
 } // namespace uccl
