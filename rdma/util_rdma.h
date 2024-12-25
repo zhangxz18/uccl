@@ -8,6 +8,7 @@
 
 #include <deque>
 #include <mutex>
+#include <set>
 
 #include <sys/mman.h>
 
@@ -337,6 +338,8 @@ class RXTracking {
         static constexpr uint32_t kMAXWQE = 4;
         static constexpr uint32_t kMAXBytes = 256 << 10;
     public:
+
+        std::set<int> ready_csn_;
         
         RXTracking() = default;
         ~RXTracking() = default;
