@@ -30,7 +30,7 @@ static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {
 static const uint8_t IB_PORT_NUM = 1;
 static const uint8_t NUM_DEVICES = 2;
 
-static const uint32_t kChunkSize = 1 << 16;
+static const uint32_t kChunkSize = 256 << 10;
 static const uint32_t kSignalInterval = 256;
 static const uint32_t kSyncClockIntervalNS = 100000;
 static const uint32_t kCQMODCount = 16;

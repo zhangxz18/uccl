@@ -319,7 +319,8 @@ void UcclFlow::flush_timing_wheel(void)
 
 void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
 {
-    while (!qpw->rxtracking.ready_csn_.empty() && static_cast<uint32_t>(*qpw->rxtracking.ready_csn_.begin()) == qpw->pcb.rcv_nxt.to_uint32()) {
+    while (!qpw->rxtracking.ready_csn_.empty() && 
+        static_cast<uint32_t>(*qpw->rxtracking.ready_csn_.begin()) == qpw->pcb.rcv_nxt.to_uint32()) {
         auto csn = *qpw->rxtracking.ready_csn_.begin();
         qpw->rxtracking.ready_csn_.erase(qpw->rxtracking.ready_csn_.begin());
         

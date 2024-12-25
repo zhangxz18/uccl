@@ -57,7 +57,7 @@ struct wheel_record_t {
     }
 };
 
-static constexpr double kWheelSlotWidthUs = .5;  ///< Duration per wheel slot
+static constexpr double kWheelSlotWidthUs = .5 * 64;  ///< Duration per wheel slot
 static constexpr size_t kSessionCredits = MAX_TIMING_WHEEL_PKTS;
 static constexpr double kWheelHorizonUs =
     1000000 * (kSessionCredits * RDMA_MTU) / Timely::kMinRate;
@@ -73,10 +73,9 @@ static constexpr bool kWheelRecord = false;  ///< Fast-record wheel actions
 
 /// One entry in a timing wheel bucket
 struct wheel_ent_t {
-    uint64_t sslot_ : 48;  ///< The things I do for perf
-    uint64_t chunk_size_ : 16;
-    wheel_ent_t(void *sslot, size_t chunk_size)
-        : sslot_(reinterpret_cast<uint64_t>(sslot)), chunk_size_(chunk_size) {}
+    uint64_t sslot_;
+    wheel_ent_t(void *sslot)
+        : sslot_(reinterpret_cast<uint64_t>(sslot)) {}
 };
 static_assert(sizeof(wheel_ent_t) == 8, "");
 
@@ -142,7 +141,7 @@ class TimingWheel {
     // chunk_size must be <= 64KB.
     inline void queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *sge, size_t chunk_size) {
         
-        DCHECK(chunk_size <= (1 << 16));
+        DCHECK(chunk_size <= (1 << 18));
         // target_rate = Timely::gbps_to_rate(400.0);
         double ns_delta = 1000000000 * (chunk_size / target_rate);
         double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
@@ -152,7 +151,7 @@ class TimingWheel {
 
         prev_desired_tx_tsc_ = desired_tx_tsc;
 
-        insert(wheel_ent_t{sge, chunk_size}, ref_tsc, desired_tx_tsc);
+        insert(wheel_ent_t{sge}, ref_tsc, desired_tx_tsc);
     }
 
     // Get the number of ready tx chunks from the timing wheel.
@@ -184,7 +183,7 @@ class TimingWheel {
                 ready_queue_.pop_front();
                 auto sge = reinterpret_cast<struct sge_ex *>(ent.sslot_);
                 auto timely = sge->timely;
-                queue_on_timing_wheel(timely->rate_, now, (void *)(uint64_t)ent.sslot_, ent.chunk_size_);
+                queue_on_timing_wheel(timely->rate_, now, (void *)(uint64_t)ent.sslot_, sge->sge.length);
             }
 
             ready_entries_ = 0;
@@ -200,7 +199,7 @@ class TimingWheel {
 
     /// Return a dummy wheel entry
     static wheel_ent_t get_dummy_ent() {
-        return wheel_ent_t(reinterpret_cast<void *>(0xdeadbeef), 3185);
+        return wheel_ent_t(reinterpret_cast<void *>(0xdeadbeef));
     }
 
     /// Roll the wheel forward until it catches up with current time. Hopefully
@@ -258,8 +257,10 @@ class TimingWheel {
             if (dst_wslot >= kWheelNumWslots) dst_wslot -= kWheelNumWslots;
         }
 
-        if (kWheelRecord)
-            record_vec_.emplace_back(ent.chunk_size_, desired_tx_tsc);
+        if (kWheelRecord) {
+            auto sge = reinterpret_cast<struct sge_ex *>(ent.sslot_);
+            record_vec_.emplace_back(sge->sge.length, desired_tx_tsc);
+        }
 
         insert_into_wslot(dst_wslot, ent);
     }
@@ -290,8 +291,9 @@ class TimingWheel {
                 ready_entries_++;
                 ready_queue_.push_back(bkt->entry_[i]);
                 if (kWheelRecord) {
+                    auto sge = reinterpret_cast<struct sge_ex *>(bkt->entry_[i].sslot_);
                     record_vec_.push_back(
-                        wheel_record_t(bkt->entry_[i].chunk_size_));
+                        wheel_record_t(sge->sge.length));
                 }
             }
 
