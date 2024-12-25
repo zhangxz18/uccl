@@ -74,9 +74,9 @@ static constexpr bool kWheelRecord = false;  ///< Fast-record wheel actions
 /// One entry in a timing wheel bucket
 struct wheel_ent_t {
     uint64_t sslot_ : 48;  ///< The things I do for perf
-    uint64_t pkt_size_ : 16;
-    wheel_ent_t(void *sslot, size_t pkt_size)
-        : sslot_(reinterpret_cast<uint64_t>(sslot)), pkt_size_(pkt_size) {}
+    uint64_t chunk_size_ : 16;
+    wheel_ent_t(void *sslot, size_t chunk_size)
+        : sslot_(reinterpret_cast<uint64_t>(sslot)), chunk_size_(chunk_size) {}
 };
 static_assert(sizeof(wheel_ent_t) == 8, "");
 
@@ -115,6 +115,7 @@ class TimingWheel {
         : freq_ghz_(args.freq_ghz_),
           wslot_width_tsc_(us_to_cycles(kWheelSlotWidthUs, freq_ghz_)),
           horizon_tsc_(us_to_cycles(kWheelHorizonUs, freq_ghz_)),
+          prev_desired_tx_tsc_(rdtsc()),
           bkt_pool_(kBktPoolSize) {
         wheel_buffer_ = new uint8_t[kWheelNumWslots * sizeof(wheel_bkt_t)];
 
@@ -135,6 +136,66 @@ class TimingWheel {
     ~TimingWheel() {
         delete[] wheel_buffer_;
         delete[] bkt_pool_buf_;
+    }
+
+    // Queue a sge (i.e., one chunk) on the timing wheel.
+    // chunk_size must be <= 64KB.
+    inline void queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *sge, size_t chunk_size) {
+        
+        DCHECK(chunk_size <= (1 << 16));
+        // target_rate = Timely::gbps_to_rate(400.0);
+        double ns_delta = 1000000000 * (chunk_size / target_rate);
+        double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
+
+        size_t desired_tx_tsc = prev_desired_tx_tsc_ + cycle_delta;
+        desired_tx_tsc = (std::max)(desired_tx_tsc, ref_tsc);
+
+        prev_desired_tx_tsc_ = desired_tx_tsc;
+
+        insert(wheel_ent_t{sge, chunk_size}, ref_tsc, desired_tx_tsc);
+    }
+
+    // Get the number of ready tx chunks from the timing wheel.
+    // Budget limits the number of chunks to be processed.
+    inline uint32_t get_num_ready_tx_chunk(uint32_t budget, struct sge_ex **sges) {
+        size_t cur_tsc = rdtsc();
+        reap(cur_tsc);
+
+        size_t num_ready = std::min(ready_entries_, (uint64_t)budget);
+        ready_entries_ -= num_ready;
+
+        // Consuming the ready entries.
+        while (ready_queue_.size() > ready_entries_) {
+            auto ent = ready_queue_.front();
+            ready_queue_.pop_front();
+            auto sge = reinterpret_cast<struct sge_ex *>(ent.sslot_);
+            *sges++ = sge;
+        }
+
+        if (unlikely(ready_entries_ > 0)) {
+            LOG_EVERY_N(INFO, 100000)
+                << "[CC] TimingWheel ready queue not empty "
+                <<  ready_entries_;
+
+            // Requeue the uncomsumed entries back to the wheel.
+            auto now = rdtsc();
+            while (!ready_queue_.empty()) {
+                auto ent = ready_queue_.front();
+                ready_queue_.pop_front();
+                auto sge = reinterpret_cast<struct sge_ex *>(ent.sslot_);
+                auto timely = sge->timely;
+                queue_on_timing_wheel(timely->rate_, now, (void *)(uint64_t)ent.sslot_, ent.chunk_size_);
+            }
+
+            ready_entries_ = 0;
+        } else {
+            ready_queue_.clear();
+        }
+
+        DCHECK_EQ(ready_entries_, 0);
+        DCHECK(ready_queue_.empty());
+
+        return num_ready;
     }
 
     /// Return a dummy wheel entry
@@ -198,7 +259,7 @@ class TimingWheel {
         }
 
         if (kWheelRecord)
-            record_vec_.emplace_back(ent.pkt_size_, desired_tx_tsc);
+            record_vec_.emplace_back(ent.chunk_size_, desired_tx_tsc);
 
         insert_into_wslot(dst_wslot, ent);
     }
@@ -230,7 +291,7 @@ class TimingWheel {
                 ready_queue_.push_back(bkt->entry_[i]);
                 if (kWheelRecord) {
                     record_vec_.push_back(
-                        wheel_record_t(bkt->entry_[i].pkt_size_));
+                        wheel_record_t(bkt->entry_[i].chunk_size_));
                 }
             }
 
@@ -255,6 +316,8 @@ class TimingWheel {
         reset_bkt(bkt);
         return bkt;
     }
+
+    size_t prev_desired_tx_tsc_;
 
     const double freq_ghz_;  ///< TSC freq, used only for us/tsc conversion
     const size_t wslot_width_tsc_;  ///< Time-granularity in TSC units

@@ -15,6 +15,7 @@
 
 #include <infiniband/verbs.h>
 
+#include "timely.h"
 #include "transport_config.h"
 #include "transport_cc.h"
 
@@ -26,6 +27,59 @@ namespace uccl {
 class RDMAContext;
 class RDMAFactory;
 extern RDMAFactory rdma_ctl;
+
+/**
+ * @brief Buffer pool for sge extension.
+ * - Single producer, single consumer.
+ */
+class SgeExPool {
+    static constexpr uint32_t kNumSge = 4096;
+    static_assert((kNumSge & (kNumSge - 1)) == 0, "kNumSge must be power of 2");
+    public:
+
+        inline bool full(void) {
+            return ((tail_ + 1) & (kNumSge - 1)) == head_;
+        }
+
+        inline bool empty(void) {
+            return head_ == tail_;
+        }
+
+        inline int alloc_sge(uint64_t *sge_addr) {
+            if (empty()) return -1;
+
+            head_ = (head_ + 1) & (kNumSge - 1);
+            *sge_addr = (uint64_t)sges + sge_pool_[head_];
+            return 0;
+        }
+
+        inline void free_sge(uint64_t sge_addr) {
+            if (full()) return;
+            sge_addr -= (uint64_t)sges;
+            sge_pool_[tail_] = sge_addr;
+            tail_ = (tail_ + 1) & (kNumSge - 1);
+        }
+
+        SgeExPool() {
+            sges= mmap(nullptr, kNumSge * sizeof(struct sge_ex), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (sges == MAP_FAILED)
+                throw std::runtime_error("Failed to allocate memory for SGE pool.");
+            head_ = tail_ = 0;
+
+            for (int i = 0; i < kNumSge - 1; i++) {
+                free_sge((uint64_t)sges + i * sizeof(struct sge_ex));
+            }
+
+        }
+        ~SgeExPool() {
+            munmap(sges, kNumSge * sizeof(struct sge_ex));
+        }
+    private:
+        void *sges;
+        uint32_t head_;
+        uint32_t tail_;
+        uint64_t sge_pool_[kNumSge];
+};
 
 /**
  * @brief Buffer pool for Ctrl packet.
@@ -73,7 +127,7 @@ class CtrlPktBuffPool {
         CtrlPktBuffPool() {
             head_ = tail_ = 0;
             for (uint32_t i = 0; i < kNumPkt - 1; i++) {
-                free_buff(i * kPktSize);
+                free_buff((uint64_t)buff_addr_ + i * kPktSize);
             }
         }
         ~CtrlPktBuffPool() = default;
@@ -419,6 +473,9 @@ class RDMAContext {
         // Memory region for retransmission.
         struct ibv_mr *retr_mr_;
 
+        // Global timing wheel for all UC QPs.
+        TimingWheel wheel_;
+
         // The device index that this context belongs to.
         int dev_;
 
@@ -451,6 +508,9 @@ class RDMAContext {
 
         // Buffer pool for control packets.
         CtrlPktBuffPool ctrl_pkt_pool_;
+
+        // Buffer pool for sge extension items.
+        SgeExPool sge_ex_pool_;
 
         /**
          * @brief Figure out the request id.

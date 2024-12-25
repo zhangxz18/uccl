@@ -111,67 +111,50 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
     auto lkey = req->send.lkey;
     auto rkey = slot.rkey;
     auto remote_addr = slot.addr;
-    struct ibv_sge sge[kMaxSge];
-    struct ibv_send_wr wr;
-
-    /// TODO: Congestion control
-    int sge_size = kSgeSize;
+    uint64_t sge_addr;
 
     while (*size) {
-
-        int chunk_size = 0;
         auto qpidx = rdma_ctx_->select_qpidx();
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
-        int i;
-        for (i = 0; i < kMaxSge; i++) {
-            if (*size == 0) break;
-            sge[i].addr = (uintptr_t)data;
-            sge[i].lkey = lkey;
-            sge[i].length = std::min(*size, sge_size);
-            *size -= sge[i].length;
-            chunk_size += sge[i].length; 
-            data = static_cast<char*>(data) + sge[i].length;
-        }
+        // Prepare SGE.
+        DCHECK(rdma_ctx_->sge_ex_pool_.alloc_sge(&sge_addr) == 0);
+        struct sge_ex *sge_ex = reinterpret_cast<struct sge_ex *>(sge_addr);
+        sge_ex->sge.addr = (uintptr_t)data;
+        sge_ex->sge.lkey = lkey;
+        sge_ex->sge.length = std::min(*size, (int)kChunkSize);
+        auto chunk_size = sge_ex->sge.length;
+        *size -= chunk_size;
+        data = static_cast<char*>(data) + sge_ex->sge.length;
 
-        memset(&wr, 0, sizeof(wr));
-        wr.wr.rdma.remote_addr = remote_addr + *sent_offset;
-        wr.wr.rdma.rkey = rkey;
-        wr.sg_list = sge;
-        wr.num_sge = i;
-        wr.next = nullptr;
+        sge_ex->wr_remote_addr = remote_addr + *sent_offset;
+        sge_ex->wr_rkey = rkey;
 
         // There is no need to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
         if (signal_cnt_++ % kSignalInterval == 0)
-            wr.send_flags = IBV_SEND_SIGNALED;
+            sge_ex->wr_send_flags = IBV_SEND_SIGNALED;
 
-        wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
         IMMData imm_data(0);
 
         imm_data.SetHint(0);
         imm_data.SetCSN(qpw->pcb.get_snd_nxt().to_uint32());
-        auto rid = slot.rid;
-        imm_data.SetRID(rid);
+        imm_data.SetRID(slot.rid);
         imm_data.SetMID(mid);
 
-        LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", mid: " << mid << ", rid: " << rid << "with QP#" << qpw->qp->qp_num;
+        sge_ex->wr_imm_data = htonl(imm_data.GetImmData());
 
-        wr.imm_data = htonl(imm_data.GetImmData());
+        sge_ex->timely = &qpw->pcb.timely;
+        sge_ex->req = req;
+        sge_ex->csn = qpw->pcb.seqno().to_uint32() - 1;
+        sge_ex->qpidx = qpidx;
+        sge_ex->last_chunk = *size == 0;
 
-        auto t1 = rdtsc();
+        // Queue the SGE on the timing wheel.
+        rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size);
 
-        struct ibv_send_wr *bad_wr;
-        if (ibv_post_send(qpw->qp, &wr, &bad_wr)) {
-            LOG(ERROR) << "Failed to post send: ";
-            return;
-        }
-
-        // Track this chunk.
-        auto last_chunk = *size == 0;
-        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32(), static_cast<char*>(data) - chunk_size, chunk_size, last_chunk, t1);
-
-        LOG(INFO) << "Sent " << chunk_size << " bytes";
+        LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << "with QP#" << qpw->qp->qp_num;
+        LOG(INFO) << "Queue " << chunk_size << " bytes";
         
         *sent_offset += chunk_size;
     }
@@ -293,6 +276,45 @@ void UcclFlow::complete_ctrl_cq(void)
         }
     }
 
+}
+
+void UcclFlow::flush_timing_wheel(void)
+{
+    auto wheel = &rdma_ctx_->wheel_;
+    struct sge_ex *exs[32];
+    struct ibv_send_wr wr, *bad_wr;
+
+    auto permitted_chunks = wheel->get_num_ready_tx_chunk(32, exs);
+
+    if (!permitted_chunks) return;
+
+    memset(&wr, 0, sizeof(wr));
+    
+    for (auto i = 0; i < permitted_chunks; i++) {
+        auto sge_ex = exs[i];
+        auto qpidx = sge_ex->qpidx;
+        auto qpw = &rdma_ctx_->uc_qps_[qpidx];
+        auto req = sge_ex->req;
+        
+        wr.sg_list = &sge_ex->sge;
+        wr.num_sge = 1;
+        wr.next = nullptr;
+        wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        wr.wr.rdma.remote_addr = sge_ex->wr_remote_addr;
+        // Use last sge_ex's rkey, imm_data.
+        wr.wr.rdma.rkey = sge_ex->wr_rkey;
+        wr.imm_data = sge_ex->wr_imm_data;
+        wr.send_flags = sge_ex->wr_send_flags;
+
+        // Track this merged chunk.
+        qpw->txtracking.track_chunk(req, be32toh(wr.imm_data), 
+            reinterpret_cast<void*>(wr.sg_list->addr), sge_ex->sge.length, 
+                sge_ex->last_chunk, rdtsc());
+        
+        DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
+
+        rdma_ctx_->sge_ex_pool_.free_sge(reinterpret_cast<uint64_t>(sge_ex));
+    }
 }
 
 void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
@@ -772,6 +794,13 @@ void UcclRDMAEngine::handle_async_send(void)
     }
 }
 
+void UcclRDMAEngine::drain_send_queues(void)
+{
+    for (auto flow: active_flows_map_) {
+        flow.second->flush_timing_wheel();
+    }
+}
+
 void UcclRDMAEngine::run() {
 
     while (!shutdown_) {
@@ -794,6 +823,8 @@ void UcclRDMAEngine::run() {
         handle_async_send();
         
         handle_completion();
+
+        drain_send_queues();
     
     }
     std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;

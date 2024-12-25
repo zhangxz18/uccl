@@ -154,7 +154,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
 }
 
 RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), sync_cnt_(0), ctrl_pkt_pool_()
+    dev_(dev), sync_cnt_(0), ctrl_pkt_pool_(), wheel_({freq_ghz})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -305,6 +305,9 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
             throw std::runtime_error("ibv_post_recv failed");
         }
     }
+
+    // Timing wheel.
+    wheel_.catchup();
 }
 
 RDMAContext::~RDMAContext()

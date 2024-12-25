@@ -119,72 +119,13 @@ struct Pcb {
     static constexpr int kRtoExpireThresInTicks = 3;  // in slow timer ticks.
     static constexpr int kRtoDisabled = -1;
     Pcb()
-        : timely(freq_ghz, kLinkBandwidth),
-          wheel_({freq_ghz}),
-          prev_desired_tx_tsc_(rdtsc()) {
-        wheel_.catchup();
-    }
+        : timely(freq_ghz, kLinkBandwidth) {}
 
     Timely timely;
-    TimingWheel wheel_;
-    size_t prev_desired_tx_tsc_;
 
+    // Called when receving an valid ACK to update rate according to RTT.
     inline void update_rate(size_t _rdtsc, size_t sample_rtt_tsc) {
         timely.update_rate(_rdtsc, sample_rtt_tsc);
-    }
-
-    inline void queue_on_timing_wheel(size_t ref_tsc, size_t pkt_size,
-                                      void *msgbuf) {
-        // auto rate = timely.rate_;
-        // auto rate = timely.link_bandwidth_;
-        // auto rate = kLinkBandwidth / NUM_ENGINES * 2;  // for bimq
-        auto rate = Timely::gbps_to_rate(50.0);
-        double ns_delta = 1000000000 * (pkt_size / rate);
-        double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
-
-        size_t desired_tx_tsc = prev_desired_tx_tsc_ + cycle_delta;
-        desired_tx_tsc = (std::max)(desired_tx_tsc, ref_tsc);
-
-        prev_desired_tx_tsc_ = desired_tx_tsc;
-
-        wheel_.insert(wheel_ent_t{msgbuf, pkt_size}, ref_tsc, desired_tx_tsc);
-    }
-
-    inline uint32_t get_num_ready_tx_pkt(uint32_t budget) {
-        size_t cur_tsc = rdtsc();
-        wheel_.reap(cur_tsc);
-
-        size_t num_ready = std::min(wheel_.ready_entries_, (uint64_t)budget);
-        wheel_.ready_entries_ -= num_ready;
-
-        if (unlikely(wheel_.ready_entries_ > 0)) {
-            LOG_EVERY_N(INFO, 100000)
-                << "[CC] TimingWheel ready queue not empty "
-                << wheel_.ready_entries_;
-
-            // Consuming the ready entries.
-            while (wheel_.ready_queue_.size() > wheel_.ready_entries_) {
-                wheel_.ready_queue_.pop_front();
-            }
-
-            // Requeue the uncomsumed entries back to the wheel.
-            auto now = rdtsc();
-            while (!wheel_.ready_queue_.empty()) {
-                auto ent = wheel_.ready_queue_.front();
-                wheel_.ready_queue_.pop_front();
-                queue_on_timing_wheel(now, ent.pkt_size_,
-                                      (void *)(uint64_t)ent.sslot_);
-            }
-
-            wheel_.ready_entries_ = 0;
-        } else {
-            wheel_.ready_queue_.clear();
-        }
-
-        DCHECK_EQ(wheel_.ready_entries_, 0);
-        DCHECK(wheel_.ready_queue_.empty());
-
-        return num_ready;
     }
 
     // Return the sender effective window in # of packets.

@@ -288,6 +288,8 @@ class UcclFlow {
 
     void complete_ctrl_cq(void);
 
+    void flush_timing_wheel(void);
+
     void try_update_csn(struct UCQPWrapper *qpw);
 
     void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid);
@@ -461,6 +463,8 @@ class UcclRDMAEngine {
      * Occasinal completion events from FIFO CQs.
      */
     void handle_completion(void);
+
+    void drain_send_queues(void);
 
     /**
      * @brief Add a flow to the list for polling FIFO CQs in future.

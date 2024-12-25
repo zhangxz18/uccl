@@ -9,6 +9,8 @@
 
 #include <iomanip>
 
+#include <infiniband/verbs.h>
+
 #include "util.h"
 #include "util_latency.h"
 #include "util_timer.h"
@@ -22,6 +24,7 @@ static constexpr double kEwmaAlpha = 0.46;
 static constexpr double kBeta = 0.26;
 
 namespace uccl {
+
 struct timely_record_t {
     double rtt_;
     double rate_;
@@ -222,4 +225,19 @@ class Timely {
         return (r / 8) * (1000 * 1000 * 1000);
     }
 };
+
+struct sge_ex {
+    struct ibv_sge sge;
+    uint64_t wr_remote_addr;
+    uint64_t wr_rkey;
+    unsigned int wr_send_flags;
+    uint32_t wr_imm_data;
+
+    Timely *timely;
+    struct FlowRequest *req;
+    uint32_t csn;
+    uint32_t qpidx : 32;
+    uint32_t last_chunk : 1;
+};
+
 }  // namespace uccl
