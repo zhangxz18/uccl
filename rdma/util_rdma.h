@@ -281,7 +281,7 @@ struct RecvComm {
 
 class RXTracking {
         static constexpr uint32_t kMAXWQE = 4;
-        static constexpr uint32_t kMAXBytes = 256 * 1024;
+        static constexpr uint32_t kMAXBytes = 256 << 10;
     public:
         
         RXTracking() = default;

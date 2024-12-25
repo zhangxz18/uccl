@@ -233,7 +233,7 @@ static void server_worker(void)
     std::vector<void *> datas;
 
     for (int i = 0; i < FLAGS_nflow; i++) {
-        auto conn_id = ep.uccl_accept(0, remote_ip);
+        auto conn_id = ep.uccl_accept(0, i % NUM_ENGINES, remote_ip);
         printf("Server accepted connection from %s (flow#%d)\n", remote_ip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);
@@ -271,7 +271,7 @@ static void client_worker(void)
     std::vector<void *> datas;
 
     for (int i = 0; i < FLAGS_nflow; i++) {
-        auto conn_id = ep.uccl_connect(0, FLAGS_serverip);
+        auto conn_id = ep.uccl_connect(0, i % NUM_ENGINES, FLAGS_serverip);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);

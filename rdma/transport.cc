@@ -115,7 +115,7 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
     struct ibv_send_wr wr;
 
     /// TODO: Congestion control
-    int sge_size = util_rdma_get_mtu_from_ibv_mtu(rdma_ctx_->mtu_) << kSgeSizeShift;
+    int sge_size = kSgeSize;
 
     while (*size) {
 

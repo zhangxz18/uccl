@@ -3,7 +3,7 @@
 #include <thread>
 #include <string>
 
-static const uint32_t NUM_ENGINES = 1;
+static const uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
@@ -30,13 +30,12 @@ static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {
 static const uint8_t IB_PORT_NUM = 1;
 static const uint8_t NUM_DEVICES = 2;
 
-// SgeSize = MTU << kSgeSizeShift
-static const uint32_t kSgeSizeShift = 6;
+static const uint32_t kSgeSize = 256 << 10;
 static const uint32_t kSignalInterval = 256;
 static const uint32_t kSyncClockIntervalNS = 100000;
 static const uint32_t kCQMODCount = 16;
 static const uint32_t kCQMODPeriod = 10;
-static const uint32_t kMaxSge = 32;
+static const uint32_t kMaxSge = 1;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
