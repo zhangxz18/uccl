@@ -138,7 +138,9 @@ class TimingWheel {
     }
 
     // Queue a work request (i.e., one chunk) on the timing wheel.
-    inline void queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *wr, size_t chunk_size) {
+    // Returns true if the work request was queued on the wheel.
+    // Otherwise, the timing wheel was bypassed and the caller can transmit directly.
+    inline bool queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *wr, size_t chunk_size, bool allow_bypass) {
         if (kTestConstantRate)
             target_rate = Timely::gbps_to_rate(400.0);
         double ns_delta = 1000000000 * (chunk_size / target_rate);
@@ -149,7 +151,12 @@ class TimingWheel {
 
         prev_desired_tx_tsc_ = desired_tx_tsc;
 
+        if (desired_tx_tsc == ref_tsc && allow_bypass) {
+            return false;
+        }
+
         insert(wheel_ent_t{wr}, ref_tsc, desired_tx_tsc);
+        return true;
     }
 
     /// Return a dummy wheel entry

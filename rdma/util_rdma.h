@@ -423,6 +423,7 @@ struct UCQPWrapper {
     struct ibv_qp *qp;
     uint32_t local_psn;
     uint32_t remote_psn;
+    uint32_t in_wheel_cnt_ = 0;
     uint32_t signal_cnt_ = 0;
     swift::Pcb pcb;
     TXTracking txtracking;

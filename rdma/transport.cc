@@ -192,6 +192,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         // Queue the SGE on the timing wheel.
         {
+            auto wheel = &rdma_ctx_->wheel_;
             uint32_t hdr_overhead;
             if (likely(chunk_size == kChunkSize && rdma_ctx_->mtu_bytes_ == 4096)) {
                 hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
@@ -199,7 +200,15 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                 auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
                 hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), wr_ex, chunk_size + hdr_overhead);
+            if (wheel->queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), 
+                wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0))
+                qpw->in_wheel_cnt_++;
+            else {
+                // Transmit this chunk directly.
+                struct ibv_send_wr *bad_wr;
+                DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
+                rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(wr_ex));
+            }
         }
 
         // Track this merged chunk.
@@ -349,6 +358,8 @@ void UcclFlow::burst_timing_wheel(void)
         auto qpw = &rdma_ctx_->uc_qps_[wr_ex->qpidx];
 
         DCHECK(ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr) == 0);
+
+        qpw->in_wheel_cnt_--;
 
         rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(wr_ex));
         wheel->ready_queue_.pop_front();
