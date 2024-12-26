@@ -132,7 +132,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             wr.next = nullptr;
             wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
 
-            if (signal_cnt_++ % kSignalInterval == 0)
+            if (qpw->signal_cnt_++ % kSignalInterval == 0)
                 wr.send_flags = IBV_SEND_SIGNALED;
             
             IMMData imm_data(0);
@@ -170,7 +170,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         // There is no need to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
-        if (signal_cnt_++ % kSignalInterval == 0)
+        if (qpw->signal_cnt_++ % kSignalInterval == 0)
             sge_ex->wr_send_flags = IBV_SEND_SIGNALED;
 
         IMMData imm_data(0);

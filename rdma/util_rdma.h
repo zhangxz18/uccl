@@ -426,6 +426,7 @@ struct UCQPWrapper {
     struct ibv_qp *qp;
     uint32_t local_psn;
     uint32_t remote_psn;
+    uint32_t signal_cnt_ = 0;
     swift::Pcb pcb;
     TXTracking txtracking;
     RXTracking rxtracking;

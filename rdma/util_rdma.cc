@@ -224,7 +224,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         qp_init_attr.recv_cq = ibv_cq_ex_to_cq(cq_ex_);
         qp_init_attr.qp_type = IBV_QPT_UC;
 
-        qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv;
+        qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv >> 1;
         qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
         qp_init_attr.cap.max_send_sge = kMaxSge;
         qp_init_attr.cap.max_recv_sge = kMaxSge;

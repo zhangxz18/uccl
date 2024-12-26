@@ -343,8 +343,6 @@ class UcclFlow {
     // <Slot, i>
     std::deque<std::pair<int, int> > pending_tx_msgs_;
 
-    uint32_t signal_cnt_ = 0;
-
     // Index of QPs that need to post recv requests for consuming immediate data.
     // std::vector<int> post_imm_qpidx_list_;
 
