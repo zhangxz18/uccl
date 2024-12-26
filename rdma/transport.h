@@ -243,17 +243,6 @@ class UcclFlow {
     }
 
     /**
-     * @brief Push the received packet onto the ingress queue of the flow.
-     * Decrypts packet if required, stores the payload in the relevant channel
-     * shared memory space, and if the message is ready for delivery notifies
-     * the application.
-     *
-     * If this is a transport control packet (e.g., ACK) it only updates
-     * transport-related parameters for the flow.
-     */
-    void rx_messages();
-
-    /**
      * @brief Supply a buffer for the flow to receive data into.
      * @param rx_work 
      */
@@ -262,42 +251,75 @@ class UcclFlow {
     /**
      * @brief Transmit a message described by the tx_work.
      * @param tx_work 
-     * @return Return true if this tx_work needs processing one more time.
+     * @return Return true if this tx_work has been successfully transmitted.
      */
     bool tx_messages(Channel::Msg &tx_work);
 
     /**
-     * @brief complete the FIFO CQ polling for this flow.
+     * @brief Receive a chunk from the flow.
+     * @param ack_list 
+     * @param post_recv_qidx_list 
+     * @param num_post_recv 
+     */
+    void rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
+
+    /**
+     * @brief Poll the completion queue for the FIFO QP.
      * @return Return true if polling is done for this flow, Engine should remove it from the polling list.
      */
-    bool complete_fifo_cq(void);
+    bool poll_fifo_cq(void);
 
-    void complete_uc_cq(void);
+    /**
+     * @brief Poll the completion queues for all UC QPs.
+     */
+    void poll_uc_cq(void);
 
-    void uc_receive_data(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
+    /**
+     * @brief Poll the completion queue for the Ctrl QP.
+     */
+    void poll_ctrl_cq(void);
 
-    void uc_tx_complete(void);
+    /**
+     * @brief Rceive an ACK from the Ctrl QP.
+     */
+    void rx_ack(void);
 
-    bool handle_ctrl_cq_wc(void);
+    /**
+     * @brief Craft an ACK for a UC QP using the given WR index.
+     * 
+     * @param qpidx 
+     * @param wr_idx 
+     */
+    void craft_ack(int qpidx, int wr_idx);
 
-    // Send one ACK for a UC QP using the given WR index. ACKs are finally transmitted calling flush_acks.
-    void send_ack(int qpidx, int wr_idx);
-
-    // Flush all ACKs in the batch.
+    /**
+     * @brief Flush all ACKs in the batch.
+     * 
+     * @param size 
+     */
     void flush_acks(int size);
-
-    void complete_ctrl_cq(void);
 
     void flush_timing_wheel(void);
 
+    /**
+     * @brief Try to update the CSN for the given UC QP.
+     * @param qpw 
+     */
     void try_update_csn(struct UCQPWrapper *qpw);
 
-    void rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid);
-
-    void rdma_multi_send(int slot);
-
-    void process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
-                              uint64_t ts4);
+    /**
+     * @brief The receiver is ready, post multiple messages to NIC.
+     * @param slot Slot in FIFO.
+     */
+    void post_multi_messages(int slot);
+    
+    /**
+     * @brief Post a single message to NIC. If needed, it will be queued in the timing wheel.
+     * @param req 
+     * @param slot 
+     * @param mid 
+     */
+    void post_single_message(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid);
 
     /**
      * @brief Periodically checks the state of the flow and performs
@@ -317,12 +339,6 @@ class UcclFlow {
 
     void fast_retransmit();
     void rto_retransmit();
-
-    /**
-     * @brief Helper function to transmit a number of chunks from the queue
-     * of pending TX data.
-     */
-    void transmit_pending_chunks();
 
     // <Slot, i>
     std::deque<std::pair<int, int> > pending_tx_msgs_;
@@ -346,21 +362,6 @@ class UcclFlow {
     struct ibv_sge rx_ack_sges_[kMaxBatchCQ];
 
     /**
-     * @brief Deserialize a chunk of data from the application buffer and append
-     * to the tx tracking.
-     */
-    void deserialize_and_append_to_txtracking();
-
-    void prepare_l2header(uint8_t *pkt_addr) const;
-    void prepare_l3header(uint8_t *pkt_addr, uint32_t payload_bytes) const;
-    void prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
-                          uint16_t dst_port) const;
-
-    inline uint16_t get_next_dst_port() {
-        return dst_ports_[next_port_idx_++ % kPortEntropy];
-    }
-
-    /**
      * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.
      * These requests are transmitted through the underlyding fifo QP (RC).
      * @param req Pointer to the FlowRequest structure.
@@ -376,20 +377,10 @@ class UcclFlow {
     // Context for RDMA resources.
     RDMAContext *rdma_ctx_;
 
-    // The following is used to fill packet headers.
-    uint32_t local_addr_;
-    uint32_t remote_addr_;
-    char local_l2_addr_[ETH_ALEN];
-    char remote_l2_addr_[ETH_ALEN];
-
     // The channel this flow belongs to.
     Channel *channel_;
     // FlowID of this flow.
     FlowID flow_id_;
-    // Destination ports with remote_engine_idx_ as the target engine_id.
-    std::vector<uint16_t> dst_ports_;
-    // Index in dst_ports_ for the next port to use.
-    uint32_t next_port_idx_ = 0;
 
     // Measure the distribution of probed RTT.
     Latency rtt_stats_;
@@ -419,9 +410,8 @@ class UcclRDMAEngine {
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclRDMAEngine(int dev, int engine_id, Channel *channel, const std::string local_addr)
-        : local_addr_(htonl(str_to_ip(local_addr))),
-          engine_idx_(engine_id),
+    UcclRDMAEngine(int dev, int engine_id, Channel *channel)
+        : engine_idx_(engine_id),
           dev_(dev),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
@@ -559,8 +549,6 @@ class UcclRDMAEngine {
     void process_ctl_reqs();
 
    private:
-    uint32_t local_addr_;
-    char local_l2_addr_[ETH_ALEN];
     // Device index
     int dev_;
     // Engine index

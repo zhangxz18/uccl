@@ -154,7 +154,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
 }
 
 RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), sync_cnt_(0), ctrl_pkt_pool_(), wheel_({freq_ghz})
+    dev_(dev), ready_entropy_cnt_(0), ctrl_pkt_pool_(), wheel_({freq_ghz})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 

@@ -348,7 +348,7 @@ struct RecvComm {
 
 class RXTracking {
         static constexpr uint32_t kMAXWQE = 4;
-        static constexpr uint32_t kMAXBytes = 256 << 10;
+        static constexpr uint32_t kMAXBytes = kMAXWQE * kChunkSize;
     public:
 
         std::set<int> ready_csn_;
@@ -573,13 +573,20 @@ class RDMAContext {
             }
             return nullptr;
         }
+        
+        inline uint32_t select_qpidx_rr(void) {
+            return next_qp_idx++ % kPortEntropy;
+        }
 
-        inline uint32_t select_qpidx(void) {
+        inline uint32_t select_qpidx_rand(void) {
             return std::rand() % kPortEntropy;
         }
 
-        // When sync_cnt_ equals to kTotalQP, the flow is ready.
-        uint32_t sync_cnt_;
+        // Next QP index to use for RR.
+        uint32_t next_qp_idx = 0;
+
+        // When ready_entropy_cnt_ equals to kTotalQP, the flow is ready.
+        uint32_t ready_entropy_cnt_;
 
         RDMAContext(int dev, struct RDMAExchangeFormatLocal meta);
 
