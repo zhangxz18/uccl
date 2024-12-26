@@ -226,7 +226,7 @@ class Timely {
     }
 };
 
-struct sge_ex {
+struct alignas(64) sge_ex {
     struct ibv_sge sge;
     uint64_t wr_remote_addr;
     uint64_t wr_rkey;
@@ -234,11 +234,10 @@ struct sge_ex {
     uint32_t wr_imm_data;
 
     Timely *timely;
-    struct FlowRequest *req;
-    uint32_t csn;
     uint32_t hdr_overhead;
     uint32_t qpidx : 32;
     uint32_t last_chunk : 1;
 };
+static_assert(sizeof(sge_ex) == 64, "sge_ex size mismatch");
 
 }  // namespace uccl

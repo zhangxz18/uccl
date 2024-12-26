@@ -183,8 +183,6 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         sge_ex->wr_imm_data = htonl(imm_data.GetImmData());
 
         sge_ex->timely = &qpw->pcb.timely;
-        sge_ex->req = req;
-        sge_ex->csn = qpw->pcb.seqno().to_uint32() - 1;
         sge_ex->qpidx = qpidx;
         sge_ex->last_chunk = *size == 0;
 
@@ -198,6 +196,11 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             }
             rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size + sge_ex->hdr_overhead);
         }
+
+        // Track this merged chunk.
+        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32() - 1, 
+            reinterpret_cast<void*>(sge_ex->sge.addr), sge_ex->sge.length, 
+                sge_ex->last_chunk, rdtsc());
 
         LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
         LOG(INFO) << "Queue " << chunk_size << " bytes";
@@ -343,7 +346,6 @@ void UcclFlow::flush_timing_wheel(void)
         auto sge_ex = exs[i];
         auto qpidx = sge_ex->qpidx;
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
-        auto req = sge_ex->req;
         
         wr.sg_list = &sge_ex->sge;
         wr.num_sge = 1;
@@ -355,11 +357,6 @@ void UcclFlow::flush_timing_wheel(void)
         wr.send_flags = sge_ex->wr_send_flags;
 
         DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
-        
-        // Track this merged chunk.
-        qpw->txtracking.track_chunk(req, be32toh(wr.imm_data), 
-            reinterpret_cast<void*>(wr.sg_list->addr), sge_ex->sge.length, 
-                sge_ex->last_chunk, rdtsc());
 
         rdma_ctx_->sge_ex_pool_.free_sge(reinterpret_cast<uint64_t>(sge_ex));
     }
@@ -779,10 +776,10 @@ void UcclRDMAEngine::run() {
 
         handle_tx_work();
         
+        handle_timing_wheel();
+        
         handle_completion();
 
-        handle_timing_wheel();
-    
     }
     std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
 }
