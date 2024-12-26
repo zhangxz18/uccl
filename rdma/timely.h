@@ -236,6 +236,7 @@ struct sge_ex {
     Timely *timely;
     struct FlowRequest *req;
     uint32_t csn;
+    uint32_t hdr_overhead;
     uint32_t qpidx : 32;
     uint32_t last_chunk : 1;
 };

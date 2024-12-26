@@ -151,7 +151,12 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
         sge_ex->last_chunk = *size == 0;
 
         // Queue the SGE on the timing wheel.
-        rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size);
+        {
+            auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
+            auto total_hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
+            sge_ex->hdr_overhead = total_hdr_overhead;
+            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size + total_hdr_overhead);
+        }
 
         LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
         LOG(INFO) << "Queue " << chunk_size << " bytes";

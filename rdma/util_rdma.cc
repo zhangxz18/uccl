@@ -178,6 +178,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     comm_base->remote_ctx.remote_port_attr = meta.ToEngine.remote_port_attr;
     
     mtu_ = meta.ToEngine.mtu;
+    mtu_bytes_ = util_rdma_get_mtu_from_ibv_mtu(mtu_);
 
     // Crate PD.
     pd_ = ibv_alloc_pd(context_);

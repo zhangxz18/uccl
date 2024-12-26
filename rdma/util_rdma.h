@@ -29,6 +29,13 @@ class RDMAContext;
 class RDMAFactory;
 extern RDMAFactory rdma_ctl;
 
+// LRH (Local Routing Header) + GRH (Global Routing Header) + BTH (Base Transport Header)
+static constexpr uint32_t IB_HDR_OVERHEAD = (8 + 40 + 12);
+// Ethernet + IPv4 + UDP + BTH
+static constexpr uint32_t ROCE_IPV4_HDR_OVERHEAD = (14 + 20 + 8 + 12);
+// Ethernet + IPv6 + UDP + BTH
+static constexpr uint32_t ROCE_IPV6_HDR_OVERHEAD = (14 + 40 + 8 + 12);
+
 /**
  * @brief Buffer pool for sge extension.
  * - Single producer, single consumer.
@@ -490,6 +497,7 @@ class RDMAContext {
         struct ibv_port_attr port_attr_;
         // MTU of this device.
         ibv_mtu mtu_;
+        uint32_t mtu_bytes_;
         // IB port number of this device.
         uint8_t ib_port_num_;
         // GID index of this device.

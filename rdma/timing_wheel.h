@@ -140,8 +140,6 @@ class TimingWheel {
     // Queue a sge (i.e., one chunk) on the timing wheel.
     // chunk_size must be <= 64KB.
     inline void queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *sge, size_t chunk_size) {
-        
-        DCHECK(chunk_size <= (1 << 18));
         // target_rate = Timely::gbps_to_rate(400.0);
         double ns_delta = 1000000000 * (chunk_size / target_rate);
         double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
@@ -183,7 +181,7 @@ class TimingWheel {
                 ready_queue_.pop_front();
                 auto sge = reinterpret_cast<struct sge_ex *>(ent.sslot_);
                 auto timely = sge->timely;
-                queue_on_timing_wheel(timely->rate_, now, (void *)(uint64_t)ent.sslot_, sge->sge.length);
+                queue_on_timing_wheel(timely->rate_, now, (void *)(uint64_t)ent.sslot_, sge->sge.length + sge->hdr_overhead);
             }
 
             ready_entries_ = 0;
