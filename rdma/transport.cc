@@ -309,17 +309,16 @@ void UcclFlow::flush_timing_wheel(void)
         wr.next = nullptr;
         wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
         wr.wr.rdma.remote_addr = sge_ex->wr_remote_addr;
-        // Use last sge_ex's rkey, imm_data.
         wr.wr.rdma.rkey = sge_ex->wr_rkey;
         wr.imm_data = sge_ex->wr_imm_data;
         wr.send_flags = sge_ex->wr_send_flags;
 
+        DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
+        
         // Track this merged chunk.
         qpw->txtracking.track_chunk(req, be32toh(wr.imm_data), 
             reinterpret_cast<void*>(wr.sg_list->addr), sge_ex->sge.length, 
                 sge_ex->last_chunk, rdtsc());
-        
-        DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
 
         rdma_ctx_->sge_ex_pool_.free_sge(reinterpret_cast<uint64_t>(sge_ex));
     }
