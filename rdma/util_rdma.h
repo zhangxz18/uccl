@@ -40,10 +40,6 @@ static constexpr uint32_t ROCE_IPV6_HDR_OVERHEAD = (14 + 40 + 8 + 12);
 static constexpr uint32_t MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV4_HDR_OVERHEAD;
 static constexpr uint32_t MAX_CHUNK_ROCE_IPV6_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV6_HDR_OVERHEAD;
 static constexpr uint32_t MAX_CHUNK_IB_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * IB_HDR_OVERHEAD;
-// For quick computation at MTU 1024
-static constexpr uint32_t MAX_CHUNK_ROCE_IPV4_1024_HDR_OVERHEAD = ((kChunkSize + 1024) / 1024) * ROCE_IPV4_HDR_OVERHEAD;
-static constexpr uint32_t MAX_CHUNK_ROCE_IPV6_1024_HDR_OVERHEAD = ((kChunkSize + 1024) / 1024) * ROCE_IPV6_HDR_OVERHEAD;
-static constexpr uint32_t MAX_CHUNK_IB_1024_HDR_OVERHEAD = ((kChunkSize + 1024) / 1024) * IB_HDR_OVERHEAD;
 
 /**
  * @brief Buffer pool for sge extension.

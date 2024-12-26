@@ -152,11 +152,8 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
 
         // Queue the SGE on the timing wheel.
         {
-            if (likely(chunk_size == kChunkSize)) {
-                if (likely(rdma_ctx_->mtu_bytes_ == 4096))
-                    sge_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
-                else
-                    sge_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_1024_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_1024_HDR_OVERHEAD;
+            if (likely(chunk_size == kChunkSize && rdma_ctx_->mtu_bytes_ == 4096)) {
+                sge_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
             } else {
                 auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
                 sge_ex->hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
