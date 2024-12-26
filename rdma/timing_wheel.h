@@ -60,7 +60,7 @@ struct wheel_record_t {
 static constexpr double kWheelSlotWidthUs = .5 * 64;  ///< Duration per wheel slot
 static constexpr size_t kSessionCredits = MAX_TIMING_WHEEL_PKTS;
 static constexpr double kWheelHorizonUs =
-    1000000 * (kSessionCredits * RDMA_MTU) / Timely::kMinRate;
+    1000000 * (kSessionCredits * kChunkSize) / Timely::kMinRate;
 
 // This ensures that packets for an sslot undergoing retransmission are rarely
 // in the wheel. This is recommended but not required.

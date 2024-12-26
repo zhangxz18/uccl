@@ -40,7 +40,5 @@ static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
 
-// static const uint32_t RDMA_MTU = 4096;
-static const uint32_t RDMA_MTU = 1024;
 // 400Gbps link.
 static const double kLinkBandwidth = 400.0 * 1e9 / 8;
