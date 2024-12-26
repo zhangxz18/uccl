@@ -184,7 +184,6 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         sge_ex->timely = &qpw->pcb.timely;
         sge_ex->qpidx = qpidx;
-        sge_ex->last_chunk = *size == 0;
 
         // Queue the SGE on the timing wheel.
         {
@@ -200,7 +199,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         // Track this merged chunk.
         qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32() - 1, 
             reinterpret_cast<void*>(sge_ex->sge.addr), sge_ex->sge.length, 
-                sge_ex->last_chunk, rdtsc());
+                *size == 0, rdtsc());
 
         LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
         LOG(INFO) << "Queue " << chunk_size << " bytes";

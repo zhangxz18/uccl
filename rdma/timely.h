@@ -235,8 +235,7 @@ struct alignas(64) sge_ex {
 
     Timely *timely;
     uint32_t hdr_overhead;
-    uint32_t qpidx : 32;
-    uint32_t last_chunk : 1;
+    uint32_t qpidx;
 };
 static_assert(sizeof(sge_ex) == 64, "sge_ex size mismatch");
 
