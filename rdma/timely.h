@@ -226,17 +226,14 @@ class Timely {
     }
 };
 
-struct alignas(64) sge_ex {
+struct alignas(64) wr_ex {
+    struct ibv_send_wr wr;
     struct ibv_sge sge;
-    uint64_t wr_remote_addr;
-    uint64_t wr_rkey;
-    unsigned int wr_send_flags;
-    uint32_t wr_imm_data;
 
     Timely *timely;
     uint32_t hdr_overhead;
     uint32_t qpidx;
 };
-static_assert(sizeof(sge_ex) == 64, "sge_ex size mismatch");
+static_assert(sizeof(wr_ex) == 192, "wr_ex size mismatch");
 
 }  // namespace uccl

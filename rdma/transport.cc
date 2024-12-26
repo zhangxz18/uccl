@@ -106,7 +106,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
     auto lkey = req->send.lkey;
     auto rkey = slot.rkey;
     auto remote_addr = slot.addr;
-    uint64_t sge_addr;
+    uint64_t wr_addr;
 
     while (*size) {
         auto qpidx = rdma_ctx_->select_qpidx_rr();
@@ -156,22 +156,28 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         }
 
         // Prepare SGE.
-        DCHECK(rdma_ctx_->sge_ex_pool_.alloc_sge(&sge_addr) == 0);
-        struct sge_ex *sge_ex = reinterpret_cast<struct sge_ex *>(sge_addr);
-        sge_ex->sge.addr = (uintptr_t)data;
-        sge_ex->sge.lkey = lkey;
-        sge_ex->sge.length = std::min(*size, (int)kChunkSize);
-        auto chunk_size = sge_ex->sge.length;
+        DCHECK(rdma_ctx_->wr_ex_pool_.alloc_wr(&wr_addr) == 0);
+        struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
+        auto wr = &wr_ex->wr;
+        wr_ex->sge.addr = (uintptr_t)data;
+        wr_ex->sge.lkey = lkey;
+        wr_ex->sge.length = std::min(*size, (int)kChunkSize);
+        auto chunk_size = wr_ex->sge.length;
         *size -= chunk_size;
-        data = static_cast<char*>(data) + sge_ex->sge.length;
+        data = static_cast<char*>(data) + wr_ex->sge.length;
 
-        sge_ex->wr_remote_addr = remote_addr + *sent_offset;
-        sge_ex->wr_rkey = rkey;
+        wr->sg_list = &wr_ex->sge;
+        wr->num_sge = 1;
+        wr->next = nullptr;
+        wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+
+        wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
+        wr->wr.rdma.rkey = rkey;
 
         // There is no need to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
         if (qpw->signal_cnt_++ % kSignalInterval == 0)
-            sge_ex->wr_send_flags = IBV_SEND_SIGNALED;
+            wr_ex->wr.send_flags = IBV_SEND_SIGNALED;
 
         IMMData imm_data(0);
 
@@ -180,25 +186,25 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         imm_data.SetRID(slot.rid);
         imm_data.SetMID(mid);
 
-        sge_ex->wr_imm_data = htonl(imm_data.GetImmData());
+        wr->imm_data = htonl(imm_data.GetImmData());
 
-        sge_ex->timely = &qpw->pcb.timely;
-        sge_ex->qpidx = qpidx;
+        wr_ex->timely = &qpw->pcb.timely;
+        wr_ex->qpidx = qpidx;
 
         // Queue the SGE on the timing wheel.
         {
             if (likely(chunk_size == kChunkSize && rdma_ctx_->mtu_bytes_ == 4096)) {
-                sge_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
+                wr_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
             } else {
                 auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
-                sge_ex->hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
+                wr_ex->hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size + sge_ex->hdr_overhead);
+            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), wr_ex, chunk_size + wr_ex->hdr_overhead);
         }
 
         // Track this merged chunk.
         qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32() - 1, 
-            reinterpret_cast<void*>(sge_ex->sge.addr), sge_ex->sge.length, 
+            reinterpret_cast<void*>(wr_ex->sge.addr), wr_ex->sge.length, 
                 *size == 0, rdtsc());
 
         LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
@@ -332,32 +338,21 @@ void UcclFlow::poll_ctrl_cq(void)
 void UcclFlow::flush_timing_wheel(void)
 {
     auto wheel = &rdma_ctx_->wheel_;
-    struct sge_ex *exs[32];
-    struct ibv_send_wr wr, *bad_wr;
+    struct wr_ex *exs[32];
+    struct ibv_send_wr *bad_wr;
 
     auto permitted_chunks = wheel->get_num_ready_tx_chunk(32, exs);
 
     if (!permitted_chunks) return;
-
-    memset(&wr, 0, sizeof(wr));
     
     for (auto i = 0; i < permitted_chunks; i++) {
-        auto sge_ex = exs[i];
-        auto qpidx = sge_ex->qpidx;
+        auto wr_ex = exs[i];
+        auto qpidx = wr_ex->qpidx;
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
-        
-        wr.sg_list = &sge_ex->sge;
-        wr.num_sge = 1;
-        wr.next = nullptr;
-        wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-        wr.wr.rdma.remote_addr = sge_ex->wr_remote_addr;
-        wr.wr.rdma.rkey = sge_ex->wr_rkey;
-        wr.imm_data = sge_ex->wr_imm_data;
-        wr.send_flags = sge_ex->wr_send_flags;
 
-        DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
+        DCHECK(ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr) == 0);
 
-        rdma_ctx_->sge_ex_pool_.free_sge(reinterpret_cast<uint64_t>(sge_ex));
+        rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(wr_ex));
     }
 }
 
