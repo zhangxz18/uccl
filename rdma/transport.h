@@ -430,18 +430,12 @@ class UcclRDMAEngine {
     /**
      * @brief Handling async recv requests from Endpoint for all flows.
      */
-    void handle_async_recv(void);
+    void handle_rx_work(void);
 
     /**
      * @brief Handling aysnc send requests from Endpoint for all flows.
      */
-    void handle_async_send(void);
-
-    /**
-     * @brief Somtimes we can't send a message because the receiver is not ready. 
-     * We store the pending tx work and try to send it later.
-     */
-    void handle_pending_tx_work(void);
+    void handle_tx_work(void);
 
     /**
      * @brief Handling all completion events for all flows, including:
@@ -451,7 +445,7 @@ class UcclRDMAEngine {
      */
     void handle_completion(void);
 
-    void drain_send_queues(void);
+    void handle_timing_wheel(void);
 
     /**
      * @brief Add a flow to the list for polling FIFO CQs in future.
@@ -505,7 +499,7 @@ class UcclRDMAEngine {
         return now - last_sync_clock_tsc_ > ns_to_cycles(kSyncClockIntervalNS, freq_ghz);
     }
 
-    inline void sync_clock(void) {
+    inline void handle_clock_synchronization(void) {
         auto host_clock = rdtsc();
         if (need_sync(host_clock)) {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
@@ -525,7 +519,7 @@ class UcclRDMAEngine {
 
     // Convert NIC clock to host clock (TSC).
     inline uint64_t convert_nic_to_host(uint64_t host_clock, uint64_t nic_clock) {
-        if (need_sync(host_clock)) sync_clock();
+        if (need_sync(host_clock)) handle_clock_synchronization();
         return ratio_ * nic_clock + offset_;
     }
 

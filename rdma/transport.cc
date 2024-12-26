@@ -682,26 +682,6 @@ void UcclFlow::fast_retransmit() {
 void UcclFlow::rto_retransmit() {
 }
 
-void UcclRDMAEngine::handle_pending_tx_work(void)
-{
-    for (auto it = pending_tx_work_.begin(); it != pending_tx_work_.end();) {
-        auto tx_work = *it;
-        auto flow = active_flows_map_[tx_work.flow_id];
-        if (flow == nullptr) {
-            LOG(ERROR) << "Flow not found";
-            it = pending_tx_work_.erase(it);
-            continue;
-        }
-
-        if (!flow->tx_messages(tx_work)) {
-            it++;
-        } else {
-            // Good, the tx work is done.
-            it = pending_tx_work_.erase(it);
-        }
-    }
-}
-
 void UcclRDMAEngine::handle_completion(void) 
 {
     // First, poll the CQ for Ctrl QPs.
@@ -726,7 +706,7 @@ void UcclRDMAEngine::handle_completion(void)
 
 }
 
-void UcclRDMAEngine::handle_async_recv(void) 
+void UcclRDMAEngine::handle_rx_work(void) 
 {
     Channel::Msg rx_work;
     if (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
@@ -736,10 +716,28 @@ void UcclRDMAEngine::handle_async_recv(void)
     }
 }
 
-void UcclRDMAEngine::handle_async_send(void)
+void UcclRDMAEngine::handle_tx_work(void)
 {
-    Channel::Msg tx_work;
+    // Handle pending tx work first.
+    for (auto it = pending_tx_work_.begin(); it != pending_tx_work_.end();) {
+        auto tx_work = *it;
+        auto flow = active_flows_map_[tx_work.flow_id];
+        if (flow == nullptr) {
+            LOG(ERROR) << "Flow not found";
+            it = pending_tx_work_.erase(it);
+            continue;
+        }
 
+        if (!flow->tx_messages(tx_work)) {
+            it++;
+        } else {
+            // Good, the tx work is done.
+            it = pending_tx_work_.erase(it);
+        }
+    }
+
+    // Then, handle new tx work.
+    Channel::Msg tx_work;
     if (jring_sc_dequeue_bulk(channel_->tx_cmdq_, &tx_work, 1, nullptr) ==
         1) {
         // Make data written by the app thread visible to the engine.
@@ -754,7 +752,7 @@ void UcclRDMAEngine::handle_async_send(void)
     }
 }
 
-void UcclRDMAEngine::drain_send_queues(void)
+void UcclRDMAEngine::handle_timing_wheel(void)
 {
     if (kTestNoTimingWheel) return;
     for (auto flow: active_flows_map_) {
@@ -775,17 +773,15 @@ void UcclRDMAEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
-        sync_clock();
+        handle_clock_synchronization();
 
-        handle_pending_tx_work();
+        handle_rx_work();
 
-        handle_async_recv();
-
-        handle_async_send();
+        handle_tx_work();
         
         handle_completion();
 
-        drain_send_queues();
+        handle_timing_wheel();
     
     }
     std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
