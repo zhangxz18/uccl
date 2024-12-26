@@ -193,6 +193,10 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     cq_ex_attr.comp_vector = 0;
     cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
         IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
+    
+    if (kTestNoHWTimestamp)
+        cq_ex_attr.wc_flags &= ~IBV_WC_EX_WITH_COMPLETION_TIMESTAMP;
+
     cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
     cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
     cq_ex_ = ibv_create_cq_ex(context_, &cq_ex_attr);

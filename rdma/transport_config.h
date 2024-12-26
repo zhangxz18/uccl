@@ -41,6 +41,8 @@ static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
 
 // For debugging and testing.
+// Disable hardware timestamp.
+static const bool kTestNoHWTimestamp = false;
 // Bypass the timing wheel.
 static const bool kTestNoTimingWheel = false;
 // Use constant(maximum) rate for transmission.

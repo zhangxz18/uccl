@@ -258,7 +258,11 @@ bool UcclFlow::handle_ctrl_cq_wc(void)
 
             auto t1 = qpw->txtracking.ack_chunks(num_acked_chunks);
             auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
-            auto t5 = engine_->convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
+            uint64_t t5;
+            if (kTestNoHWTimestamp)
+                t5 = t6;
+            else
+                t5 = engine_->convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
 
             /// TODO: Congestion control
             auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
@@ -426,7 +430,10 @@ void UcclFlow::uc_receive_data(struct list_head *ack_list, int *post_recv_qidx_l
     qpw->rxtracking.ready_csn_.insert(csn);
 
     // Always use the latest timestamp.
-    qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
+    if (kTestNoHWTimestamp)
+        qpw->pcb.t_remote_nic_rx = rdtsc();
+    else
+        qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
 
     qpw->pcb.sack_bitmap_bit_set(distance);
 
@@ -505,7 +512,11 @@ void UcclFlow::send_ack(int qpidx, int wr_idx)
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
 
     auto t4 = rdtsc();
-    auto t2 = engine_->convert_nic_to_host(t4, rdma_ctx_->uc_qps_[qpidx].pcb.t_remote_nic_rx);
+    uint64_t t2;
+    if (kTestNoHWTimestamp)
+        t2 = qpw->pcb.t_remote_nic_rx;
+    else
+        t2 = engine_->convert_nic_to_host(t4, rdma_ctx_->uc_qps_[qpidx].pcb.t_remote_nic_rx);
 
     ucclsackh->remote_queueing = be64_t(to_usec(t4 - t2, freq_ghz));
 
