@@ -299,7 +299,7 @@ class UcclFlow {
      */
     void flush_acks(int size);
 
-    void flush_timing_wheel(void);
+    void burst_timing_wheel(void);
 
     /**
      * @brief Try to update the CSN for the given UC QP.

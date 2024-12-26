@@ -188,18 +188,18 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         wr->imm_data = htonl(imm_data.GetImmData());
 
-        wr_ex->timely = &qpw->pcb.timely;
         wr_ex->qpidx = qpidx;
 
         // Queue the SGE on the timing wheel.
         {
+            uint32_t hdr_overhead;
             if (likely(chunk_size == kChunkSize && rdma_ctx_->mtu_bytes_ == 4096)) {
-                wr_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
+                hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
             } else {
                 auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
-                wr_ex->hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
+                hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), wr_ex, chunk_size + wr_ex->hdr_overhead);
+            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), wr_ex, chunk_size + hdr_overhead);
         }
 
         // Track this merged chunk.
@@ -335,24 +335,23 @@ void UcclFlow::poll_ctrl_cq(void)
 
 }
 
-void UcclFlow::flush_timing_wheel(void)
+void UcclFlow::burst_timing_wheel(void)
 {
     auto wheel = &rdma_ctx_->wheel_;
-    struct wr_ex *exs[32];
     struct ibv_send_wr *bad_wr;
 
-    auto permitted_chunks = wheel->get_num_ready_tx_chunk(32, exs);
+    wheel->reap(rdtsc());
 
-    if (!permitted_chunks) return;
+    auto num_chunks = std::min(kMaxBatchPost, (uint32_t)wheel->ready_queue_.size());
     
-    for (auto i = 0; i < permitted_chunks; i++) {
-        auto wr_ex = exs[i];
-        auto qpidx = wr_ex->qpidx;
-        auto qpw = &rdma_ctx_->uc_qps_[qpidx];
+    for (auto i = 0; i < num_chunks; i++) {
+        struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wheel->ready_queue_.front().sslot_);
+        auto qpw = &rdma_ctx_->uc_qps_[wr_ex->qpidx];
 
         DCHECK(ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr) == 0);
 
         rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(wr_ex));
+        wheel->ready_queue_.pop_front();
     }
 }
 
@@ -747,7 +746,7 @@ void UcclRDMAEngine::handle_timing_wheel(void)
 {
     if (kTestNoTimingWheel) return;
     for (auto flow: active_flows_map_) {
-        flow.second->flush_timing_wheel();
+        flow.second->burst_timing_wheel();
     }
 }
 

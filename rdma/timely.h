@@ -230,8 +230,6 @@ struct alignas(64) wr_ex {
     struct ibv_send_wr wr;
     struct ibv_sge sge;
 
-    Timely *timely;
-    uint32_t hdr_overhead;
     uint32_t qpidx;
 };
 static_assert(sizeof(wr_ex) == 192, "wr_ex size mismatch");

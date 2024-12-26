@@ -39,6 +39,7 @@ static const uint32_t kMaxSge = 1;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
+static const uint32_t kMaxBatchPost = 32;
 
 // For debugging and testing.
 // Disable hardware timestamp.

@@ -138,7 +138,6 @@ class TimingWheel {
     }
 
     // Queue a work request (i.e., one chunk) on the timing wheel.
-    // chunk_size must be <= 64KB.
     inline void queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *wr, size_t chunk_size) {
         if (kTestConstantRate)
             target_rate = Timely::gbps_to_rate(400.0);
@@ -151,49 +150,6 @@ class TimingWheel {
         prev_desired_tx_tsc_ = desired_tx_tsc;
 
         insert(wheel_ent_t{wr}, ref_tsc, desired_tx_tsc);
-    }
-
-    // Get the number of ready tx chunks from the timing wheel.
-    // Budget limits the number of chunks to be processed.
-    inline uint32_t get_num_ready_tx_chunk(uint32_t budget, struct wr_ex **wrs) {
-        size_t cur_tsc = rdtsc();
-        reap(cur_tsc);
-
-        size_t num_ready = std::min(ready_entries_, (uint64_t)budget);
-        ready_entries_ -= num_ready;
-
-        // Consuming the ready entries.
-        while (ready_queue_.size() > ready_entries_) {
-            auto ent = ready_queue_.front();
-            ready_queue_.pop_front();
-            auto wr = reinterpret_cast<struct wr_ex *>(ent.sslot_);
-            *wrs++ = wr;
-        }
-
-        if (unlikely(ready_entries_ > 0)) {
-            LOG_EVERY_N(INFO, 100000)
-                << "[CC] TimingWheel ready queue not empty "
-                <<  ready_entries_;
-
-            // Requeue the uncomsumed entries back to the wheel.
-            auto now = rdtsc();
-            while (!ready_queue_.empty()) {
-                auto ent = ready_queue_.front();
-                ready_queue_.pop_front();
-                auto wr = reinterpret_cast<struct wr_ex *>(ent.sslot_);
-                auto timely = wr->timely;
-                queue_on_timing_wheel(timely->rate_, now, (void *)(uint64_t)ent.sslot_, wr->sge.length + wr->hdr_overhead);
-            }
-
-            ready_entries_ = 0;
-        } else {
-            ready_queue_.clear();
-        }
-
-        DCHECK_EQ(ready_entries_, 0);
-        DCHECK(ready_queue_.empty());
-
-        return num_ready;
     }
 
     /// Return a dummy wheel entry
