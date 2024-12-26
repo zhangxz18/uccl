@@ -152,10 +152,16 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
 
         // Queue the SGE on the timing wheel.
         {
-            auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
-            auto total_hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
-            sge_ex->hdr_overhead = total_hdr_overhead;
-            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size + total_hdr_overhead);
+            if (likely(chunk_size == kChunkSize)) {
+                if (likely(rdma_ctx_->mtu_bytes_ == 4096))
+                    sge_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
+                else
+                    sge_ex->hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_1024_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_1024_HDR_OVERHEAD;
+            } else {
+                auto num_mtu = (chunk_size + rdma_ctx_->mtu_bytes_) / rdma_ctx_->mtu_bytes_;
+                sge_ex->hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
+            }
+            rdma_ctx_->wheel_.queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), sge_ex, chunk_size + sge_ex->hdr_overhead);
         }
 
         LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
