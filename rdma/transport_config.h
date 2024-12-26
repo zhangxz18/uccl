@@ -40,5 +40,11 @@ static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
 
+// For debugging and testing.
+// Bypass the timing wheel.
+static const bool kTestNoTimingWheel = false;
+// Use constant(maximum) rate for transmission.
+static const bool kTestConstantRate = false;
+
 // 400Gbps link.
 static const double kLinkBandwidth = 400.0 * 1e9 / 8;

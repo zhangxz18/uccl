@@ -117,6 +117,49 @@ void UcclFlow::rdma_single_send(struct FlowRequest *req, struct FifoItem &slot, 
         auto qpidx = rdma_ctx_->select_qpidx();
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
+        if (kTestNoTimingWheel) {
+            struct ibv_sge sge;
+            struct ibv_send_wr wr, *bad_wr = nullptr;
+
+            sge.addr = (uintptr_t)data;
+            sge.lkey = lkey;
+            sge.length = std::min(*size, (int)kChunkSize);
+
+            auto chunk_size = sge.length;
+            *size -= chunk_size;
+            data = static_cast<char*>(data) + sge.length;
+
+            wr.wr.rdma.remote_addr = remote_addr + *sent_offset;
+            wr.wr.rdma.rkey = rkey;
+
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            wr.next = nullptr;
+            wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+
+            if (signal_cnt_++ % kSignalInterval == 0)
+                wr.send_flags = IBV_SEND_SIGNALED;
+            
+            IMMData imm_data(0);
+
+            imm_data.SetHint(0);
+            imm_data.SetCSN(qpw->pcb.get_snd_nxt().to_uint32());
+            imm_data.SetRID(slot.rid);
+            imm_data.SetMID(mid);
+
+            wr.imm_data = htonl(imm_data.GetImmData());
+
+            DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
+
+            // Track this chunk.
+            qpw->txtracking.track_chunk(req, be32toh(wr.imm_data), 
+            reinterpret_cast<void*>(wr.sg_list->addr), sge.length, 
+                *size == 0, rdtsc());
+
+            *sent_offset += chunk_size;
+            continue;
+        }
+
         // Prepare SGE.
         DCHECK(rdma_ctx_->sge_ex_pool_.alloc_sge(&sge_addr) == 0);
         struct sge_ex *sge_ex = reinterpret_cast<struct sge_ex *>(sge_addr);
@@ -803,6 +846,7 @@ void UcclRDMAEngine::handle_async_send(void)
 
 void UcclRDMAEngine::drain_send_queues(void)
 {
+    if (kTestNoTimingWheel) return;
     for (auto flow: active_flows_map_) {
         flow.second->flush_timing_wheel();
     }
