@@ -4,6 +4,7 @@
 #include "util_rdma.h"
 #include "util_timer.h"
 #include "util_list.h"
+#include <cstdint>
 #include <cstdlib>
 #include <endian.h>
 #include <infiniband/verbs.h>
@@ -93,6 +94,24 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
     req->type = FlowRequest::RECV;
     req->nmsgs = n;
     req->poll_ctx = poll_ctx;
+
+    if (kTestRC) {
+        // Post recv work requests for consuming immediate data.
+        struct ibv_recv_wr wr, *bad_wr;
+        memset(&wr, 0, sizeof(wr));
+
+        req->events = kTestRCEntropy;
+
+        for (int i = 0; i < kTestRCEntropy; i++) {
+            auto qpidx = i;
+            auto qpw = &rdma_ctx_->uc_qps_[qpidx];
+            wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
+            wr.sg_list = nullptr;
+            wr.num_sge = 0;
+            wr.next = nullptr;
+            DCHECK(ibv_post_recv(qpw->qp, &wr, &bad_wr) == 0);
+        }
+    }
 
     // Push buffer information to FIFO queue and notify the remote peer.
     post_fifo(req, data, size, n);
@@ -222,6 +241,93 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         *sent_offset += chunk_size;
     }
 
+}
+
+void UcclFlow::test_rc_post_multi_messages(int slot)
+{
+    auto send_comm_ = &rdma_ctx_->send_comm_;
+    auto reqs = send_comm_->fifo_reqs[slot];
+    auto rem_fifo = send_comm_->base.fifo;
+    auto slots = rem_fifo->elems[slot];
+    auto nmsgs = slots[0].nmsgs;
+
+    struct ibv_send_wr wrs[kMaxRecv + 1];
+    struct ibv_send_wr *last_wr = &wrs[nmsgs - 1];
+    struct ibv_sge size_sges;
+    struct ibv_sge sges[kMaxRecv];
+    uint32_t send_offset[kMaxRecv];
+
+    auto align = 128;
+
+    for (int i = 0; i < nmsgs; i++) {
+        auto req = reqs[i];
+        auto *data = req->send.data;
+        auto size = req->send.size;
+        auto wr = &wrs[i];
+        auto sge = &sges[i];
+        
+        sge->lkey = req->send.lkey;
+        send_offset[i] = 0;
+
+        // Multi-messages
+        send_comm_->base.fifo->sizes[slot][i] = size;
+
+        wr->sg_list = sge;
+        wr->num_sge = 1;
+
+        wr->next = &wrs[i + 1];
+        wr->opcode = IBV_WR_RDMA_WRITE;
+        wr->send_flags = 0;
+        wr->wr.rdma.remote_addr = slots[i].addr;
+        wr->wr.rdma.rkey = slots[i].rkey;
+
+        // Store the request id for future acknowledgment.
+        wr->wr_id = rdma_ctx_->get_request_id(req, &send_comm_->base);
+    }
+
+    if (nmsgs > 1) {
+        last_wr++;
+
+        size_sges.addr = reinterpret_cast<uint64_t>(send_comm_->base.fifo->sizes[slot]);
+        size_sges.lkey = rdma_ctx_->fifo_mr_->lkey;
+        size_sges.length = nmsgs * sizeof(uint32_t);
+
+        last_wr->sg_list = &size_sges;
+        last_wr->num_sge = 1;
+        last_wr->imm_data = 0;
+        
+        // Figure out the remote address to write.
+        last_wr->wr.rdma.remote_addr = send_comm_->base.remote_ctx.fifo_addr + slot * kMaxRecv * sizeof(struct FifoItem);
+        last_wr->wr.rdma.rkey = send_comm_->base.remote_ctx.fifo_key;
+
+    } else {
+        last_wr->imm_data = reqs[0]->send.size;
+    }
+
+    last_wr->next = nullptr;
+    last_wr->send_flags = IBV_SEND_SIGNALED;
+    last_wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+
+    for (int i = 0; i < kTestRCEntropy; i++) {
+        auto qpidx = i;
+        auto qpw = &rdma_ctx_->uc_qps_[qpidx];
+
+        for (int m = 0; m < nmsgs; m++) {
+            auto chunk_size = DIVUP(DIVUP(reqs[m]->send.size, kTestRCEntropy), align) * align;
+            auto remaining_bytes = reqs[m]->send.size - send_offset[m];
+            auto length = std::min(remaining_bytes, chunk_size);
+
+            sges[m].addr = reinterpret_cast<uint64_t>(reqs[m]->send.data) + send_offset[m];
+            sges[m].length = length;
+
+            send_offset[m] += length;
+
+            LOG(INFO) << "Sending " << length << " bytes to QP#" << qpidx;
+        }
+
+        struct ibv_send_wr *bad_wr;
+        DCHECK(ibv_post_send(qpw->qp, wrs, &bad_wr) == 0);
+    }
 }
 
 void UcclFlow::post_multi_messages(int slot)
@@ -382,6 +488,16 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
     }
 }
 
+void UcclFlow::test_rc_rx_chunk(void)
+{
+    auto cq_ex = rdma_ctx_->cq_ex_;
+    DCHECK(rdma_ctx_->is_send_ == false);
+    auto recv_comm = &rdma_ctx_->recv_comm_;
+    auto imm_data = ibv_wc_read_imm_data(cq_ex);
+    auto wr_id = cq_ex->wr_id;
+    auto req = rdma_ctx_->get_request_by_id(wr_id, &recv_comm->base);
+}
+
 void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
@@ -532,6 +648,44 @@ void UcclFlow::craft_ack(int qpidx, int wr_idx)
     LOG(INFO) << "craft_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpidx;
 }
 
+void UcclFlow::test_rc_poll_cq(void)
+{
+    auto cq_ex = rdma_ctx_->cq_ex_;
+    struct ibv_wc wcs[kMaxBatchCQ];
+    int cq_budget = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+
+    while (1) {
+
+        auto qp_num = ibv_wc_read_qp_num(cq_ex);
+        auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
+        LOG(INFO) << "Event from UC QP#" << qpidx;
+
+        DCHECK(cq_ex->status == IBV_WC_SUCCESS);
+
+        if (likely(ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV_RDMA_WITH_IMM))
+            test_rc_rx_chunk();
+        else {
+            DCHECK(ibv_wc_read_opcode(cq_ex) == IBV_WC_RDMA_WRITE);
+        }
+
+        auto req = rdma_ctx_->get_request_by_id(cq_ex->wr_id, &rdma_ctx_->send_comm_.base);
+        if (--req->events == 0) {
+            // Wakeup app thread waiting for the completion of this request.
+            std::lock_guard<std::mutex> lock(req->poll_ctx->mu);
+            req->poll_ctx->done = true;
+            req->poll_ctx->cv.notify_one();
+        }
+
+        rdma_ctx_->free_request(req);
+
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+    ibv_end_poll(cq_ex);
+}
+
 void UcclFlow::poll_uc_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
@@ -654,6 +808,9 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
         req->send.data = data;
         req->send.lkey = rdma_ctx_->data_mr_->lkey;
 
+        if (kTestRC)
+            req->events = kTestRCEntropy;
+
         // Track this request.
         reqs[i] = req;
 
@@ -662,7 +819,10 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
             if (reqs[i] == nullptr) return true;
         }
 
-        post_multi_messages(slot);
+        if (kTestRC)
+            test_rc_post_multi_messages(slot);
+        else
+            post_multi_messages(slot);
 
         memset((void*)slots, 0, sizeof(struct FifoItem));
         memset(reqs, 0, kMaxRecv * sizeof(struct FlowRequest *));
@@ -681,6 +841,22 @@ void UcclFlow::fast_retransmit() {
 }
 
 void UcclFlow::rto_retransmit() {
+}
+
+void UcclRDMAEngine::test_rc_handle_completion(void)
+{
+    for (auto it = fifo_cq_list_.begin(); it != fifo_cq_list_.end();) {
+        auto flow = *it;
+        if (flow->poll_fifo_cq()) {
+            it = fifo_cq_list_.erase(it);
+        } else {
+            it++;
+        }
+    }
+
+    for (auto flow: active_flows_map_) {
+        flow.second->test_rc_poll_cq();
+    }
 }
 
 void UcclRDMAEngine::handle_completion(void) 
@@ -782,7 +958,10 @@ void UcclRDMAEngine::run() {
         
         handle_timing_wheel();
         
-        handle_completion();
+        if (kTestRC)
+            test_rc_handle_completion();
+        else
+            handle_completion();
 
     }
     std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
@@ -924,7 +1103,7 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         rdma_ctx->uc_qps_[rdma_ctx->ready_entropy_cnt_].remote_psn = meta.ToEngine.remote_psn;
         ret = modify_qp_rtr(qp, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn);
         DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
-        ret = modify_qp_rts(qp, rdma_ctx, rdma_ctx->uc_qps_[rdma_ctx->ready_entropy_cnt_].local_psn, false);
+        ret = modify_qp_rts(qp, rdma_ctx, rdma_ctx->uc_qps_[rdma_ctx->ready_entropy_cnt_].local_psn, kTestRC);
         DCHECK(ret == 0) << "Failed to modify UC QP to RTS";
         rdma_ctx->ready_entropy_cnt_++;
     } else if (rdma_ctx->ready_entropy_cnt_ == kPortEntropy) {

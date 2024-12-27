@@ -264,6 +264,11 @@ class UcclFlow {
     void rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
 
     /**
+     * @brief Only used for testing RC.
+     */
+    void test_rc_rx_chunk(void);
+
+    /**
      * @brief Poll the completion queue for the FIFO QP.
      * @return Return true if polling is done for this flow, Engine should remove it from the polling list.
      */
@@ -278,6 +283,11 @@ class UcclFlow {
      * @brief Poll the completion queue for the Ctrl QP.
      */
     void poll_ctrl_cq(void);
+
+    /**
+     * @brief Only used for testing RC.
+     */
+    void test_rc_poll_cq(void);
 
     /**
      * @brief Rceive an ACK from the Ctrl QP.
@@ -320,6 +330,11 @@ class UcclFlow {
      * @param mid 
      */
     void post_single_message(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid);
+
+    /**
+     * @brief Only used for testing RC.
+     */
+    void test_rc_post_multi_messages(int slot);
 
     /**
      * @brief Periodically checks the state of the flow and performs
@@ -442,6 +457,11 @@ class UcclRDMAEngine {
      * Occasinal completion events from FIFO CQs.
      */
     void handle_completion(void);
+
+    /**
+     * @brief Only used for testing RC.
+     */
+    void test_rc_handle_completion(void);
 
     void handle_timing_wheel(void);
 

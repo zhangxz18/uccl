@@ -222,7 +222,7 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         qp_init_attr.qp_context = this;
         qp_init_attr.send_cq = ibv_cq_ex_to_cq(cq_ex_);
         qp_init_attr.recv_cq = ibv_cq_ex_to_cq(cq_ex_);
-        qp_init_attr.qp_type = IBV_QPT_UC;
+        qp_init_attr.qp_type = kTestRC ? IBV_QPT_RC : IBV_QPT_UC;
 
         qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv >> 1;
         qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
@@ -278,14 +278,17 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     if (retr_mr_ == nullptr)
         throw std::runtime_error("ibv_reg_mr failed");
 
-    // Populate recv work requests on all UC QPs for consuming immediate data.
     struct ibv_recv_wr wr;
     memset(&wr, 0, sizeof(wr));
-    for (int i = 0; i < kPortEntropy; i++) {
-        auto qp = uc_qps_[i].qp;
-        for (int i = 0; i < kMaxReq * kMaxRecv; i++) {
-            struct ibv_recv_wr *bad_wr;
-            DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
+
+    // Populate recv work requests on all UC QPs for consuming immediate data.
+    if (!kTestRC) {
+        for (int i = 0; i < kPortEntropy; i++) {
+            auto qp = uc_qps_[i].qp;
+            for (int i = 0; i < kMaxReq * kMaxRecv; i++) {
+                struct ibv_recv_wr *bad_wr;
+                DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
+            }
         }
     }
 

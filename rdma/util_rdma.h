@@ -266,6 +266,8 @@ struct RemFifo {
     uint32_t received_bytes[kMaxReq][kMaxRecv];
     // Tail pointer of the FIFO.
     uint64_t fifo_tail;
+    // Only used for testing RC.
+    uint32_t sizes[kMaxReq][kMaxRecv];
 };
 
 struct RemoteRDMAContext {
@@ -287,6 +289,9 @@ struct FlowRequest {
     enum type type;
     int nmsgs;
     PollCtx *poll_ctx;
+
+    // Only used for testing RC.
+    int events;
 
     union {
         struct {
