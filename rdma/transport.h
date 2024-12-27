@@ -264,11 +264,6 @@ class UcclFlow {
     void rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
 
     /**
-     * @brief Only used for testing RC.
-     */
-    void test_rc_rx_chunk(void);
-
-    /**
      * @brief Poll the completion queue for the FIFO QP.
      * @return Return true if polling is done for this flow, Engine should remove it from the polling list.
      */

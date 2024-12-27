@@ -110,6 +110,7 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
             wr.num_sge = 0;
             wr.next = nullptr;
             DCHECK(ibv_post_recv(qpw->qp, &wr, &bad_wr) == 0);
+            LOG(INFO) << "Post wr_id: " << wr.wr_id << " to QP#" << qpidx;
         }
     }
 
@@ -259,6 +260,8 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
 
     auto align = 128;
 
+    uint64_t wr_id = 0ULL;
+
     for (int i = 0; i < nmsgs; i++) {
         auto req = reqs[i];
         auto *data = req->send.data;
@@ -281,8 +284,9 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
         wr->wr.rdma.remote_addr = slots[i].addr;
         wr->wr.rdma.rkey = slots[i].rkey;
 
-        // Store the request id for future acknowledgment.
-        wr->wr_id = rdma_ctx_->get_request_id(req, &send_comm_->base);
+        wr_id += rdma_ctx_->get_request_id(req, &send_comm_->base) << (i * 8);
+
+        LOG(INFO) << "Post wr_id: " << rdma_ctx_->get_request_id(req, &send_comm_->base);
     }
 
     if (nmsgs > 1) {
@@ -307,6 +311,10 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
     last_wr->next = nullptr;
     last_wr->send_flags = IBV_SEND_SIGNALED;
     last_wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+
+    // Store the request id for future acknowledgment.
+    last_wr->wr_id = wr_id;
+    LOG(INFO) << "Post merged wr_id: " << wr_id;
 
     for (int i = 0; i < kTestRCEntropy; i++) {
         auto qpidx = i;
@@ -488,16 +496,6 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
     }
 }
 
-void UcclFlow::test_rc_rx_chunk(void)
-{
-    auto cq_ex = rdma_ctx_->cq_ex_;
-    DCHECK(rdma_ctx_->is_send_ == false);
-    auto recv_comm = &rdma_ctx_->recv_comm_;
-    auto imm_data = ibv_wc_read_imm_data(cq_ex);
-    auto wr_id = cq_ex->wr_id;
-    auto req = rdma_ctx_->get_request_by_id(wr_id, &recv_comm->base);
-}
-
 void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
@@ -661,25 +659,50 @@ void UcclFlow::test_rc_poll_cq(void)
 
         auto qp_num = ibv_wc_read_qp_num(cq_ex);
         auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
-        LOG(INFO) << "Event from UC QP#" << qpidx;
+        LOG(INFO) << "Event from UC QP#" << qpidx << ", wr_id: " << cq_ex->wr_id;
 
         DCHECK(cq_ex->status == IBV_WC_SUCCESS);
 
-        if (likely(ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV_RDMA_WITH_IMM))
-            test_rc_rx_chunk();
-        else {
-            DCHECK(ibv_wc_read_opcode(cq_ex) == IBV_WC_RDMA_WRITE);
-        }
+        auto send = ibv_wc_read_opcode(cq_ex) == IBV_WC_RDMA_WRITE;
+        
+        auto wr_id = cq_ex->wr_id;
+        auto req0 = rdma_ctx_->get_request_by_id(wr_id & 0xff, &rdma_ctx_->send_comm_.base);
+        auto fin = true;
 
-        auto req = rdma_ctx_->get_request_by_id(cq_ex->wr_id, &rdma_ctx_->send_comm_.base);
-        if (--req->events == 0) {
+        if (send) {
+            // For sender, one FlowRequest for one message.
+            for (int i = 0; i < req0->nmsgs; i++) {
+                auto req = rdma_ctx_->get_request_by_id((wr_id >> (i * 8)) & 0xff, &rdma_ctx_->send_comm_.base);
+                if (--req->events)
+                    fin = false;
+                else if (i) {
+                    // Wakeup app thread waiting for the completion of this request.
+                    {
+                        std::lock_guard<std::mutex> lock(req->poll_ctx->mu);
+                        req->poll_ctx->done = true;
+                        req->poll_ctx->cv.notify_one();
+                    }
+                    rdma_ctx_->free_request(req);
+                }
+                LOG(INFO) << req->events << " events left for request " << rdma_ctx_->get_request_id(req, &rdma_ctx_->send_comm_.base);
+            }
+        } else {
+            // For receiver, only one FlowRequest for multiple messages.
+            if (--req0->events)
+                fin = false;
+        }
+        
+        if (fin) {
+            LOG(INFO) << "Request complete (" << req0->nmsgs << " messages)";
             // Wakeup app thread waiting for the completion of this request.
-            std::lock_guard<std::mutex> lock(req->poll_ctx->mu);
-            req->poll_ctx->done = true;
-            req->poll_ctx->cv.notify_one();
+            {
+                std::lock_guard<std::mutex> lock(req0->poll_ctx->mu);
+                req0->poll_ctx->done = true;
+                req0->poll_ctx->cv.notify_one();
+            }
+            // Free the first request.
+            rdma_ctx_->free_request(req0);
         }
-
-        rdma_ctx_->free_request(req);
 
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }

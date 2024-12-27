@@ -536,9 +536,9 @@ class RDMAContext {
          * @brief Figure out the request id.
          * @param req 
          * @param comm_base 
-         * @return int 
+         * @return uint64_t 
          */
-        inline int get_request_id(struct FlowRequest *req, struct NetCommBase *comm_base) {
+        inline uint64_t get_request_id(struct FlowRequest *req, struct NetCommBase *comm_base) {
             return req - comm_base->reqs;
         }
 
@@ -554,6 +554,9 @@ class RDMAContext {
 
         inline void free_request(struct FlowRequest *req) {
             req->type = FlowRequest::UNUSED;
+            req->nmsgs = 0;
+            req->poll_ctx = nullptr;
+            req->events = 0;
             if (!is_send_) {
                 req->recv.received_bytes = 0;
                 req->recv.fin_msg = 0;
