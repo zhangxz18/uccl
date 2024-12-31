@@ -23,6 +23,16 @@ namespace uccl {
 
 #include "util_timer.h"
 
+struct alignas(64) wr_ex {
+    struct ibv_send_wr wr;
+    struct ibv_sge sge;
+
+    struct FlowRequest *req;
+    uint32_t qpidx;
+    bool last_chunk;
+};
+static_assert(sizeof(wr_ex) == 192, "wr_ex size mismatch");
+
 /// Used for fast recording of wheel actions for debugging
 struct wheel_record_t {
     size_t record_tsc_;  ///< Timestamp at which this record was created

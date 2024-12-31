@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "timely.h"
 #include "timing_wheel.h"
@@ -109,6 +110,13 @@ class UINT_20 {
         uint32_t value_;
 };
 
+struct pending_retr_chunk {
+    uint64_t remote_addr;
+    uint64_t chunk_addr;
+    uint32_t chunk_len;
+    uint32_t imm_data;
+};
+
 /**
  * @brief Swift Congestion Control (SWCC) protocol control block.
  */
@@ -187,6 +195,31 @@ struct Pcb {
     }
     void rto_advance() { rto_timer++; }
 
+    void barrier_bitmap_shift_left_one() {
+        constexpr size_t barrier_bitmap_bucket_max_idx = 
+            kSackBitmapSize / kSackBitmapBucketSize - 1;
+
+        for (size_t i = 0; i < barrier_bitmap_bucket_max_idx; i++) {
+            // Shift the current each bucket to the left by 1 and take the most
+            // significant bit from the next bucket
+            uint64_t &barrier_bitmap_left_bucket = barrier_bitmap[i];
+            const uint64_t barrier_bitmap_right_bucket = barrier_bitmap[i + 1];
+
+            barrier_bitmap_left_bucket = (barrier_bitmap_left_bucket >> 1) |
+                                         (barrier_bitmap_right_bucket << 63);
+        }
+
+        // Special handling for the right most bucket
+        uint64_t &barrier_bitmap_right_most_bucket =
+            barrier_bitmap[barrier_bitmap_bucket_max_idx];
+        barrier_bitmap_right_most_bucket >>= 1;
+
+        barrier_bitmap_count--;
+
+        // Increment the shift count.
+        shift_count++;
+    }
+
     void sack_bitmap_shift_left_one() {
         constexpr size_t sack_bitmap_bucket_max_idx =
             kSackBitmapSize / kSackBitmapBucketSize - 1;
@@ -207,6 +240,19 @@ struct Pcb {
         sack_bitmap_right_most_bucket >>= 1;
 
         sack_bitmap_count--;
+    }
+
+    void barrier_bitmap_bit_set(const size_t index) {
+        const size_t barrier_bitmap_bucket_idx = index / kSackBitmapBucketSize;
+        const size_t barrier_bitmap_idx_in_bucket = index % kSackBitmapBucketSize;
+
+        LOG_IF(FATAL, index >= kSackBitmapSize)
+            << "Index out of bounds: " << index;
+
+        barrier_bitmap[barrier_bitmap_bucket_idx] |=
+            (1ULL << barrier_bitmap_idx_in_bucket);
+
+        barrier_bitmap_count++;
     }
 
     void sack_bitmap_bit_set(const size_t index) {
@@ -232,6 +278,13 @@ struct Pcb {
     UINT_20 rcv_nxt{0};
     uint64_t sack_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{0};
     uint8_t sack_bitmap_count{0};
+    // For RDMA retransmission.
+    uint64_t barrier_bitmap[kSackBitmapSize / kSackBitmapBucketSize] {0};
+    uint8_t barrier_bitmap_count{0};
+    std::unordered_map<uint64_t, struct pending_retr_chunk> pending_retr_chunks;
+    // Incremented when a bitmap is shifted left by 1.
+    // Even if increment every one microsecond, it will take 584542 years to overflow.
+    uint64_t shift_count;
     uint16_t cwnd{kInitialCwnd};
     uint16_t duplicate_acks{0};
     int rto_timer{kRtoDisabled};

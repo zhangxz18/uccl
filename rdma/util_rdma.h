@@ -16,7 +16,6 @@
 
 #include <infiniband/verbs.h>
 
-#include "timely.h"
 #include "transport_config.h"
 #include "transport_cc.h"
 
@@ -76,7 +75,7 @@ class WrExPool {
         WrExPool() {
             wrs= mmap(nullptr, kNumWr * sizeof(struct wr_ex), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             if (wrs == MAP_FAILED)
-                throw std::runtime_error("Failed to allocate memory for SGE pool.");
+                throw std::runtime_error("Failed to allocate memory for WrExPool.");
             head_ = tail_ = 0;
 
             for (int i = 0; i < kNumWr - 1; i++) {
@@ -92,6 +91,133 @@ class WrExPool {
         uint32_t head_;
         uint32_t tail_;
         uint64_t wr_pool_[kNumWr];
+};
+
+struct retr_chunk_hdr {
+    uint32_t qidx;
+    uint32_t pad;
+    uint64_t remote_addr;
+};
+
+/**
+ * @brief Buffer pool for chunks used in retransmission.
+ * - Each chunk is fixed size.
+ * - Single producer, single consumer.
+ */
+class RetrChunkBuffPool {
+    public:
+        static constexpr uint32_t kRetrChunkSize = kChunkSize + sizeof(retr_chunk_hdr);
+        static constexpr uint32_t kNumChunk = 64;
+        static_assert((kNumChunk & (kNumChunk - 1)) == 0, "kNumChunk must be power of 2");
+
+         inline bool full(void) {
+            return ((tail_ + 1) & (kNumChunk - 1)) == head_;
+         }
+
+         inline bool empty(void) {
+            return head_ == tail_;
+         }
+
+         inline int alloc_chunk(uint64_t *chunk) {
+            if (empty()) return -1;
+
+            head_ = (head_ + 1) & (kNumChunk - 1);
+            *chunk = (uint64_t)buff_addr_ + buffer_pool_[head_];
+            return 0;
+         }
+
+         inline void free_chunk(uint64_t chunk) {
+            if (full()) return;
+            chunk -= (uint64_t)buff_addr_;
+            buffer_pool_[tail_] = chunk;
+            tail_ = (tail_ + 1) & (kNumChunk - 1);
+         };
+
+         inline uint32_t get_lkey(void) {
+            return lkey;
+         }
+
+         void set_pool_addr(struct ibv_mr *mr) {
+            buff_addr_ = mr->addr;
+            lkey = mr->lkey;
+         }
+
+         RetrChunkBuffPool() {
+            head_ = tail_ = 0;
+            for (uint32_t i = 0; i < kNumChunk - 1; i++) {
+                free_chunk((uint64_t)buff_addr_ + i * kRetrChunkSize);
+            }
+         }
+
+         ~RetrChunkBuffPool() = default;
+
+    private:
+        void *buff_addr_;
+        uint32_t lkey;
+        uint32_t head_;
+        uint32_t tail_;
+        uint64_t buffer_pool_[kNumChunk];
+};
+
+/**
+ * @brief Buffer pool for Retr headers.
+ * - Each Retr header is fixed size.
+ * - Single producer, single consumer.
+ */
+class RetrHdrBuffPool {
+    public:
+        static constexpr uint32_t kHdrSize = sizeof(struct retr_chunk_hdr);
+        static constexpr uint32_t kNumHdr = 256;
+        static_assert((kNumHdr & (kNumHdr - 1)) == 0, "kNumPkt must be power of 2");
+        static_assert(kNumHdr > kMaxRetr << 1, "kNumHdr must be larger than kMaxRetr times 2");
+
+        inline bool full(void) {
+            return ((tail_ + 1) & (kNumHdr - 1)) == head_;
+        }
+
+        inline bool empty(void) {
+            return head_ == tail_;
+        }
+
+        inline int alloc_hdr(uint64_t *buff) {
+            if (empty()) return -1;
+
+            head_ = (head_ + 1) & (kNumHdr - 1);
+            *buff = (uint64_t)buff_addr_ + buffer_pool_[head_];
+            return 0;
+        }
+
+        inline void free_hdr(uint64_t buff) {
+            if (full()) return;
+            buff -= (uint64_t)buff_addr_;
+            buffer_pool_[tail_] = buff;
+            tail_ = (tail_ + 1) & (kNumHdr - 1);
+        }
+
+        inline uint32_t get_lkey(void) {
+            return lkey;
+        }
+
+        void set_pool_addr(struct ibv_mr *mr) {
+            buff_addr_ = mr->addr;
+            lkey = mr->lkey;
+         }
+
+        RetrHdrBuffPool() {
+            head_ = tail_ = 0;
+            for (int i = 0; i < kNumHdr - 1; i++) {
+                free_hdr((uint64_t)buff_addr_ + i * kHdrSize);
+            }
+
+        }
+        ~RetrHdrBuffPool() = default;
+    
+    private:
+        void *buff_addr_;
+        uint32_t lkey;
+        uint32_t head_;
+        uint32_t tail_;
+        uint64_t buffer_pool_[kNumHdr];
 };
 
 /**
@@ -387,8 +513,7 @@ class TXTracking {
         struct ChunkTrack {
             struct FlowRequest *req;
             uint32_t csn;
-            void *chunk_addr;
-            uint32_t chunk_size;
+            struct wr_ex *wr_ex;
             bool last_chunk;
             uint64_t timestamp;
         };
@@ -396,10 +521,22 @@ class TXTracking {
         TXTracking() = default;
         ~TXTracking() = default;
 
+        inline bool empty(void) {
+            return unacked_chunks_.empty();
+        }
+
+        inline TXTracking::ChunkTrack get_unacked_chunk_from_idx(uint32_t idx) {
+            return unacked_chunks_[idx];
+        }
+
+        inline TXTracking::ChunkTrack get_oldest_unacked_chunk(void) {
+            return unacked_chunks_.front();
+        }
+
         uint64_t ack_chunks(uint32_t num_acked_chunks);
 
-        inline void track_chunk(struct FlowRequest *req, uint32_t csn, void *chunk_addr, uint32_t chunk_size, bool last_chunk, uint64_t timestamp) {
-            unacked_chunks_.push_back({req, csn, chunk_addr, chunk_size, last_chunk, timestamp});
+        inline void track_chunk(struct FlowRequest *req, uint32_t csn, struct wr_ex * wr_ex, bool last_chunk, uint64_t timestamp) {
+            unacked_chunks_.push_back({req, csn, wr_ex, last_chunk, timestamp});
         }
 
         inline size_t track_size(void) {
@@ -440,15 +577,18 @@ struct UCQPWrapper {
  * @brief  RDMA context for each UcclFlow, which is produced by RDMAFactory. It contains:
  *   - Multiple Unreliable Connection (UC) QPs and a shared CQ.
  *   - A high-priority QP for control messages and a dedicated CQ, PD, and MR.
+ *   - A QP for retransmission and a dedicated CQ, PD, and MR.
  *   - A Reliable Connection (RC) QP for FIFO and a dedicated CQ, PD, and MR.
  *   - A MR for retransmission.
  */
 class RDMAContext {
     public:
-        constexpr static int kTotalQP = kPortEntropy + 2;
+        constexpr static int kTotalQP = kPortEntropy + 3;
+        constexpr static int kFifoIndex = kPortEntropy + 1;
         constexpr static int kFifoMRSize = sizeof(struct RemFifo);
         constexpr static int kCtrlMRSize = CtrlPktBuffPool::kPktSize * CtrlPktBuffPool::kNumPkt;
-        constexpr static int kRetrMRSize = 4096 * 1024;
+        // TODO: 16MB for now. How to determine the size of retransmission MR?
+        constexpr static int kRetrMRSize = RetrChunkBuffPool::kRetrChunkSize * RetrChunkBuffPool::kNumChunk;
         constexpr static int kCQSize = 4096;
 
         // Protection domain for all RDMA resources.
@@ -478,7 +618,7 @@ class RDMAContext {
         // Whether its FIFO CQ is under polling.
         bool fifo_cq_polling_;
         
-        // (high-priority) QP for control messages (e.g., ACK) based on Unreliable Datagram (UD).
+        // (high-priority) QP for control messages (e.g., ACK).
         struct ibv_qp *ctrl_qp_;
         // Local PSN for control messages.
         uint32_t ctrl_local_psn_;
@@ -489,8 +629,18 @@ class RDMAContext {
         // Memory region for control messages.
         struct ibv_mr *ctrl_mr_;
 
+        // Retransmission QP.
+        struct ibv_qp *retr_qp_;
+        // Local PSN for retransmission.
+        uint32_t retr_local_psn_;
+        // Remote PSN for retransmission.
+        uint32_t retr_remote_psn_;
+        // Dedicated CQ for retransmission.
+        struct ibv_cq_ex *retr_cq_ex_;
         // Memory region for retransmission.
         struct ibv_mr *retr_mr_;
+        struct ibv_mr *retr_hdr_mr_;
+        uint32_t retr_signal_cnt_ = 0;
 
         // Global timing wheel for all UC QPs.
         TimingWheel wheel_;
@@ -528,6 +678,12 @@ class RDMAContext {
 
         // Buffer pool for control packets.
         CtrlPktBuffPool ctrl_pkt_pool_;
+
+        // Buffer pool for retransmission headers.
+        RetrHdrBuffPool retr_hdr_pool_;
+
+        // Buffer pool for retransmission chunks.
+        RetrChunkBuffPool retr_chunk_pool_;
 
         // Buffer pool for work request extension items.
         WrExPool wr_ex_pool_;
@@ -720,8 +876,8 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
-static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex,
-    struct ibv_cq **cq, uint32_t cqsize, struct ibv_pd *pd, struct ibv_mr **mr, size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr)
+static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex, bool ts,
+    struct ibv_cq **cq, uint32_t cqsize, struct ibv_pd *pd, struct ibv_mr **mr, size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr, uint32_t max_send_sge, uint32_t max_recv_sge)
 {
     // Creating CQ
     if (cq_ex) {
@@ -766,8 +922,8 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
 
     qp_init_attr.cap.max_send_wr = max_send_wr;
     qp_init_attr.cap.max_recv_wr = max_recv_wr;
-    qp_init_attr.cap.max_send_sge = 1;
-    qp_init_attr.cap.max_recv_sge = 1;
+    qp_init_attr.cap.max_send_sge = max_send_sge;
+    qp_init_attr.cap.max_recv_sge = max_recv_sge;
     qp_init_attr.cap.max_inline_data = kMaxRecv * sizeof(struct FifoItem);
 
     // Creating QP

@@ -39,6 +39,7 @@ static const uint32_t kMaxSge = 1;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
+static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxBatchPost = 32;
 
 // For debugging and testing.
@@ -51,6 +52,8 @@ static const bool kTestNoHWTimestamp = false;
 static const bool kTestNoTimingWheel = false;
 // Use constant(maximum) rate for transmission.
 static const bool kTestConstantRate = false;
+// Test lossy network.
+static const bool kTestLoss = false;
 
 // 400Gbps link.
 static const double kLinkBandwidth = 400.0 * 1e9 / 8;

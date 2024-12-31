@@ -154,7 +154,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
 }
 
 RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), ready_entropy_cnt_(0), ctrl_pkt_pool_(), wheel_({freq_ghz})
+    dev_(dev), ready_entropy_cnt_(0), ctrl_pkt_pool_(), retr_chunk_pool_(), wheel_({freq_ghz})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -224,8 +224,9 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         qp_init_attr.recv_cq = ibv_cq_ex_to_cq(cq_ex_);
         qp_init_attr.qp_type = kTestRC ? IBV_QPT_RC : IBV_QPT_UC;
 
-        qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv >> 1;
-        qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
+        /// FIXME: max_send_wr and max_recv_wr
+        qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv + kMaxRetr;
+        qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv + kMaxRetr;
         qp_init_attr.cap.max_send_sge = kMaxSge;
         qp_init_attr.cap.max_recv_sge = kMaxSge;
         qp_init_attr.cap.max_inline_data = 0;
@@ -257,26 +258,39 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
 
     // Create Ctrl QP, CQ, and MR.
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
-    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, true,
+    util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, true, true,
         (struct ibv_cq **)&ctrl_cq_ex_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
-            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+            CtrlPktBuffPool::kNumPkt, CtrlPktBuffPool::kNumPkt, 1, 1);
+    
+    // Set buffer pool address for control packets.
+    ctrl_pkt_pool_.set_pool_addr(ctrl_mr_);
 
     // Create FIFO QP, CQ, and MR.
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
-    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, false,
+    util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, false, false,
         &fifo_cq_, kCQSize, pd_, &fifo_mr_, kFifoMRSize, 
-            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv);
+            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv, 1, 1);
 
     comm_base->fifo = reinterpret_cast<struct RemFifo *>(fifo_mr_->addr);
 
-    // Create MR for retransmission.
-    void *retr_addr = mmap(nullptr, kRetrMRSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (retr_addr == MAP_FAILED)
+    // Create Retr QP, CQ and MR.
+    retr_local_psn_ = 0xDEADBEEF + kPortEntropy + 2;
+    util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_UC, true, false,
+        (struct ibv_cq **)&retr_cq_ex_, kCQSize, pd_, &retr_mr_, kRetrMRSize, 
+            RetrChunkBuffPool::kNumChunk, RetrChunkBuffPool::kNumChunk, 2, 1);
+    void *retr_hdr = mmap(nullptr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (retr_hdr == MAP_FAILED)
         throw std::runtime_error("mmap failed");
-
-    retr_mr_ = ibv_reg_mr(pd_, retr_addr, kRetrMRSize, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    if (retr_mr_ == nullptr)
+    retr_hdr_mr_ = ibv_reg_mr(pd_, retr_hdr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, 
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    if (retr_hdr_mr_ == nullptr)
         throw std::runtime_error("ibv_reg_mr failed");
+    
+    // Set buffer pool address for retransmission chunks and headers.
+    {
+        retr_chunk_pool_.set_pool_addr(retr_mr_);
+        retr_hdr_pool_.set_pool_addr(retr_hdr_mr_);
+    }
 
     struct ibv_recv_wr wr;
     memset(&wr, 0, sizeof(wr));
@@ -285,32 +299,53 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     if (!kTestRC) {
         for (int i = 0; i < kPortEntropy; i++) {
             auto qp = uc_qps_[i].qp;
-            for (int i = 0; i < kMaxReq * kMaxRecv; i++) {
+            /// FIXME: 
+            for (int i = 0; i < kMaxReq * kMaxRecv + kMaxRetr; i++) {
                 struct ibv_recv_wr *bad_wr;
                 DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
             }
         }
     }
 
-    // Set buffer pool address for control packets.
-    ctrl_pkt_pool_.set_pool_addr(ctrl_mr_);
+    // Populate recv work requests on Ctrl QP for consuming control packets if we are sender.
+    if (is_send_)
+    {
+        struct ibv_sge sge;
+        for (int i = 0; i < CtrlPktBuffPool::kNumPkt - 1; i++) {
+            uint64_t pkt_addr;
+            if (ctrl_pkt_pool_.alloc_buff(&pkt_addr))
+                throw std::runtime_error("Failed to allocate buffer for control packet");
+            sge.addr = pkt_addr;
+            sge.length = CtrlPktBuffPool::kPktSize;
+            sge.lkey = ctrl_pkt_pool_.get_lkey();
+            wr.wr_id = pkt_addr;
+            wr.next = nullptr;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            struct ibv_recv_wr *bad_wr;
+            if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
+                throw std::runtime_error("ibv_post_recv failed");
+        }
+    }
 
-    // Populate recv work requests on Ctrl QP for consuming control packets.
-    struct ibv_sge sge;
-    for (int i = 0; i < CtrlPktBuffPool::kNumPkt >> 1; i++) {
-        uint64_t pkt_addr;
-        if (ctrl_pkt_pool_.alloc_buff(&pkt_addr))
-            throw std::runtime_error("Failed to allocate buffer for control packet");
-        sge.addr = pkt_addr;
-        sge.length = CtrlPktBuffPool::kPktSize;
-        sge.lkey = ctrl_pkt_pool_.get_lkey();
-        wr.wr_id = pkt_addr;
-        wr.next = nullptr;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        struct ibv_recv_wr *bad_wr;
-        if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr)) {
-            throw std::runtime_error("ibv_post_recv failed");
+    // Populate recv work requestrs on Retr QP for consuming retransmission chunks if we are receiver.
+    if (!is_send_) 
+    {
+        struct ibv_sge sge;
+        for (int i = 0; i < kMaxRetr; i++) {
+            uint64_t chunk_addr;
+            if (retr_chunk_pool_.alloc_chunk(&chunk_addr))
+                throw std::runtime_error("Failed to allocate buffer for retransmission chunk");
+            sge.addr = chunk_addr;
+            sge.length = RetrChunkBuffPool::kRetrChunkSize;
+            sge.lkey = retr_chunk_pool_.get_lkey();
+            wr.wr_id = chunk_addr;
+            wr.next = nullptr;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+            struct ibv_recv_wr *bad_wr;
+            if (ibv_post_recv(retr_qp_, &wr, &bad_wr))
+                throw std::runtime_error("ibv_post_recv failed");
         }
     }
 
@@ -334,6 +369,11 @@ RDMAContext::~RDMAContext()
     if (retr_mr_ != nullptr) {
         munmap(retr_mr_->addr, retr_mr_->length);
         ibv_dereg_mr(retr_mr_);
+    }
+
+    if (retr_hdr_mr_ != nullptr) {
+        munmap(retr_hdr_mr_->addr, retr_hdr_mr_->length);
+        ibv_dereg_mr(retr_hdr_mr_);
     }
 
     if (fifo_mr_ != nullptr) {
@@ -383,6 +423,10 @@ uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
             // Free the request.
             rdma_ctx_->free_request(chunk.req);
         }
+
+        // Free wr_ex here.
+        rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(chunk.wr_ex));
+
         if (timestamp == 0)
             timestamp = chunk.timestamp;
         unacked_chunks_.erase(unacked_chunks_.begin());

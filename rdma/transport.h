@@ -226,6 +226,10 @@ class UcclFlow {
                 imm_wrs_[i].num_sge = 0;
                 imm_wrs_[i].sg_list = nullptr;
                 imm_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &imm_wrs_[i + 1];
+
+                retr_wrs_[i].num_sge = 1;
+                retr_wrs_[i].sg_list = nullptr;
+                retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
                 
                 tx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &tx_ack_wrs_[i + 1];
                 rx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &rx_ack_wrs_[i + 1];
@@ -264,6 +268,21 @@ class UcclFlow {
     void rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
 
     /**
+     * @brief Receive a retransmitted chunk from the flow.
+     * 
+     * @param ack_list 
+     */
+    void rx_retr_chunk(struct list_head *ack_list);
+
+    /**
+     * @brief Receive a barrier from the flow.
+     * 
+     * @param post_recv_qidx_list 
+     * @param num_post_recv 
+     */
+    void rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
+
+    /**
      * @brief Poll the completion queue for the FIFO QP.
      * @return Return true if polling is done for this flow, Engine should remove it from the polling list.
      */
@@ -280,9 +299,16 @@ class UcclFlow {
     void poll_ctrl_cq(void);
 
     /**
+     * @brief Poll the completion queue for the Retr QP.
+     */
+    void poll_retr_cq(void);
+
+    /**
      * @brief Only used for testing RC.
      */
     void test_rc_poll_cq(void);
+
+    void retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex);
 
     /**
      * @brief Rceive an ACK from the Ctrl QP.
@@ -347,14 +373,14 @@ class UcclFlow {
 
    private:
 
-    void fast_retransmit();
-    void rto_retransmit();
+    void fast_retransmit(struct UCQPWrapper *qpw);
+    void rto_retransmit(struct UCQPWrapper *qpw);
 
     // <Slot, i>
     std::deque<std::pair<int, int> > pending_tx_msgs_;
 
-    // Index of QPs that need to post recv requests for consuming immediate data.
-    // std::vector<int> post_imm_qpidx_list_;
+    // Pre-allocated WQEs for consuming retransmission chunks.
+    struct ibv_recv_wr retr_wrs_[kMaxBatchCQ];
 
     // Pre-allocated WQEs for consuming immediate data.
     struct ibv_recv_wr imm_wrs_[kMaxBatchCQ];

@@ -59,7 +59,7 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
 
     // Occasionally post a request with the IBV_SEND_SIGNALED flag.
     if (slot == 0) {
-        wr.send_flags = IBV_SEND_SIGNALED;
+        wr.send_flags |= IBV_SEND_SIGNALED;
         if (!rdma_ctx_->fifo_cq_polling_) {
             engine_->add_fifo_cq_polling(this);
             rdma_ctx_->fifo_cq_polling_ = true;
@@ -133,27 +133,28 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
         if (kTestNoTimingWheel) {
-            struct ibv_sge sge;
-            struct ibv_send_wr wr, *bad_wr = nullptr;
+            DCHECK(rdma_ctx_->wr_ex_pool_.alloc_wr(&wr_addr) == 0);
+            struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
+            auto wr = &wr_ex->wr;
 
-            sge.addr = (uintptr_t)data;
-            sge.lkey = lkey;
-            sge.length = std::min(*size, (int)kChunkSize);
+            wr_ex->sge.addr = (uintptr_t)data;
+            wr_ex->sge.lkey = lkey;
+            wr_ex->sge.length = std::min(*size, (int)kChunkSize);
 
-            auto chunk_size = sge.length;
+            auto chunk_size = wr_ex->sge.length;
             *size -= chunk_size;
-            data = static_cast<char*>(data) + sge.length;
+            data = static_cast<char*>(data) + wr_ex->sge.length;
 
-            wr.wr.rdma.remote_addr = remote_addr + *sent_offset;
-            wr.wr.rdma.rkey = rkey;
+            wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
+            wr->wr.rdma.rkey = rkey;
 
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            wr.next = nullptr;
-            wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+            wr->sg_list = &wr_ex->sge;
+            wr->num_sge = 1;
+            wr->next = nullptr;
+            wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
 
             if (qpw->signal_cnt_++ % kSignalInterval == 0)
-                wr.send_flags = IBV_SEND_SIGNALED;
+                wr->send_flags = IBV_SEND_SIGNALED;
             
             IMMData imm_data(0);
 
@@ -162,14 +163,13 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             imm_data.SetRID(slot.rid);
             imm_data.SetMID(mid);
 
-            wr.imm_data = htonl(imm_data.GetImmData());
+            wr->imm_data = htonl(imm_data.GetImmData());
 
-            DCHECK(ibv_post_send(qpw->qp, &wr, &bad_wr) == 0);
+            struct ibv_send_wr *bad_wr;
+            DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
             // Track this chunk.
-            qpw->txtracking.track_chunk(req, be32toh(wr.imm_data), 
-            reinterpret_cast<void*>(wr.sg_list->addr), sge.length, 
-                *size == 0, rdtsc());
+            qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *size == 0, rdtsc());
 
             *sent_offset += chunk_size;
             continue;
@@ -193,6 +193,8 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
         wr->wr.rdma.rkey = rkey;
+
+        LOG(INFO) << "remote_addr: " << wr->wr.rdma.remote_addr << ", rkey: " << wr->wr.rdma.rkey;
 
         // There is no need to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
@@ -221,23 +223,26 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                 hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
             if (wheel->queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), 
-                wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0))
-                qpw->in_wheel_cnt_++;
+                wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0)) {
+                    qpw->in_wheel_cnt_++;
+                    // For future tracking.
+                    wr_ex->req = req;
+                    wr_ex->last_chunk = *size == 0;
+                    LOG(INFO) << "Queue " << chunk_size << " bytes on QP#" << qpidx;
+            }
             else {
                 // Transmit this chunk directly.
                 struct ibv_send_wr *bad_wr;
                 DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
-                rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(wr_ex));
+
+                // Track this chunk.
+                qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *size == 0, rdtsc());
+
+                LOG(INFO) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
             }
         }
 
-        // Track this merged chunk.
-        qpw->txtracking.track_chunk(req, qpw->pcb.seqno().to_uint32() - 1, 
-            reinterpret_cast<void*>(wr_ex->sge.addr), wr_ex->sge.length, 
-                *size == 0, rdtsc());
-
-        LOG(INFO) << "Sending: csn: " << qpw->pcb.seqno().to_uint32() - 1 << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
-        LOG(INFO) << "Queue " << chunk_size << " bytes";
+        LOG(INFO) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
         
         *sent_offset += chunk_size;
     }
@@ -349,6 +354,52 @@ void UcclFlow::post_multi_messages(int slot)
     for (int i = 0; i < nmsgs; i++) post_single_message(reqs[i], slots[i], i);
 }
 
+void UcclFlow::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
+{
+    struct ibv_send_wr barrier_wr, retr_wr, *bad_wr;
+    // Step1: Send a barrier WQE through the original lossy QP.
+    barrier_wr.sg_list = nullptr;
+    barrier_wr.num_sge = 0;
+    barrier_wr.next = nullptr;
+    barrier_wr.opcode = IBV_WR_SEND_WITH_IMM;
+    barrier_wr.send_flags = IBV_SEND_INLINE;
+    // Occasionally post a request with the IBV_SEND_SIGNALED flag.
+    if (qpw->signal_cnt_++ % kSignalInterval == 0)
+        barrier_wr.send_flags |= IBV_SEND_SIGNALED;
+    barrier_wr.imm_data = wr_ex->wr.imm_data;
+
+    DCHECK(ibv_post_send(qpw->qp, &barrier_wr, &bad_wr) == 0);
+
+    // Step2: Use SEND/RECV for retransmission with Retr QP.
+    retr_wr = wr_ex->wr;
+    struct ibv_sge retr_sge[2];
+
+    uint64_t retr_hdr;
+    DCHECK(rdma_ctx_->retr_hdr_pool_.alloc_hdr(&retr_hdr) == 0);
+    struct retr_chunk_hdr *hdr = reinterpret_cast<struct retr_chunk_hdr *>(retr_hdr);
+    hdr->qidx = (uint32_t)(qpw - rdma_ctx_->uc_qps_);
+    hdr->remote_addr = wr_ex->wr.wr.rdma.remote_addr;
+
+    retr_sge[0].addr = retr_hdr;
+    retr_sge[0].length = sizeof(struct retr_chunk_hdr);
+    retr_sge[0].lkey = rdma_ctx_->retr_hdr_pool_.get_lkey();
+    
+    retr_sge[1] = wr_ex->sge;
+    
+    retr_wr.wr_id = retr_hdr;
+    retr_wr.sg_list = retr_sge;
+    retr_wr.num_sge = 2;
+    retr_wr.opcode = IBV_WR_SEND_WITH_IMM;
+    // Occasionally post a request with the IBV_SEND_SIGNALED flag.
+    if (rdma_ctx_->retr_signal_cnt_++ % (RetrChunkBuffPool::kNumChunk >> 1) == 0)
+        retr_wr.send_flags |= IBV_SEND_SIGNALED;
+
+    DCHECK(ibv_post_send(rdma_ctx_->retr_qp_, &retr_wr, &bad_wr) == 0);
+
+    LOG(INFO) << "successfully retransmit chunk for QP#" << (qpw - rdma_ctx_->uc_qps_) 
+        << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
+}
+
 void UcclFlow::rx_ack(void)
 {
     auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
@@ -366,10 +417,52 @@ void UcclFlow::rx_ack(void)
 
     if (swift::UINT_20::uint20_seqno_lt(ackno, qpw->pcb.snd_una)) {
         LOG(INFO) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
+    } else if (swift::UINT_20::uint20_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
+        LOG(INFO) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " 
+            << qpw->pcb.snd_nxt.to_uint32() << " from QP#" << qpidx << " by Ctrl QP";
     } else if (swift::UINT_20::uint20_seqno_eq(ackno, qpw->pcb.snd_una)) {
         LOG(INFO) << "Received duplicate ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
-    } else if (swift::UINT_20::uint20_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
-        LOG(INFO) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " << qpw->pcb.snd_nxt.to_uint32() << " from QP#" << qpidx << " by Ctrl QP";
+        qpw->pcb.duplicate_acks++;
+        qpw->pcb.snd_ooo_acks = ucclsackh->sack_bitmap_count.value();
+
+        if (qpw->pcb.duplicate_acks < kFastRexmitDupAckThres) {
+            // We have not reached the threshold yet, so we do not do
+            // anything.
+        } else if (qpw->pcb.duplicate_acks == kFastRexmitDupAckThres) {
+            // Fast retransmit.
+            fast_retransmit(qpw);
+        } else {
+            // We have already done the fast retransmit, so we are now
+            // in the fast recovery phase.
+            auto sack_bitmap_count = ucclsackh->sack_bitmap_count.value();
+            // We check the SACK bitmap to see if there are more undelivered
+            // chunks. In fast recovery mode we get after a fast
+            // retransmit, we will retransmit all missing chunks that we
+            // find from the SACK bitmap, when enumerating the SACK bitmap
+            // for up to sack_bitmap_count ACKs.
+            uint32_t index = 0;
+            while (sack_bitmap_count && index < kSackBitmapSize && !qpw->txtracking.empty()) {
+                auto bucket_idx = index / swift::Pcb::kSackBitmapBucketSize;
+                auto sack_bitmap = ucclsackh->sack_bitmap[bucket_idx].value();
+                
+                auto cursor = index % swift::Pcb::kSackBitmapBucketSize;
+
+                if ((sack_bitmap & (1ULL << cursor)) == 0) {
+                    // We found a hole.
+                    auto seqno = qpw->pcb.snd_una.to_uint32() + index;
+                    auto chunk = qpw->txtracking.get_unacked_chunk_from_idx(index);
+                    if (seqno == chunk.csn) {
+                        auto wr_ex = chunk.wr_ex;
+                        retransmit_chunk(qpw, wr_ex);
+                    }
+                    qpw->pcb.rto_reset();
+                } else {
+                    sack_bitmap_count--;
+                }
+                index++;
+            }
+        }
+
     } else {
         LOG(INFO) << "Received valid ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
         
@@ -404,13 +497,81 @@ void UcclFlow::rx_ack(void)
     
 }
 
+void UcclFlow::poll_retr_cq(void)
+{
+    auto cq_ex = rdma_ctx_->retr_cq_ex_;
+    struct ibv_sge sges[kMaxBatchCQ];
+    struct ibv_wc wcs[kMaxBatchCQ];
+    LIST_HEAD(ack_list);
+    int cq_budget = 0;
+    int num_post_recv = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+
+    while (1) {
+        if (cq_ex->status == IBV_WC_SUCCESS) {
+            if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
+                rx_retr_chunk(&ack_list);
+                num_post_recv++;
+            } else {
+                auto wr_id = cq_ex->wr_id;
+                rdma_ctx_->retr_hdr_pool_.free_hdr(wr_id);
+            }
+        } else {
+            LOG(ERROR) << "Retr CQ state error: " << cq_ex->status;
+        }
+
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+    ibv_end_poll(cq_ex);
+
+    // Send coalescing ACKs.
+    {
+        int wr_idx = 0;
+        struct list_head *pos, *n;
+        list_for_each_safe(pos, n, &ack_list) {
+            auto ack_item = list_entry(pos, struct ack_item, ack_link);
+            auto qpidx = ack_item->qpidx;
+            craft_ack(qpidx, wr_idx++);
+            list_del(pos);
+        }
+        flush_acks(wr_idx);
+    }
+
+    // Populate recv work requests for consuming retransmission chunks.
+    if (num_post_recv) {
+        int i;
+        for (i = 0; i < num_post_recv; i++) {
+            uint64_t chunk_addr;
+            if (rdma_ctx_->retr_chunk_pool_.alloc_chunk(&chunk_addr)) {
+                LOG(INFO) << "Failed to allocate retransmission chunk buffer";
+            }
+            sges[i].addr = chunk_addr;
+            sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
+            sges[i].lkey = rdma_ctx_->retr_chunk_pool_.get_lkey();
+            retr_wrs_[i].sg_list = &sges[i];
+            retr_wrs_[i].num_sge = 1;
+            retr_wrs_[i].wr_id = chunk_addr;
+        }
+        retr_wrs_[i - 1].next = nullptr;
+        struct ibv_recv_wr *bad_wr;
+        DCHECK(ibv_post_recv(rdma_ctx_->retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
+        LOG(INFO) << "Posted " << i << " recv requests for Retr QP";
+        
+        // Restore
+        retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
+    }
+
+}
+
 void UcclFlow::poll_ctrl_cq(void) 
 {
     while (1) {
         struct ibv_wc wcs[kMaxBatchCQ];
         int nb_post_recv = 0;
 
-        struct ibv_poll_cq_attr poll_cq_attr = {0};
+        struct ibv_poll_cq_attr poll_cq_attr = {};
         auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
         if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
 
@@ -418,14 +579,16 @@ void UcclFlow::poll_ctrl_cq(void)
 
         while (1) {
             
-            DCHECK(cq_ex->status == IBV_WC_SUCCESS);
+            if (cq_ex->status == IBV_WC_SUCCESS) {
+                if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
+                    rx_ack();
+                    nb_post_recv++;
+                }
 
-            if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
-                rx_ack();
-                nb_post_recv++;
+                rdma_ctx_->ctrl_pkt_pool_.free_buff(cq_ex->wr_id);
+            } else {
+                LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
             }
-
-            rdma_ctx_->ctrl_pkt_pool_.free_buff(cq_ex->wr_id);
 
             if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
         }
@@ -433,22 +596,22 @@ void UcclFlow::poll_ctrl_cq(void)
         ibv_end_poll(cq_ex);
 
         // Populate recv work requests for consuming control packets.
-        struct ibv_recv_wr *bad_wr;
-        for (int i = 0; i < nb_post_recv; i++) {
-            uint64_t pkt_addr;
-            if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
-                LOG(ERROR) << "Failed to allocate control packet buffer";
-                return;
-            }
-            rx_ack_sges_[i].addr = pkt_addr;
-            rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
-            rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
-            rx_ack_wrs_[i].wr_id = pkt_addr;
-            rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
-            rx_ack_wrs_[i].num_sge = 1;
-        }
-        rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
         if (nb_post_recv) {
+            struct ibv_recv_wr *bad_wr;
+            for (int i = 0; i < nb_post_recv; i++) {
+                uint64_t pkt_addr;
+                if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
+                    LOG(ERROR) << "Failed to allocate control packet buffer";
+                    return;
+                }
+                rx_ack_sges_[i].addr = pkt_addr;
+                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+                rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
+                rx_ack_wrs_[i].wr_id = pkt_addr;
+                rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
+                rx_ack_wrs_[i].num_sge = 1;
+            }
+            rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
             DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
             // Restore
             rx_ack_wrs_[nb_post_recv - 1].next = nb_post_recv == kMaxBatchCQ ? nullptr : &rx_ack_wrs_[nb_post_recv];
@@ -473,9 +636,14 @@ void UcclFlow::burst_timing_wheel(void)
 
         DCHECK(ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr) == 0);
 
+        LOG(INFO) << "Burst send: csn: " << wr_ex->wr.imm_data << " with QP#" << wr_ex->qpidx;
+
+        // Track this chunk.
+        IMMData imm_data(ntohl(wr_ex->wr.imm_data));
+        qpw->txtracking.track_chunk(wr_ex->req, imm_data.GetCSN(), wr_ex, wr_ex->last_chunk, rdtsc());
+
         qpw->in_wheel_cnt_--;
 
-        rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(wr_ex));
         wheel->ready_queue_.pop_front();
     }
 }
@@ -493,12 +661,281 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
         qpw->pcb.advance_rcv_nxt();
         LOG(INFO) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt.to_uint32() << " from QP#" << qpw - rdma_ctx_->uc_qps_;
         qpw->pcb.sack_bitmap_shift_left_one();
+        qpw->pcb.barrier_bitmap_shift_left_one();
+    }
+}
+
+void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
+{
+    LOG(INFO) << "rx_barrier";
+    auto cq_ex = rdma_ctx_->cq_ex_;
+
+    DCHECK(rdma_ctx_->is_send_ == false);
+
+    auto recv_comm = &rdma_ctx_->recv_comm_;
+    auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
+    auto qp_num = ibv_wc_read_qp_num(cq_ex);
+    auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
+    auto qpw = &rdma_ctx_->uc_qps_[qpidx];
+
+    auto hint = imm_data.GetHint();
+    auto csn = imm_data.GetCSN();
+    auto rid = imm_data.GetRID();
+    auto mid = imm_data.GetMID();
+
+    LOG(INFO) << "Receive barrier: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
+
+    // Compare CSN with the expected CSN.
+    auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
+
+    auto distance = csn - ecsn;
+
+    if (swift::seqno_lt(csn, ecsn)) {
+        // Original chunk is already received. This barrier is invalid.
+        // Try to remove the pending retransmission chunk if exists.
+        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+        if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
+            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
+            rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+            qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
+        }
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
+        return;
+    }
+
+    if (distance > kReassemblyMaxSeqnoDistance) {
+        LOG(INFO) << "Barrier too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn;
+        // Try to remove the pending retransmission chunk if exists.
+        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+        if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
+            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
+            rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+            qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
+        }
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
+        return;
+    }
+
+    auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
+    auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
+    auto barrier_bitmap = &qpw->pcb.barrier_bitmap[bitmap_bucket_idx];
+
+    if ((*sack_bitmap & (1ULL << cursor))) {
+        // Original chunk is already received. This barrier is invalid.
+        // Try to remove the pending retransmission chunk if exists.
+        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+        if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
+            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
+            rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+            qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
+        }
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
+        return;
+    }
+
+    if ((*barrier_bitmap & (1ULL << cursor))) {
+        // Duplicate barrier. This barrier is invalid.
+        LOG(INFO) << "Received duplicate barrier " << csn << " from QP#" << qpidx;
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
+        return;
+    }
+
+    // This barrier is valid.
+    qpw->pcb.barrier_bitmap_bit_set(distance);
+
+    // Handle pending retransmission chunk waiting for this barrier (if exists).
+    auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+    if (pending_retr_chunk == qpw->pcb.pending_retr_chunks.end()) {
+        // No pending retransmission chunk.
+        LOG(INFO) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
+        return;
+    }
+
+    LOG(INFO) << "Barrier found a pending retransmission chunk for QP#" << qpidx;
+
+    // We found a pending retransmission chunk.
+    imm_data = IMMData(pending_retr_chunk->second.imm_data);
+    auto chunk_addr = pending_retr_chunk->second.chunk_addr;
+    auto chunk_len = pending_retr_chunk->second.chunk_len;
+    auto remote_addr = pending_retr_chunk->second.remote_addr;
+
+    // Accept this retransmission chunk.
+    memcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
+
+    qpw->rxtracking.ready_csn_.insert(csn);
+
+    /// FIXME: Should we update the timestamp here?
+
+    qpw->pcb.sack_bitmap_bit_set(distance);
+
+    // Locate request by rid
+    auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
+    auto msg_size = req->recv.elems[mid].size;
+    uint32_t *received_bytes = req->recv.received_bytes;
+
+    received_bytes[mid] += chunk_len;
+
+    if (msg_size == received_bytes[mid]) req->recv.fin_msg++;
+    if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
+        LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
+        auto poll_ctx = req->poll_ctx;
+        // Wakeup app thread waiting one endpoint.
+        {
+            std::lock_guard<std::mutex> lock(poll_ctx->mu);
+            poll_ctx->done = true;
+            poll_ctx->cv.notify_one();
+        }
+        // Free the request.
+        rdma_ctx_->free_request(req);
+    }
+
+    try_update_csn(qpw);
+
+    /// FIXME: Should we send ACK immediately here?
+    if (list_empty(&qpw->ack.ack_link))
+        list_add_tail(&qpw->ack.ack_link, ack_list);
+
+    rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+
+    qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+
+    if (qpw->rxtracking.need_fill() == 0) {
+        post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+    }
+}
+
+void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
+{
+    LOG(INFO) << "rx_retr_chunk";
+    auto cq_ex = rdma_ctx_->retr_cq_ex_;
+
+    auto now = rdtsc();
+
+    DCHECK(rdma_ctx_->is_send_ == false);
+
+    auto recv_comm = &rdma_ctx_->recv_comm_;
+    auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
+
+    auto hint = imm_data.GetHint();
+    auto csn = imm_data.GetCSN();
+    auto rid = imm_data.GetRID();
+    auto mid = imm_data.GetMID();
+
+    LOG(INFO) << "Received retransmission chunk: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from Retr QP";
+
+    auto chunk_addr = cq_ex->wr_id;
+    auto chunk_len = ibv_wc_read_byte_len(cq_ex) - sizeof(struct retr_chunk_hdr);
+
+    struct retr_chunk_hdr *hdr = reinterpret_cast<struct retr_chunk_hdr *>(chunk_addr);
+    
+    auto qpw = &rdma_ctx_->uc_qps_[hdr->qidx];
+    auto pcb = &qpw->pcb;
+
+    // Compare CSN with the expected CSN.
+    auto ecsn = pcb->rcv_nxt.to_uint32();
+
+    if (swift::seqno_lt(csn, ecsn)) {
+        // Original chunk is already received.
+        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        LOG(INFO) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
+        return;
+    }
+
+    auto distance = csn - ecsn;
+
+    if (distance > kReassemblyMaxSeqnoDistance) {
+        LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn;
+        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        return;
+    }
+    
+    auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
+    auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    auto sack_bitmap = &pcb->sack_bitmap[bitmap_bucket_idx];
+    
+    if ((*sack_bitmap & (1ULL << cursor))) {
+        // Original chunk is already received.
+        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        LOG(INFO) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
+        return;
+    }
+    
+    // Check barrier bitmap first. We can only receive this chunk 
+    // when a corresponding barrier has arrived.
+    auto barrier_btimap = &pcb->barrier_bitmap[bitmap_bucket_idx];
+
+    if ((*barrier_btimap & (1ULL << cursor)) == 0) {
+        // The corresponding barrier has not arrived yet.
+        // Store this retransmission chunk.
+        pcb->pending_retr_chunks[distance + pcb->shift_count] = 
+        {hdr->remote_addr, chunk_addr, (uint32_t)chunk_len, imm_data.GetImmData()};
+        LOG(INFO) << "Wait for the corresponding barrier for QP#" << hdr->qidx;
+    } else {
+        LOG(INFO) << "This retransmission chunk is accepted!!!";
+        // Accept this retransmission chunk.
+        memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr), chunk_len);
+
+        qpw->rxtracking.ready_csn_.insert(csn);
+
+        /// FIXME: Should we update the timestamp here?
+
+        pcb->sack_bitmap_bit_set(distance);
+
+        // Locate request by rid
+        auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
+        auto msg_size = req->recv.elems[mid].size;
+        uint32_t *received_bytes = req->recv.received_bytes;
+
+        received_bytes[mid] += chunk_len;
+
+        if (msg_size == received_bytes[mid]) req->recv.fin_msg++;
+        if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
+            LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
+            auto poll_ctx = req->poll_ctx;
+            // Wakeup app thread waiting one endpoint.
+            {
+                std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                poll_ctx->done = true;
+                poll_ctx->cv.notify_one();
+            }
+            // Free the request.
+            rdma_ctx_->free_request(req);
+        }
+
+        try_update_csn(qpw);
+
+        /// FIXME: Should we send ACK immediately here?
+        if (list_empty(&qpw->ack.ack_link))
+            list_add_tail(&qpw->ack.ack_link, ack_list);
+
+        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        return;
     }
 }
 
 void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
 {
+    LOG(INFO) << "rx_chunk";
     auto cq_ex = rdma_ctx_->cq_ex_;
+
+    auto now = rdtsc();
     
     DCHECK(rdma_ctx_->is_send_ == false);
     
@@ -528,6 +965,24 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
     if (distance > kReassemblyMaxSeqnoDistance) {
         LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn;
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
+        return;
+    }
+
+    auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
+    auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
+
+    if (*sack_bitmap & (1ULL << cursor)) {
+        // Duplicate chunk.
+        // This happens when the sender retransmits a chunk that has been received.
+        LOG(INFO) << "Duplicate chunk: " << csn << " from QP#" << qpidx;
+
+        if (qpw->rxtracking.need_fill() == 0) {
+            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
+        }
         return;
     }
 
@@ -535,7 +990,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
 
     // Always use the latest timestamp.
     if (kTestNoHWTimestamp)
-        qpw->pcb.t_remote_nic_rx = rdtsc();
+        qpw->pcb.t_remote_nic_rx = now;
     else
         qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
 
@@ -722,10 +1177,26 @@ void UcclFlow::poll_uc_cq(void)
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
     
     while (1) {
-        DCHECK(cq_ex->status == IBV_WC_SUCCESS);
-        
-        if (likely(ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV_RDMA_WITH_IMM))
-            rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);
+        if (cq_ex->status == IBV_WC_SUCCESS) {
+            auto opcode = ibv_wc_read_opcode(cq_ex);
+            if (likely(opcode == IBV_WC_RECV_RDMA_WITH_IMM)) {
+                if (!kTestLoss)
+                    rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);
+                else {
+                    static int drop = 0;
+                    if (drop++ == 50) {
+                        LOG(INFO) << "Drop a chunk";
+                    } else {
+                        rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);
+                    }
+                }
+            } else if (opcode == IBV_WC_RECV) {
+                DCHECK(ibv_wc_read_byte_len(cq_ex) == 0);
+                rx_barrier(&ack_list, post_recv_qidx_list, &num_post_recv);
+            }
+        } else {
+            LOG(ERROR) << "UC CQ state error: " << cq_ex->status;
+        }
         
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }
@@ -857,13 +1328,53 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
 }
 
 bool UcclFlow::periodic_check() {
+    
+    for (int i = 0; i < kPortEntropy; i++) {
+        auto qpw = &rdma_ctx_->uc_qps_[i];
+        qpw->pcb.rto_advance();
+
+        // TODO(ilias): send RST packet, indicating removal of the flow.
+        if (qpw->pcb.max_rto_rexmits_consectutive_reached()) {
+            LOG(INFO) << "Max RTO retransmits reached. Closing flow.";
+        }
+
+        if (qpw->pcb.rto_expired()) {
+            // Retransmit the oldest unacknowledged chunk.
+            rto_retransmit(qpw);
+        }
+    }
     return true;
 }
 
-void UcclFlow::fast_retransmit() {
+void UcclFlow::fast_retransmit(struct UCQPWrapper *qpw) 
+{
+    if (!qpw->txtracking.empty()) {
+        // LOG(INFO) << "Fast retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
+        // Retransmit the oldest unacknowledged chunk.
+        auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
+        auto wr_ex = chunk.wr_ex;
+        
+        retransmit_chunk(qpw, wr_ex);
+    }
+
+    qpw->pcb.rto_reset();
+    qpw->pcb.fast_rexmits++;
 }
 
-void UcclFlow::rto_retransmit() {
+void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw) 
+{
+    if (!qpw->txtracking.empty()) {
+        // LOG(INFO) << "RTO retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
+        // Retransmit the oldest unacknowledged chunk.
+        auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
+        auto wr_ex = chunk.wr_ex;
+
+        retransmit_chunk(qpw, wr_ex);
+    }
+
+    qpw->pcb.rto_reset();
+    qpw->pcb.rto_rexmits++;
+    qpw->pcb.rto_rexmits_consectutive++;
 }
 
 void UcclRDMAEngine::test_rc_handle_completion(void)
@@ -898,8 +1409,13 @@ void UcclRDMAEngine::handle_completion(void)
             it++;
         }
     }
+
+    // Third, poll the CQ for Retr QP.
+    for (auto flow: active_flows_map_) {
+        flow.second->poll_retr_cq();
+    }
     
-    // Third, poll the CQ for UC QPs.
+    // Last, poll the CQ for UC QPs.
     for (auto flow: active_flows_map_) {
         flow.second->poll_uc_cq();
     }
@@ -997,6 +1513,7 @@ void UcclRDMAEngine::run() {
 void UcclRDMAEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
+    handle_rto();
     process_ctl_reqs();
 }
 
@@ -1145,7 +1662,16 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         ret = modify_qp_rts(rdma_ctx->fifo_qp_, rdma_ctx, rdma_ctx->fifo_local_psn_, true);
         DCHECK(ret == 0) << "Failed to modify Fifo QP to RTS";
         rdma_ctx->ready_entropy_cnt_++;
-    } else {
+    } else if (rdma_ctx->ready_entropy_cnt_ == kPortEntropy + 2) {
+        // Retr QP.
+        rdma_ctx->retr_remote_psn_ = meta.ToEngine.remote_psn;
+        ret = modify_qp_rtr(rdma_ctx->retr_qp_, rdma_ctx, meta.ToEngine.remote_qpn, meta.ToEngine.remote_psn);
+        DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
+        ret = modify_qp_rts(rdma_ctx->retr_qp_, rdma_ctx, rdma_ctx->retr_local_psn_, false);
+        DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
+        rdma_ctx->ready_entropy_cnt_++;
+    } 
+    else {
         LOG(ERROR) << "Invalid ready_entropy_cnt_ " << rdma_ctx->ready_entropy_cnt_;
     }
 
@@ -1201,6 +1727,11 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.fifo_key = rdma_ctx->fifo_mr_->rkey;
     ctrl_work_rsp[kPortEntropy + 1].meta.ToEndPoint.fifo_addr = reinterpret_cast<uint64_t>(rdma_ctx->fifo_mr_->addr);
     ctrl_work_rsp[kPortEntropy + 1].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
+
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_psn = rdma_ctx->retr_local_psn_;
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.local_qpn = rdma_ctx->retr_qp_->qp_num;
+    ctrl_work_rsp[kPortEntropy + 2].meta.ToEndPoint.fifo = false;
+    ctrl_work_rsp[kPortEntropy + 2].opcode = Channel::CtrlMsg::kCompleteFlowRDMA;
 
     while (jring_sp_enqueue_bulk(channel_->ctrl_rspq_, ctrl_work_rsp, RDMAContext::kTotalQP, nullptr) != RDMAContext::kTotalQP) {
     }
@@ -1762,7 +2293,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     for (int i = 0; i < RDMAContext::kTotalQP; i++) {
         meta.ToEngine.remote_qpn = xchg_meta[i].qpn;
         meta.ToEngine.remote_psn = xchg_meta[i].psn;
-        if (i == RDMAContext::kTotalQP - 1) {
+        if (i == RDMAContext::kFifoIndex) {
             meta.ToEngine.fifo = true;
             meta.ToEngine.fifo_key = xchg_meta[i].fifo_key;
             meta.ToEngine.fifo_addr = xchg_meta[i].fifo_addr;
