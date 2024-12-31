@@ -5,16 +5,14 @@
 #include <cstring>
 #include <vector>
 #include <unordered_map>
-
 #include <deque>
 #include <mutex>
 #include <set>
 
 #include <sys/mman.h>
+#include <infiniband/verbs.h>
 
 #include <glog/logging.h>
-
-#include <infiniband/verbs.h>
 
 #include "transport_config.h"
 #include "transport_cc.h"
@@ -41,56 +39,86 @@ static constexpr uint32_t MAX_CHUNK_ROCE_IPV6_4096_HDR_OVERHEAD = ((kChunkSize +
 static constexpr uint32_t MAX_CHUNK_IB_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * IB_HDR_OVERHEAD;
 
 /**
- * @brief Buffer pool for work request extension.
- * - Single producer, single consumer.
+ * @brief A buffer pool with the following properties:
+ * - Constructed with a memory region provided by the caller or mmap by itself.
+ * - Not thread-safe, single producer, single consumer.
+ * - Fixed size elements.
+ * - Size must be power of 2.
  */
-class WrExPool {
-    static constexpr uint32_t kNumWr = 4096;
-    static_assert((kNumWr & (kNumWr - 1)) == 0, "kNumWr must be power of 2");
+class BuffPool {
     public:
 
-        inline bool full(void) {
-            return ((tail_ + 1) & (kNumWr - 1)) == head_;
+        BuffPool(uint32_t num_elements, size_t element_size, struct ibv_mr *mr = nullptr)
+            : num_elements_(num_elements), element_size_(element_size), mr_(mr) {
+            if (mr_) {
+                base_addr_ = mr->addr;
+            } else {
+                base_addr_ = mmap(nullptr, num_elements_ * element_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (base_addr_ == MAP_FAILED)
+                    throw std::runtime_error("Failed to allocate memory for BuffPool.");
+            }
+            buffer_pool_ = new uint64_t[num_elements_];
+            head_ = tail_ = 0;
+            for (uint32_t i = 0; i < num_elements_ - 1; i++) {
+                free_buff((uint64_t)base_addr_ + i * element_size_);
+            }
         }
 
-        inline bool empty(void) {
+        virtual ~BuffPool() {
+            if (!mr_) {
+                munmap(base_addr_, num_elements_ * element_size_);
+            }
+            delete[] buffer_pool_;
+        }
+
+        virtual bool full(void) {
+            return ((tail_ + 1) & (num_elements_ - 1)) == head_;
+        }
+
+        virtual bool empty(void) {
             return head_ == tail_;
         }
 
-        inline int alloc_wr(uint64_t *wr_addr) {
+        virtual uint32_t get_lkey(void) {
+            if (!mr_) return 0;
+            return mr_->lkey;
+        }
+
+        virtual int alloc_buff(uint64_t *buff_addr) {
             if (empty()) return -1;
 
-            head_ = (head_ + 1) & (kNumWr - 1);
-            *wr_addr = (uint64_t)wrs + wr_pool_[head_];
+            head_ = (head_ + 1) & (num_elements_ - 1);
+            *buff_addr = (uint64_t)base_addr_ + buffer_pool_[head_];
             return 0;
         }
 
-        inline void free_wr(uint64_t wr_addr) {
+        virtual void free_buff(uint64_t buff_addr) {
             if (full()) return;
-            wr_addr -= (uint64_t)wrs;
-            wr_pool_[tail_] = wr_addr;
-            tail_ = (tail_ + 1) & (kNumWr - 1);
+            buff_addr -= (uint64_t)base_addr_;
+            buffer_pool_[tail_] = buff_addr;
+            tail_ = (tail_ + 1) & (num_elements_ - 1);
         }
 
-        WrExPool() {
-            wrs= mmap(nullptr, kNumWr * sizeof(struct wr_ex), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if (wrs == MAP_FAILED)
-                throw std::runtime_error("Failed to allocate memory for WrExPool.");
-            head_ = tail_ = 0;
-
-            for (int i = 0; i < kNumWr - 1; i++) {
-                free_wr((uint64_t)wrs + i * sizeof(struct wr_ex));
-            }
-
-        }
-        ~WrExPool() {
-            munmap(wrs, kNumWr * sizeof(struct wr_ex));
-        }
-    private:
-        void *wrs;
+    protected:
+        void *base_addr_;
         uint32_t head_;
         uint32_t tail_;
-        uint64_t wr_pool_[kNumWr];
+        uint32_t num_elements_;
+        size_t element_size_;
+        struct ibv_mr *mr_;
+        uint64_t *buffer_pool_;
+};
+
+/**
+ * @brief Buffer pool for work request extension.
+ * - Single producer, single consumer.
+ */
+class WrExBuffPool : public BuffPool {
+    static constexpr uint32_t kNumWr = 4096;
+    public:
+        WrExBuffPool() : BuffPool(kNumWr, sizeof(struct wr_ex), nullptr) {}
+
+        ~WrExBuffPool() = default;
 };
 
 struct retr_chunk_hdr {
@@ -99,184 +127,37 @@ struct retr_chunk_hdr {
     uint64_t remote_addr;
 };
 
-/**
- * @brief Buffer pool for chunks used in retransmission.
- * - Each chunk is fixed size.
- * - Single producer, single consumer.
- */
-class RetrChunkBuffPool {
+class RetrChunkBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kRetrChunkSize = kChunkSize + sizeof(retr_chunk_hdr);
         static constexpr uint32_t kNumChunk = 64;
         static_assert((kNumChunk & (kNumChunk - 1)) == 0, "kNumChunk must be power of 2");
 
-         inline bool full(void) {
-            return ((tail_ + 1) & (kNumChunk - 1)) == head_;
-         }
+        RetrChunkBuffPool(struct ibv_mr *mr) : BuffPool(kNumChunk, kRetrChunkSize, mr) {}
 
-         inline bool empty(void) {
-            return head_ == tail_;
-         }
-
-         inline int alloc_chunk(uint64_t *chunk) {
-            if (empty()) return -1;
-
-            head_ = (head_ + 1) & (kNumChunk - 1);
-            *chunk = (uint64_t)buff_addr_ + buffer_pool_[head_];
-            return 0;
-         }
-
-         inline void free_chunk(uint64_t chunk) {
-            if (full()) return;
-            chunk -= (uint64_t)buff_addr_;
-            buffer_pool_[tail_] = chunk;
-            tail_ = (tail_ + 1) & (kNumChunk - 1);
-         };
-
-         inline uint32_t get_lkey(void) {
-            return lkey;
-         }
-
-         void set_pool_addr(struct ibv_mr *mr) {
-            buff_addr_ = mr->addr;
-            lkey = mr->lkey;
-         }
-
-         RetrChunkBuffPool() {
-            head_ = tail_ = 0;
-            for (uint32_t i = 0; i < kNumChunk - 1; i++) {
-                free_chunk((uint64_t)buff_addr_ + i * kRetrChunkSize);
-            }
-         }
-
-         ~RetrChunkBuffPool() = default;
-
-    private:
-        void *buff_addr_;
-        uint32_t lkey;
-        uint32_t head_;
-        uint32_t tail_;
-        uint64_t buffer_pool_[kNumChunk];
+        ~RetrChunkBuffPool() = default;
 };
 
-/**
- * @brief Buffer pool for Retr headers.
- * - Each Retr header is fixed size.
- * - Single producer, single consumer.
- */
-class RetrHdrBuffPool {
+class RetrHdrBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kHdrSize = sizeof(struct retr_chunk_hdr);
         static constexpr uint32_t kNumHdr = 256;
-        static_assert((kNumHdr & (kNumHdr - 1)) == 0, "kNumPkt must be power of 2");
-        static_assert(kNumHdr > kMaxRetr << 1, "kNumHdr must be larger than kMaxRetr times 2");
+        static_assert((kNumHdr & (kNumHdr - 1)) == 0, "kNumHdr must be power of 2");
 
-        inline bool full(void) {
-            return ((tail_ + 1) & (kNumHdr - 1)) == head_;
-        }
+        RetrHdrBuffPool(struct ibv_mr *mr) : BuffPool(kNumHdr, kHdrSize, mr) {}
 
-        inline bool empty(void) {
-            return head_ == tail_;
-        }
-
-        inline int alloc_hdr(uint64_t *buff) {
-            if (empty()) return -1;
-
-            head_ = (head_ + 1) & (kNumHdr - 1);
-            *buff = (uint64_t)buff_addr_ + buffer_pool_[head_];
-            return 0;
-        }
-
-        inline void free_hdr(uint64_t buff) {
-            if (full()) return;
-            buff -= (uint64_t)buff_addr_;
-            buffer_pool_[tail_] = buff;
-            tail_ = (tail_ + 1) & (kNumHdr - 1);
-        }
-
-        inline uint32_t get_lkey(void) {
-            return lkey;
-        }
-
-        void set_pool_addr(struct ibv_mr *mr) {
-            buff_addr_ = mr->addr;
-            lkey = mr->lkey;
-         }
-
-        RetrHdrBuffPool() {
-            head_ = tail_ = 0;
-            for (int i = 0; i < kNumHdr - 1; i++) {
-                free_hdr((uint64_t)buff_addr_ + i * kHdrSize);
-            }
-
-        }
         ~RetrHdrBuffPool() = default;
-    
-    private:
-        void *buff_addr_;
-        uint32_t lkey;
-        uint32_t head_;
-        uint32_t tail_;
-        uint64_t buffer_pool_[kNumHdr];
 };
 
-/**
- * @brief Buffer pool for Ctrl packet.
- * - Each Ctrl packet is fixed size.
- * - Single producer, single consumer.
- */
-class CtrlPktBuffPool {
+class CtrlPktBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kPktSize = 256;
         static constexpr uint32_t kNumPkt = 2048;
         static_assert((kNumPkt & (kNumPkt - 1)) == 0, "kNumPkt must be power of 2");
 
-        inline bool full(void) {
-            return ((tail_ + 1) & (kNumPkt - 1)) == head_;
-        }
+        CtrlPktBuffPool(struct ibv_mr *mr) : BuffPool(kNumPkt, kPktSize, mr) {}
 
-        inline bool empty(void) {
-            return head_ == tail_;
-        }
-
-        inline int alloc_buff(uint64_t *buff) {
-            if (empty()) return -1;
-
-            head_ = (head_ + 1) & (kNumPkt - 1);
-            *buff = (uint64_t)buff_addr_ + buffer_pool_[head_];
-            return 0;
-        }
-
-        inline void free_buff(uint64_t buff) {
-            if (full()) return;
-            buff -= (uint64_t)buff_addr_;
-            buffer_pool_[tail_] = buff;
-            tail_ = (tail_ + 1) & (kNumPkt - 1);
-        }
-
-        inline uint32_t get_lkey(void) {
-            return lkey;
-        }
-
-        void set_pool_addr(struct ibv_mr *mr) { 
-            buff_addr_ = mr->addr;
-            lkey = mr->lkey;
-        }
-
-        CtrlPktBuffPool() {
-            head_ = tail_ = 0;
-            for (uint32_t i = 0; i < kNumPkt - 1; i++) {
-                free_buff((uint64_t)buff_addr_ + i * kPktSize);
-            }
-        }
         ~CtrlPktBuffPool() = default;
-    
-    private:
-        void *buff_addr_;
-        uint32_t lkey;
-        uint32_t head_;
-        uint32_t tail_;
-        uint64_t buffer_pool_[kNumPkt];
 };
 
 class IMMData{
@@ -587,7 +468,7 @@ class RDMAContext {
         constexpr static int kFifoIndex = kPortEntropy + 1;
         constexpr static int kFifoMRSize = sizeof(struct RemFifo);
         constexpr static int kCtrlMRSize = CtrlPktBuffPool::kPktSize * CtrlPktBuffPool::kNumPkt;
-        // TODO: 16MB for now. How to determine the size of retransmission MR?
+        /// TODO: How to determine the size of retransmission MR?
         constexpr static int kRetrMRSize = RetrChunkBuffPool::kRetrChunkSize * RetrChunkBuffPool::kNumChunk;
         constexpr static int kCQSize = 4096;
 
@@ -676,16 +557,16 @@ class RDMAContext {
         bool is_send_;
 
         // Buffer pool for control packets.
-        CtrlPktBuffPool ctrl_pkt_pool_;
+        std::optional<CtrlPktBuffPool> ctrl_pkt_pool_;
 
         // Buffer pool for retransmission headers.
-        RetrHdrBuffPool retr_hdr_pool_;
+        std::optional<RetrHdrBuffPool> retr_hdr_pool_;
 
         // Buffer pool for retransmission chunks.
-        RetrChunkBuffPool retr_chunk_pool_;
+        std::optional<RetrChunkBuffPool> retr_chunk_pool_;
 
         // Buffer pool for work request extension items.
-        WrExPool wr_ex_pool_;
+        std::optional<WrExBuffPool> wr_ex_pool_;
 
         /**
          * @brief Figure out the request id.

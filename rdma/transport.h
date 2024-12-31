@@ -1,12 +1,5 @@
 #pragma once
 
-#include <glog/logging.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
-#include <infiniband/verbs.h>
-
 #include <netdb.h>
 #include <bitset>
 #include <chrono>
@@ -28,6 +21,14 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <infiniband/verbs.h>
+
+#include <glog/logging.h>
 
 #include "transport_cc.h"
 #include "transport_config.h"

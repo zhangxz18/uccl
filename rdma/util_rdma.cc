@@ -6,6 +6,7 @@
 #include <sys/mman.h> 
 
 #include <infiniband/verbs.h>
+
 #include <glog/logging.h>
 
 #include "transport_config.h"
@@ -154,7 +155,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
 }
 
 RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
-    dev_(dev), ready_entropy_cnt_(0), ctrl_pkt_pool_(), retr_chunk_pool_(), wheel_({freq_ghz})
+    dev_(dev), ready_entropy_cnt_(0), wheel_({freq_ghz})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -256,14 +257,17 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         uc_qps_[i].ack.qpidx = i;
     }
 
+    // Initialize work request extension buffer pool.
+    wr_ex_pool_.emplace();
+
     // Create Ctrl QP, CQ, and MR.
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
     util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, true, true,
         (struct ibv_cq **)&ctrl_cq_ex_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
             CtrlPktBuffPool::kNumPkt, CtrlPktBuffPool::kNumPkt, 1, 1);
     
-    // Set buffer pool address for control packets.
-    ctrl_pkt_pool_.set_pool_addr(ctrl_mr_);
+    // Initialize Control packet buffer pool.
+    ctrl_pkt_pool_.emplace(ctrl_mr_);
 
     // Create FIFO QP, CQ, and MR.
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
@@ -286,10 +290,10 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
     if (retr_hdr_mr_ == nullptr)
         throw std::runtime_error("ibv_reg_mr failed");
     
-    // Set buffer pool address for retransmission chunks and headers.
+    // Initialize retransmission chunk and header buffer pool.
     {
-        retr_chunk_pool_.set_pool_addr(retr_mr_);
-        retr_hdr_pool_.set_pool_addr(retr_hdr_mr_);
+        retr_chunk_pool_.emplace(retr_mr_);
+        retr_hdr_pool_.emplace(retr_hdr_mr_);
     }
 
     struct ibv_recv_wr wr;
@@ -313,11 +317,11 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         struct ibv_sge sge;
         for (int i = 0; i < CtrlPktBuffPool::kNumPkt - 1; i++) {
             uint64_t pkt_addr;
-            if (ctrl_pkt_pool_.alloc_buff(&pkt_addr))
+            if (ctrl_pkt_pool_->alloc_buff(&pkt_addr))
                 throw std::runtime_error("Failed to allocate buffer for control packet");
             sge.addr = pkt_addr;
             sge.length = CtrlPktBuffPool::kPktSize;
-            sge.lkey = ctrl_pkt_pool_.get_lkey();
+            sge.lkey = ctrl_pkt_pool_->get_lkey();
             wr.wr_id = pkt_addr;
             wr.next = nullptr;
             wr.sg_list = &sge;
@@ -334,11 +338,11 @@ RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
         struct ibv_sge sge;
         for (int i = 0; i < kMaxRetr; i++) {
             uint64_t chunk_addr;
-            if (retr_chunk_pool_.alloc_chunk(&chunk_addr))
+            if (retr_chunk_pool_->alloc_buff(&chunk_addr))
                 throw std::runtime_error("Failed to allocate buffer for retransmission chunk");
             sge.addr = chunk_addr;
             sge.length = RetrChunkBuffPool::kRetrChunkSize;
-            sge.lkey = retr_chunk_pool_.get_lkey();
+            sge.lkey = retr_chunk_pool_->get_lkey();
             wr.wr_id = chunk_addr;
             wr.next = nullptr;
             wr.sg_list = &sge;
@@ -425,7 +429,7 @@ uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
         }
 
         // Free wr_ex here.
-        rdma_ctx_->wr_ex_pool_.free_wr(reinterpret_cast<uint64_t>(chunk.wr_ex));
+        rdma_ctx_->wr_ex_pool_->free_buff(reinterpret_cast<uint64_t>(chunk.wr_ex));
 
         if (timestamp == 0)
             timestamp = chunk.timestamp;

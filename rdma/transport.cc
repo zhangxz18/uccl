@@ -1,14 +1,17 @@
 #include "transport.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <endian.h>
+#include <utility>
+
+#include <infiniband/verbs.h>
+
 #include "transport_cc.h"
 #include "transport_config.h"
 #include "util_rdma.h"
 #include "util_timer.h"
 #include "util_list.h"
-#include <cstdint>
-#include <cstdlib>
-#include <endian.h>
-#include <infiniband/verbs.h>
-#include <utility>
 
 namespace uccl {
 
@@ -133,7 +136,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
         if (kTestNoTimingWheel) {
-            DCHECK(rdma_ctx_->wr_ex_pool_.alloc_wr(&wr_addr) == 0);
+            DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
             auto wr = &wr_ex->wr;
 
@@ -176,7 +179,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         }
 
         // Prepare SGE.
-        DCHECK(rdma_ctx_->wr_ex_pool_.alloc_wr(&wr_addr) == 0);
+        DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
         auto wr = &wr_ex->wr;
         wr_ex->sge.addr = (uintptr_t)data;
@@ -375,14 +378,14 @@ void UcclFlow::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     struct ibv_sge retr_sge[2];
 
     uint64_t retr_hdr;
-    DCHECK(rdma_ctx_->retr_hdr_pool_.alloc_hdr(&retr_hdr) == 0);
+    DCHECK(rdma_ctx_->retr_hdr_pool_->alloc_buff(&retr_hdr) == 0);
     struct retr_chunk_hdr *hdr = reinterpret_cast<struct retr_chunk_hdr *>(retr_hdr);
     hdr->qidx = (uint32_t)(qpw - rdma_ctx_->uc_qps_);
     hdr->remote_addr = wr_ex->wr.wr.rdma.remote_addr;
 
     retr_sge[0].addr = retr_hdr;
     retr_sge[0].length = sizeof(struct retr_chunk_hdr);
-    retr_sge[0].lkey = rdma_ctx_->retr_hdr_pool_.get_lkey();
+    retr_sge[0].lkey = rdma_ctx_->retr_hdr_pool_->get_lkey();
     
     retr_sge[1] = wr_ex->sge;
     
@@ -514,7 +517,7 @@ void UcclFlow::poll_retr_cq(void)
                 num_post_recv++;
             } else {
                 auto wr_id = cq_ex->wr_id;
-                rdma_ctx_->retr_hdr_pool_.free_hdr(wr_id);
+                rdma_ctx_->retr_hdr_pool_->free_buff(wr_id);
             }
         } else {
             LOG(ERROR) << "Retr CQ state error: " << cq_ex->status;
@@ -542,12 +545,12 @@ void UcclFlow::poll_retr_cq(void)
         int i;
         for (i = 0; i < num_post_recv; i++) {
             uint64_t chunk_addr;
-            if (rdma_ctx_->retr_chunk_pool_.alloc_chunk(&chunk_addr)) {
+            if (rdma_ctx_->retr_chunk_pool_->alloc_buff(&chunk_addr)) {
                 LOG(INFO) << "Failed to allocate retransmission chunk buffer";
             }
             sges[i].addr = chunk_addr;
             sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
-            sges[i].lkey = rdma_ctx_->retr_chunk_pool_.get_lkey();
+            sges[i].lkey = rdma_ctx_->retr_chunk_pool_->get_lkey();
             retr_wrs_[i].sg_list = &sges[i];
             retr_wrs_[i].num_sge = 1;
             retr_wrs_[i].wr_id = chunk_addr;
@@ -583,7 +586,7 @@ void UcclFlow::poll_ctrl_cq(void)
                     nb_post_recv++;
                 }
 
-                rdma_ctx_->ctrl_pkt_pool_.free_buff(cq_ex->wr_id);
+                rdma_ctx_->ctrl_pkt_pool_->free_buff(cq_ex->wr_id);
             } else {
                 LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
             }
@@ -598,12 +601,12 @@ void UcclFlow::poll_ctrl_cq(void)
             struct ibv_recv_wr *bad_wr;
             for (int i = 0; i < nb_post_recv; i++) {
                 uint64_t pkt_addr;
-                if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
+                if (rdma_ctx_->ctrl_pkt_pool_->alloc_buff(&pkt_addr)) {
                     LOG(ERROR) << "Failed to allocate control packet buffer";
                     return;
                 }
                 rx_ack_sges_[i].addr = pkt_addr;
-                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
                 rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
                 rx_ack_wrs_[i].wr_id = pkt_addr;
                 rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
@@ -694,7 +697,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
         auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
         if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+            rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
@@ -711,7 +714,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
         auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
         if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+            rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
@@ -732,7 +735,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
         auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
         if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+            rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
@@ -809,7 +812,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
     if (list_empty(&qpw->ack.ack_link))
         list_add_tail(&qpw->ack.ack_link, ack_list);
 
-    rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+    rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
 
     qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
 
@@ -850,7 +853,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
 
     if (swift::seqno_lt(csn, ecsn)) {
         // Original chunk is already received.
-        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
         LOG(INFO) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
         return;
     }
@@ -860,7 +863,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     if (distance > kReassemblyMaxSeqnoDistance) {
         LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn;
-        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
         return;
     }
     
@@ -870,7 +873,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     
     if ((*sack_bitmap & (1ULL << cursor))) {
         // Original chunk is already received.
-        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
         LOG(INFO) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
         return;
     }
@@ -923,7 +926,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
         if (list_empty(&qpw->ack.ack_link))
             list_add_tail(&qpw->ack.ack_link, ack_list);
 
-        rdma_ctx_->retr_chunk_pool_.free_chunk(chunk_addr);
+        rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
         return;
     }
 }
@@ -1053,7 +1056,7 @@ void UcclFlow::craft_ack(int qpidx, int wr_idx)
 {
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
     uint64_t pkt_addr;
-    if (rdma_ctx_->ctrl_pkt_pool_.alloc_buff(&pkt_addr)) {
+    if (rdma_ctx_->ctrl_pkt_pool_->alloc_buff(&pkt_addr)) {
         LOG(ERROR) << "Failed to allocate control packet buffer";
         return;
     }
@@ -1085,7 +1088,7 @@ void UcclFlow::craft_ack(int qpidx, int wr_idx)
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
     tx_ack_sges_[wr_idx].addr = pkt_addr;
-    tx_ack_sges_[wr_idx].lkey = rdma_ctx_->ctrl_pkt_pool_.get_lkey();
+    tx_ack_sges_[wr_idx].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
     tx_ack_sges_[wr_idx].length = kControlPayloadBytes;
 
     // We use wr_id to store the packet address for future freeing.

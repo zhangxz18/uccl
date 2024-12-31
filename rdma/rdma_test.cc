@@ -2,16 +2,17 @@
  * @file rdma_test.cc
  * @brief Test for UCCL RDMA transport
  */
-#include "transport.h"
-
-#include <gflags/gflags.h>
-#include <glog/logging.h>
-#include <signal.h>
 
 #include <chrono>
 #include <deque>
 #include <thread>
 
+#include <signal.h>
+
+#include <gflags/gflags.h>
+#include <glog/logging.h>
+
+#include "transport.h"
 #include "transport_config.h"
 #include "util.h"
 #include "util_timer.h"
