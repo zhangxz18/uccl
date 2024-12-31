@@ -431,7 +431,7 @@ class UcclFlow {
 class UcclRDMAEngine {
    public:
     // Slow timer (periodic processing) interval in microseconds.
-    const size_t kSlowTimerIntervalUs = 2000;  // 2ms
+    const size_t kSlowTimerIntervalUs = 4000;  // 4ms
 
     UcclRDMAEngine() = delete;
     UcclRDMAEngine(UcclRDMAEngine const &) = delete;

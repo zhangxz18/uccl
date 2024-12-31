@@ -390,9 +390,7 @@ void UcclFlow::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     retr_wr.sg_list = retr_sge;
     retr_wr.num_sge = 2;
     retr_wr.opcode = IBV_WR_SEND_WITH_IMM;
-    // Occasionally post a request with the IBV_SEND_SIGNALED flag.
-    if (rdma_ctx_->retr_signal_cnt_++ % (RetrChunkBuffPool::kNumChunk >> 1) == 0)
-        retr_wr.send_flags |= IBV_SEND_SIGNALED;
+    retr_wr.send_flags = IBV_SEND_SIGNALED;
 
     DCHECK(ibv_post_send(rdma_ctx_->retr_qp_, &retr_wr, &bad_wr) == 0);
 
@@ -1180,11 +1178,12 @@ void UcclFlow::poll_uc_cq(void)
         if (cq_ex->status == IBV_WC_SUCCESS) {
             auto opcode = ibv_wc_read_opcode(cq_ex);
             if (likely(opcode == IBV_WC_RECV_RDMA_WITH_IMM)) {
-                if (!kTestLoss)
+                if (kTestLossRate == 0)
                     rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);
                 else {
-                    static int drop = 0;
-                    if (drop++ == 50) {
+                    auto drop_period = (uint32_t)(1 / kTestLossRate);
+                    static uint32_t drop_cnt = 0;
+                    if (drop_cnt++ % drop_period == 0) {
                         LOG(INFO) << "Drop a chunk";
                     } else {
                         rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);

@@ -53,7 +53,7 @@ static const bool kTestNoTimingWheel = false;
 // Use constant(maximum) rate for transmission.
 static const bool kTestConstantRate = false;
 // Test lossy network.
-static const bool kTestLoss = false;
+static const double kTestLossRate = 0.0;
 
 // 400Gbps link.
 static const double kLinkBandwidth = 400.0 * 1e9 / 8;

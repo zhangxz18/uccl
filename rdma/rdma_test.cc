@@ -299,7 +299,7 @@ static void client_worker(void)
 
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
-    google::SetStderrLogging(google::GLOG_INFO);
+    // google::SetStderrLogging(google::GLOG_INFO);
     FLAGS_v = 1;
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
