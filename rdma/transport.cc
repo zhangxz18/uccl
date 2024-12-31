@@ -1515,7 +1515,8 @@ void UcclRDMAEngine::run() {
 void UcclRDMAEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
-    handle_rto();
+    if (!kTestRC)
+        handle_rto();
     process_ctl_reqs();
 }
 
