@@ -2143,7 +2143,7 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void **data, size_t *size, int n) {
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void **data, int *size, int n) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,

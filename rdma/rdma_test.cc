@@ -39,7 +39,7 @@ DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
 static void server_basic(RDMAEndpoint &ep, ConnID conn_id, void *data)
 {
     for (int i = 0; i < FLAGS_iterations; i++) {
-        size_t len = 65536;
+        int len = 65536;
         void *recv_data = data;
 
         auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
@@ -87,7 +87,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
 
     if (FLAGS_warmup) {
         for (int i = 0; i < 1000; i++) {
-            size_t len = 100;
+            int len = 100;
             void *recv_data = data;
             auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
             ep.uccl_poll(poll_ctx);
@@ -95,7 +95,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
     }
 
     for (int i = 0; i < FLAGS_iterations; i++) {
-        size_t len = 100;
+        int len = 100;
         void *recv_data = data;
         auto t1 = rdtsc();
         auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
@@ -132,7 +132,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
 {
     FLAGS_iterations *= FLAGS_nflow;
 
-    size_t len[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
+    int len[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     void *recv_data[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     std::vector<std::vector<PollCtx *>> poll_ctx_vec(FLAGS_nflow);
     for (int i = 0; i < FLAGS_nflow; i++) {

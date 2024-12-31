@@ -692,7 +692,7 @@ class RDMAEndpoint {
     PollCtx *uccl_send_async(ConnID flow_id, const void *data,
                              const size_t size);
     // Post n buffers to engine for receiving data asynchronously.
-    PollCtx *uccl_recv_async(ConnID flow_id, void **data, size_t *size, int n);
+    PollCtx *uccl_recv_async(ConnID flow_id, void **data, int *size, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);
