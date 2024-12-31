@@ -64,27 +64,27 @@ class BuffPool {
             }
         }
 
-        virtual ~BuffPool() {
+        ~BuffPool() {
             if (!mr_) {
                 munmap(base_addr_, num_elements_ * element_size_);
             }
             delete[] buffer_pool_;
         }
 
-        virtual bool full(void) {
+        bool full(void) {
             return ((tail_ + 1) & (num_elements_ - 1)) == head_;
         }
 
-        virtual bool empty(void) {
+        bool empty(void) {
             return head_ == tail_;
         }
 
-        virtual uint32_t get_lkey(void) {
+        uint32_t get_lkey(void) {
             if (!mr_) return 0;
             return mr_->lkey;
         }
 
-        virtual int alloc_buff(uint64_t *buff_addr) {
+        int alloc_buff(uint64_t *buff_addr) {
             if (empty()) return -1;
 
             head_ = (head_ + 1) & (num_elements_ - 1);
@@ -92,7 +92,7 @@ class BuffPool {
             return 0;
         }
 
-        virtual void free_buff(uint64_t buff_addr) {
+        void free_buff(uint64_t buff_addr) {
             if (full()) return;
             buff_addr -= (uint64_t)base_addr_;
             buffer_pool_[tail_] = buff_addr;
