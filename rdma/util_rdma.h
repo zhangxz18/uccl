@@ -114,9 +114,11 @@ class BuffPool {
  * - Single producer, single consumer.
  */
 class WrExBuffPool : public BuffPool {
+    static constexpr uint32_t kWrSize = sizeof(struct wr_ex);
     static constexpr uint32_t kNumWr = 4096;
+    static_assert((kNumWr & (kNumWr - 1)) == 0, "kNumWr must be power of 2");
     public:
-        WrExBuffPool() : BuffPool(kNumWr, sizeof(struct wr_ex), nullptr) {}
+        WrExBuffPool() : BuffPool(kNumWr, kWrSize, nullptr) {}
 
         ~WrExBuffPool() = default;
 };
