@@ -674,24 +674,24 @@ class RDMAEndpoint {
     RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
     ~RDMAEndpoint();
 
-    // Connecting to a remote address; thread-safe
+    // Connect to a remote address; thread-safe
     ConnID uccl_connect(int dev, std::string remote_ip);
-    // Explicitly specifying the engine_id to install the flow.
+    // Explicitly specify the engine_id to install the flow.
     ConnID uccl_connect(int dev, int engine_id, std::string remote_ip);
-    // Accepting a connection from a remote address; thread-safe
+    // Accept a connection from a remote address; thread-safe
     ConnID uccl_accept(int dev, std::string &remote_ip);
-    // Explicitly specifying the engine_id to install the flow.
+    // Explicitly specify the engine_id to install the flow.
     ConnID uccl_accept(int dev, int engine_id, std::string &remote_ip);  
     
-    // Registering a memory region.
+    // Register a memory region.
     bool uccl_regmr(ConnID flow_id, void *data, size_t len, int type);
-    // Deregistering a memory region.
+    // Deregister a memory region.
     void uccl_deregmr(ConnID flow_id);
 
-    // Posting a buffer to engine for sending data asynchronously.
+    // Post a buffer to engine for sending data asynchronously.
     PollCtx *uccl_send_async(ConnID flow_id, const void *data,
                              const size_t size);
-    // Posting n buffers to engine for receiving data asynchronously.
+    // Post n buffers to engine for receiving data asynchronously.
     PollCtx *uccl_recv_async(ConnID flow_id, void **data, size_t *size, int n);
 
     bool uccl_wait(PollCtx *ctx);
