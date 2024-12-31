@@ -652,6 +652,9 @@ struct FactoryDevice {
     uint8_t ib_port_num;
     uint8_t gid_idx;
     union ibv_gid gid;
+
+    // DMA-BUF support
+    bool dma_buf_support;
 };
 
 /**

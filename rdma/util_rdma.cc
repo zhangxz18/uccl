@@ -102,6 +102,22 @@ void RDMAFactory::init_dev(int gid_idx)
         goto close_device;
     }
 
+    // Detect DMA-BUF support.
+    {
+        struct ibv_pd *pd;
+        pd = ibv_alloc_pd(context);
+        if (pd == nullptr) {
+            perror("ibv_alloc_pd");
+            goto close_device;
+        }
+        // Test kernel DMA-BUF support with a dummy call (fd=-1)
+        (void)ibv_reg_dmabuf_mr(pd, 0ULL /*offset*/, 0ULL /*len*/, 0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
+        dev.dma_buf_support = !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
+        ibv_dealloc_pd(pd);
+
+        LOG(INFO) << "DMA-BUF support: " << dev.dma_buf_support;
+    }
+
     rdma_ctl.gid_2_dev_map.insert({gid_idx, rdma_ctl.devices_.size()});
     
     rdma_ctl.devices_.push_back(dev);
