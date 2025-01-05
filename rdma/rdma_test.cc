@@ -133,6 +133,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     FLAGS_iterations *= FLAGS_nflow;
 
     int len[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
+    struct Mhandle *mhs[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     void *recv_data[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     std::vector<std::vector<PollCtx *>> poll_ctx_vec(FLAGS_nflow);
     for (int i = 0; i < FLAGS_nflow; i++) {
@@ -144,12 +145,13 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
             for (int m = 0; m < FLAGS_nmsg; m++) {
                 len[f][r][m] = FLAGS_msize;
                 recv_data[f][r][m] = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + m * FLAGS_msize;
+                mhs[f][r][m] = mhandles[f];
             }
     }
 
     for (int f = 0; f < FLAGS_nflow; f++) {
         for (int r = 0; r < FLAGS_nreq; r++) {
-            poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], &mhandles[f], recv_data[f][r], len[f][r], FLAGS_nmsg);
+            poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
             FLAGS_iterations--;
         }
     }
@@ -158,7 +160,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 if (ep.uccl_poll_once(poll_ctx_vec[f][r])) {
-                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], &mhandles[f], recv_data[f][r], len[f][r], FLAGS_nmsg);
+                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
                     FLAGS_iterations--;
                 }
             }
