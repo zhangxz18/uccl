@@ -1909,7 +1909,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
         if (unique) break;
     }
     
-    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, true);
+    install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, true);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -1982,7 +1982,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
         if (unique) break;
     }
     
-    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, true);
+    install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, true);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -2046,7 +2046,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
         }
     }
 
-    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, false);
+    install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, false);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -2112,7 +2112,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
         }
     }
 
-    install_flow_on_engine_rdma(dev, flow_id, remote_ip, local_engine_idx, bootstrap_fd, false);
+    install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, false);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -2186,11 +2186,10 @@ bool RDMAEndpoint::uccl_poll_once(PollCtx *ctx) {
 }
 
 void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
-                                      const std::string &remote_ip,
                                       uint32_t local_engine_idx,
                                       int bootstrap_fd, bool is_send) {
     int ret;
-    struct RDMAExchangeFormatLocal meta = { 0 };
+    struct XchgMeta meta = { 0 };
     // We use this pointer to fill meta data.
     auto *to_engine_meta = &meta.ToEngine;
     struct RDMAExchangeFormatRemote xchg_meta[RDMAContext::kTotalQP];
@@ -2250,7 +2249,6 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     Channel::CtrlMsg ctrl_msg = {
         .opcode = Channel::CtrlMsg::Op::kInstallFlowRDMA,
         .flow_id = flow_id,
-        .remote_ip = htonl(str_to_ip(remote_ip)),
         .meta = meta,
         .poll_ctx = poll_ctx,
     };
@@ -2381,7 +2379,7 @@ int RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*
 {
     auto *poll_ctx = new PollCtx();
 
-    struct RDMAExchangeFormatLocal meta = {};
+    struct XchgMeta meta = {};
 
     meta.ToEngine.addr = addr;
     meta.ToEngine.len = len;

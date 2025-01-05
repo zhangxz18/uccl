@@ -214,39 +214,46 @@ class IMMData{
     private:
         uint32_t imm_data_;    
 };
-
-/// @brief Exchange format between EndPoint and Engine.
-struct RDMAExchangeFormatLocal {
+struct XchgMeta {
     union {
         // Endpoint --> Engine
         struct {
             union {
+                // kInstallFlowRDMA
                 struct {
-                    bool is_send;
-                    int dev;
                     union ibv_gid remote_gid;
                     struct ibv_port_attr remote_port_attr;
+                    ibv_mtu mtu;
+                    int dev;
+                    bool is_send;
+                };
+
+                // kRegMR
+                struct {
+                    void *addr;
+                    size_t len;
+                    int type;
+                };
+
+                // kDeregMR
+                struct {
+                    struct ibv_mr *mr;
+                };
+
+                // kSyncFlowRDMA
+                struct {
                     uint32_t remote_qpn;
                     uint32_t remote_psn;
-                    ibv_mtu mtu;
                     bool fifo;
                     uint32_t fifo_key; // Only valid when fifo is true
                     uint64_t fifo_addr; // Only valid when fifo is true
-                };
-                // Memory Region
-                union {
-                    struct {
-                        void *addr;
-                        size_t len;
-                        int type;
-                    };
-                    struct ibv_mr *mr;
                 };
             };
         } ToEngine;
         // Engine --> Endpoint
         struct {
             union {
+                // kCompleteFlowRDMA
                 struct {
                     uint32_t local_qpn;
                     uint32_t local_psn;
@@ -254,8 +261,10 @@ struct RDMAExchangeFormatLocal {
                     uint32_t fifo_key; // Only valid when fifo is true
                     uint64_t fifo_addr; // Only valid when fifo is true
                 };
-                // Memory Region
-                struct ibv_mr *mr;
+                // kCompleteRegMR
+                struct {
+                    struct ibv_mr *mr;
+                };
             };
         } ToEndPoint;
     };
@@ -646,7 +655,7 @@ class RDMAContext {
         // When ready_entropy_cnt_ equals to kTotalQP, the flow is ready.
         uint32_t ready_entropy_cnt_;
 
-        RDMAContext(int dev, struct RDMAExchangeFormatLocal meta);
+        RDMAContext(int dev, struct XchgMeta meta);
 
         ~RDMAContext(void);
         
@@ -688,7 +697,7 @@ class RDMAFactory {
     
     public:
         static void init_dev(int gid_idx);
-        static RDMAContext *CreateContext(int dev, struct RDMAExchangeFormatLocal meta);
+        static RDMAContext *CreateContext(int dev, struct XchgMeta meta);
         static struct FactoryDevice *get_factory_dev(int dev);
         static bool need_sync_clock(int dev);
         static void shutdown(void);

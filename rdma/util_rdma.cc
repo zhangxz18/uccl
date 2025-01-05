@@ -162,7 +162,7 @@ struct FactoryDevice *RDMAFactory::get_factory_dev(int dev)
  * @param meta 
  * @return RDMAContext* 
  */
-RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal meta)
+RDMAContext *RDMAFactory::CreateContext(int dev, struct XchgMeta meta)
 {
     RDMAContext *ctx = new RDMAContext(dev, meta);
     std::lock_guard<std::mutex> lock(rdma_ctl.context_q_lock_);
@@ -170,7 +170,7 @@ RDMAContext *RDMAFactory::CreateContext(int dev, struct RDMAExchangeFormatLocal 
     return ctx;
 }
 
-RDMAContext::RDMAContext(int dev, struct RDMAExchangeFormatLocal meta):
+RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     dev_(dev), ready_entropy_cnt_(0), wheel_({freq_ghz})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);

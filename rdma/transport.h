@@ -66,20 +66,20 @@ class Channel {
    public:
     struct Msg {
         enum Op : uint8_t {
-            kTx = 0,
-            kTxComp = 1,
-            kRx = 2,
-            kRxComp = 3,
+            kTx,
+            kRx,
         };
         Op opcode;
         FlowID flow_id;
         union {
+            // kRx
             struct {
                 void *data[kMaxRecv];
                 size_t size[kMaxRecv];
                 struct ibv_mr *mr[kMaxRecv];
                 int n;
             } rx;
+            // kTx
             struct {
                 void *data;
                 size_t size;
@@ -106,10 +106,8 @@ class Channel {
         };
         Op opcode;
         FlowID flow_id;
-        uint32_t remote_ip;
-        uint32_t remote_engine_idx;
         
-        struct RDMAExchangeFormatLocal meta;
+        struct XchgMeta meta;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -708,7 +706,7 @@ class RDMAEndpoint {
 
    private:
 
-    void install_flow_on_engine_rdma(int dev, FlowID flow_id, const std::string &remote_ip,
+    void install_flow_on_engine_rdma(int dev, FlowID flow_id,
                                      uint32_t local_engine_idx, int bootstrap_fd, bool is_send);
     inline void put_load_on_engine(int engine_id);
     inline int find_least_loaded_engine_idx_and_update();
