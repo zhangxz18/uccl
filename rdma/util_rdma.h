@@ -220,28 +220,43 @@ struct RDMAExchangeFormatLocal {
     union {
         // Endpoint --> Engine
         struct {
-            bool is_send;
-            int dev;
-            union ibv_gid remote_gid;
-            struct ibv_port_attr remote_port_attr;
-            uint32_t remote_qpn;
-            uint32_t remote_psn;
-            ibv_mtu mtu;
-            bool fifo;
-            uint32_t fifo_key; // Only valid when fifo is true
-            uint64_t fifo_addr; // Only valid when fifo is true
-            // Memory Region
-            void *addr;
-            size_t len;
-            int type;
+            union {
+                struct {
+                    bool is_send;
+                    int dev;
+                    union ibv_gid remote_gid;
+                    struct ibv_port_attr remote_port_attr;
+                    uint32_t remote_qpn;
+                    uint32_t remote_psn;
+                    ibv_mtu mtu;
+                    bool fifo;
+                    uint32_t fifo_key; // Only valid when fifo is true
+                    uint64_t fifo_addr; // Only valid when fifo is true
+                };
+                // Memory Region
+                union {
+                    struct {
+                        void *addr;
+                        size_t len;
+                        int type;
+                    };
+                    struct ibv_mr *mr;
+                };
+            };
         } ToEngine;
         // Engine --> Endpoint
         struct {
-            uint32_t local_qpn;
-            uint32_t local_psn;
-            bool fifo;
-            uint32_t fifo_key; // Only valid when fifo is true
-            uint64_t fifo_addr; // Only valid when fifo is true
+            union {
+                struct {
+                    uint32_t local_qpn;
+                    uint32_t local_psn;
+                    bool fifo;
+                    uint32_t fifo_key; // Only valid when fifo is true
+                    uint64_t fifo_addr; // Only valid when fifo is true
+                };
+                // Memory Region
+                struct ibv_mr *mr;
+            };
         } ToEndPoint;
     };
 };
@@ -476,9 +491,6 @@ class RDMAContext {
 
         // Protection domain for all RDMA resources.
         struct ibv_pd *pd_ = nullptr;
-        
-        // Memory region for data transfer.
-        struct ibv_mr *data_mr_ = nullptr;
 
         // QPs for data transfer based on Unreliable Connection (UC).
         struct UCQPWrapper uc_qps_[kPortEntropy];
@@ -523,6 +535,7 @@ class RDMAContext {
         // Memory region for retransmission.
         struct ibv_mr *retr_mr_;
         struct ibv_mr *retr_hdr_mr_;
+        uint32_t inflight_retr_chunks_;
 
         // Global timing wheel for all UC QPs.
         TimingWheel wheel_;

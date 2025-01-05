@@ -36,13 +36,13 @@ DEFINE_uint32(nreq, 4, "Outstanding requests to post.");
 DEFINE_uint32(msize, 65536, "Size of message.");
 DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
 
-static void server_basic(RDMAEndpoint &ep, ConnID conn_id, void *data)
+static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
     for (int i = 0; i < FLAGS_iterations; i++) {
         int len = 65536;
         void *recv_data = data;
 
-        auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
+        auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
 
         ep.uccl_poll(poll_ctx);
 
@@ -56,7 +56,7 @@ static void server_basic(RDMAEndpoint &ep, ConnID conn_id, void *data)
     }
 }
 
-static void client_basic(RDMAEndpoint &ep, ConnID conn_id, void *data)
+static void client_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
     // Fill data in a pattern of 0x123456,0x123456,0x123456...
     for (int i = 0; i < 65536 / 4; i++) {
@@ -65,7 +65,7 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, void *data)
 
     for (int i = 0; i < FLAGS_iterations; i++) {
         void *send_data = data;
-        auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 65536);
+        auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, 65536);
 
         ep.uccl_poll(poll_ctx);
 
@@ -74,7 +74,7 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, void *data)
     }
 }
 
-static void server_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
+static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
     // Latency is measured at server side as it is asynchronous receive
     // c6525-25g, kPortEntropy = 32/1
@@ -89,7 +89,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
         for (int i = 0; i < 1000; i++) {
             int len = 100;
             void *recv_data = data;
-            auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
+            auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
             ep.uccl_poll(poll_ctx);
         }
     }
@@ -98,7 +98,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
         int len = 100;
         void *recv_data = data;
         auto t1 = rdtsc();
-        auto *poll_ctx = ep.uccl_recv_async(conn_id, &recv_data, &len, 1);
+        auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
         ep.uccl_poll(poll_ctx);
         auto t2 = rdtsc();
         lat_vec.push_back(to_usec(t2 - t1, freq_ghz));
@@ -111,24 +111,24 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
     std::cout << "Max: " << lat_vec[FLAGS_iterations - 1] << "us" << std::endl;
 }
 
-static void client_lat(RDMAEndpoint &ep, ConnID conn_id, void *data)
+static void client_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
     if (FLAGS_warmup) {
         for (int i = 0; i < 1000; i++) {
             void *send_data = data;
-            auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 100);
+            auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, 100);
             ep.uccl_poll(poll_ctx);
         }
     }
 
     for (int i = 0; i < FLAGS_iterations; i++) {
         void *send_data = data;
-        auto *poll_ctx = ep.uccl_send_async(conn_id, send_data, 100);
+        auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, 100);
         ep.uccl_poll(poll_ctx);
     }
 }
 
-static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vector<void *> &datas)
+static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vector<struct Mhandle *> &mhandles, std::vector<void *> &datas)
 {
     FLAGS_iterations *= FLAGS_nflow;
 
@@ -149,7 +149,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
 
     for (int f = 0; f < FLAGS_nflow; f++) {
         for (int r = 0; r < FLAGS_nreq; r++) {
-            poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], recv_data[f][r], len[f][r], FLAGS_nmsg);
+            poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], &mhandles[f], recv_data[f][r], len[f][r], FLAGS_nmsg);
             FLAGS_iterations--;
         }
     }
@@ -158,7 +158,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 if (ep.uccl_poll_once(poll_ctx_vec[f][r])) {
-                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], recv_data[f][r], len[f][r], FLAGS_nmsg);
+                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], &mhandles[f], recv_data[f][r], len[f][r], FLAGS_nmsg);
                     FLAGS_iterations--;
                 }
             }
@@ -166,7 +166,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     }
 }
 
-static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vector<void *> &datas)
+static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vector<struct Mhandle *> &mhandles, std::vector<void *> &datas)
 {
     volatile uint64_t prev_sec_bytes = 0;
     volatile uint64_t cur_sec_bytes = 0;
@@ -194,7 +194,7 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         for (int r = 0; r < FLAGS_nreq; r++) {
             for (int n = 0; n < FLAGS_nmsg; n++) {
                 void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
-                poll_ctx_vec[f][r][n] = ep.uccl_send_async(conn_ids[f], send_data, FLAGS_msize);
+                poll_ctx_vec[f][r][n] = ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize);
                 cur_sec_bytes += FLAGS_msize;
             }
             FLAGS_iterations--;
@@ -209,7 +209,7 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
                 for (int n = 0; n < FLAGS_nmsg; n++) {
                     if (ep.uccl_poll_once(poll_ctx_vec[f][r][n])) {
                         void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
-                        poll_ctx_vec[f][r][n] = ep.uccl_send_async(conn_ids[f], send_data, FLAGS_msize);
+                        poll_ctx_vec[f][r][n] = ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize);
                         cur_sec_bytes += FLAGS_msize;
                         if (++fin_msg == FLAGS_nreq) {
                             FLAGS_iterations--;
@@ -232,24 +232,30 @@ static void server_worker(void)
 
     std::vector<ConnID> conn_ids;
     std::vector<void *> datas;
+    std::vector<struct Mhandle *> mhandles;
+
+    mhandles.resize(FLAGS_nflow);
+    for (int i = 0; i < FLAGS_nflow; i++) {
+        mhandles[i] = new struct Mhandle();
+    }
 
     for (int i = 0; i < FLAGS_nflow; i++) {
         auto conn_id = ep.uccl_accept(0, i % NUM_ENGINES, remote_ip);
         printf("Server accepted connection from %s (flow#%d)\n", remote_ip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);
-        ep.uccl_regmr(conn_id, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0);
+        ep.uccl_regmr(conn_id, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
 
         conn_ids.push_back(conn_id);
         datas.push_back(data);
     }
 
     if (FLAGS_perftype == "basic") {
-        server_basic(ep, conn_ids[0], datas[0]);
+        server_basic(ep, conn_ids[0], mhandles[0], datas[0]);
     } else if (FLAGS_perftype == "lat") {
-        server_lat(ep, conn_ids[0], datas[0]);
+        server_lat(ep, conn_ids[0], mhandles[0], datas[0]);
     } else if (FLAGS_perftype == "tpt") {
-        server_tpt(ep, conn_ids, datas);
+        server_tpt(ep, conn_ids, mhandles, datas);
     } else {
         std::cerr << "Unknown performance type: " << FLAGS_perftype << std::endl;
     }
@@ -259,8 +265,9 @@ static void server_worker(void)
     }
 
     for (int i = 0; i < FLAGS_nflow; i++) {
-        ep.uccl_deregmr(conn_ids[i]);
+        ep.uccl_deregmr(conn_ids[i], mhandles[i]);
         munmap(datas[i], FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        delete mhandles[i];
     }
 }
 
@@ -270,31 +277,38 @@ static void client_worker(void)
 
     std::vector<ConnID> conn_ids;
     std::vector<void *> datas;
+    std::vector<struct Mhandle *> mhandles;
+
+    mhandles.resize(FLAGS_nflow);
+    for (int i = 0; i < FLAGS_nflow; i++) {
+        mhandles[i] = new struct Mhandle();
+    }
 
     for (int i = 0; i < FLAGS_nflow; i++) {
         auto conn_id = ep.uccl_connect(0, i % NUM_ENGINES, FLAGS_serverip);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);
-        ep.uccl_regmr(conn_id, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0);
+        ep.uccl_regmr(conn_id, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
 
         conn_ids.push_back(conn_id);
         datas.push_back(data);
     }
 
     if (FLAGS_perftype == "basic") {
-        client_basic(ep, conn_ids[0], datas[0]);
+        client_basic(ep, conn_ids[0], mhandles[0], datas[0]);
     } else if (FLAGS_perftype == "lat") {
-        client_lat(ep, conn_ids[0], datas[0]);
+        client_lat(ep, conn_ids[0], mhandles[0], datas[0]);
     } else if (FLAGS_perftype == "tpt") {
-        client_tpt(ep, conn_ids, datas);
+        client_tpt(ep, conn_ids, mhandles, datas);
     } else {
         std::cerr << "Unknown performance type: " << FLAGS_perftype << std::endl;
     }
 
     for (int i = 0; i < FLAGS_nflow; i++) {
-        ep.uccl_deregmr(conn_ids[i]);
+        ep.uccl_deregmr(conn_ids[i], mhandles[i]);
         munmap(datas[i], FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        delete mhandles[i];
     }
 }
 

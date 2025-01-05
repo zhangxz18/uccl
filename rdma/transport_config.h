@@ -40,6 +40,7 @@ static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
 static const uint32_t kMaxRetr = 16;
+static const uint32_t kMaxInflightRetrChunks = 16;
 static const uint32_t kMaxBatchPost = 32;
 
 // For debugging and testing.

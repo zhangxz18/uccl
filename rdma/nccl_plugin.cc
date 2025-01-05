@@ -218,12 +218,13 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
 {
     struct ucclSendComm *scomm = (struct ucclSendComm *)sendComm;
     auto conn_id = scomm->conn_id;
+    struct Mhandle *mh = (struct Mhandle *)mhandle;
 
     uint64_t addr;
     if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
-    req->poll_ctx = ep->uccl_send_async(conn_id, data, size);
+    req->poll_ctx = ep->uccl_send_async(conn_id, mh, data, size);
 
     req->send = true;
     req->data_len[0] = size;
@@ -238,12 +239,13 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
 {
     struct ucclRecvComm *rcomm = (struct ucclRecvComm *)recvComm;
     auto conn_id = rcomm->conn_id;
+    struct Mhandle **mhs = (struct Mhandle **)mhandles;
 
     uint64_t addr;
     if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
-    req->poll_ctx = ep->uccl_recv_async(conn_id, data, sizes, n);
+    req->poll_ctx = ep->uccl_recv_async(conn_id, mhs, data, sizes, n);
 
     req->send = false;
     for (int i = 0; i < n; i++) req->data_len[i] = sizes[i];

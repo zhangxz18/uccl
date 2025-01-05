@@ -50,6 +50,10 @@ struct ConnID {
     int boostrap_id;      // Used for bootstrap connection with the peer.
 };
 
+struct Mhandle {
+    struct ibv_mr *mr;
+};
+
 /**
  * @class Channel
  * @brief A channel is a command queue for application threads to submit rx and
@@ -73,11 +77,13 @@ class Channel {
             struct {
                 void *data[kMaxRecv];
                 size_t size[kMaxRecv];
+                struct ibv_mr *mr[kMaxRecv];
                 int n;
             } rx;
             struct {
                 void *data;
                 size_t size;
+                struct ibv_mr *mr;
             } tx;
         };
         // Wakeup handler
@@ -96,6 +102,7 @@ class Channel {
             kDeregMR,
             // Engine --> Endpoint
             kCompleteFlowRDMA,
+            kCompleteRegMR,
         };
         Op opcode;
         FlowID flow_id;
@@ -403,8 +410,9 @@ class UcclFlow {
      * @param data Array of data buffers.
      * @param size Array of buffer sizes.
      * @param n Number of buffers.
+     * @param mr Memory region for the buffers.
      */
-    void post_fifo(struct FlowRequest *req, void **data, size_t *size, int n);
+    void post_fifo(struct FlowRequest *req, void **data, size_t *size, int n, struct ibv_mr **mr);
 
     // Which Engine this flow belongs to.
     UcclRDMAEngine *engine_;
@@ -681,18 +689,18 @@ class RDMAEndpoint {
     // Accept a connection from a remote address; thread-safe
     ConnID uccl_accept(int dev, std::string &remote_ip);
     // Explicitly specify the engine_id to install the flow.
-    ConnID uccl_accept(int dev, int engine_id, std::string &remote_ip);  
+    ConnID uccl_accept(int dev, int engine_id, std::string &remote_ip);
     
     // Register a memory region.
-    bool uccl_regmr(ConnID flow_id, void *data, size_t len, int type);
+    int uccl_regmr(ConnID flow_id, void *data, size_t len, int type, struct Mhandle **mhandle);
     // Deregister a memory region.
-    void uccl_deregmr(ConnID flow_id);
+    void uccl_deregmr(ConnID flow_id, struct Mhandle *mhandle);
 
     // Post a buffer to engine for sending data asynchronously.
-    PollCtx *uccl_send_async(ConnID flow_id, const void *data,
+    PollCtx *uccl_send_async(ConnID flow_id, struct Mhandle *mhandle, const void *data,
                              const size_t size);
     // Post n buffers to engine for receiving data asynchronously.
-    PollCtx *uccl_recv_async(ConnID flow_id, void **data, int *size, int n);
+    PollCtx *uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);

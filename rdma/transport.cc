@@ -1,5 +1,6 @@
 #include "transport.h"
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <endian.h>
@@ -15,7 +16,7 @@
 
 namespace uccl {
 
-void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int n)
+void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int n, struct ibv_mr **mr)
 {
     struct ibv_send_wr wr;
     memset(&wr, 0, sizeof(wr));
@@ -34,7 +35,7 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
     
     for (int i = 0; i < n; i++) {
         elems[i].addr = reinterpret_cast<uint64_t>(data[i]);
-        elems[i].rkey = rdma_ctx_->data_mr_->rkey;
+        elems[i].rkey = mr[i]->rkey;
         elems[i].nmsgs = n;
         // For sender to check if the receiver is ready.
         elems[i].idx = rem_fifo->fifo_tail + 1;
@@ -78,6 +79,7 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
 void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
     auto data = rx_work.rx.data;
     auto size = rx_work.rx.size;
+    auto mr = rx_work.rx.mr;
     auto n = rx_work.rx.n;
     auto poll_ctx = rx_work.poll_ctx;
 
@@ -118,7 +120,7 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
     }
 
     // Push buffer information to FIFO queue and notify the remote peer.
-    post_fifo(req, data, size, n);
+    post_fifo(req, data, size, n, mr);
 }
 
 void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid)
@@ -396,6 +398,7 @@ void UcclFlow::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     retr_wr.send_flags = IBV_SEND_SIGNALED;
 
     DCHECK(ibv_post_send(rdma_ctx_->retr_qp_, &retr_wr, &bad_wr) == 0);
+    rdma_ctx_->inflight_retr_chunks_++;
 
     LOG(INFO) << "successfully retransmit chunk for QP#" << (qpw - rdma_ctx_->uc_qps_) 
         << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
@@ -518,6 +521,7 @@ void UcclFlow::poll_retr_cq(void)
             } else {
                 auto wr_id = cq_ex->wr_id;
                 rdma_ctx_->retr_hdr_pool_->free_buff(wr_id);
+                rdma_ctx_->inflight_retr_chunks_--;
             }
         } else {
             LOG(ERROR) << "Retr CQ state error: " << cq_ex->status;
@@ -796,7 +800,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
     if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
         LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
         auto poll_ctx = req->poll_ctx;
-        // Wakeup app thread waiting one endpoint.
+        // Wakeup app thread.
         {
             std::lock_guard<std::mutex> lock(poll_ctx->mu);
             poll_ctx->done = true;
@@ -910,7 +914,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
         if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
             LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
             auto poll_ctx = req->poll_ctx;
-            // Wakeup app thread waiting one endpoint.
+            // Wakeup app thread.
             {
                 std::lock_guard<std::mutex> lock(poll_ctx->mu);
                 poll_ctx->done = true;
@@ -1007,7 +1011,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
     if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
         LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
         auto poll_ctx = req->poll_ctx;
-        // Wakeup app thread waiting one endpoint.
+        // Wakeup app thread.
         {
             std::lock_guard<std::mutex> lock(poll_ctx->mu);
             poll_ctx->done = true;
@@ -1132,7 +1136,7 @@ void UcclFlow::test_rc_poll_cq(void)
                 if (--req->events)
                     fin = false;
                 else if (i) {
-                    // Wakeup app thread waiting for the completion of this request.
+                    // Wakeup app thread.
                     {
                         std::lock_guard<std::mutex> lock(req->poll_ctx->mu);
                         req->poll_ctx->done = true;
@@ -1150,7 +1154,7 @@ void UcclFlow::test_rc_poll_cq(void)
         
         if (fin) {
             LOG(INFO) << "Request complete (" << req0->nmsgs << " messages)";
-            // Wakeup app thread waiting for the completion of this request.
+            // Wakeup app thread.
             {
                 std::lock_guard<std::mutex> lock(req0->poll_ctx->mu);
                 req0->poll_ctx->done = true;
@@ -1254,6 +1258,7 @@ bool UcclFlow::poll_fifo_cq(void)
 bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     auto data = tx_work.tx.data;
     auto size = tx_work.tx.size;
+    auto mr = tx_work.tx.mr;
     auto poll_ctx = tx_work.poll_ctx;
     auto tx_ready_poll_ctx = tx_work.tx_ready_poll_ctx;
 
@@ -1302,7 +1307,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
         req->send.size = size;
         req->send.sent_offset = 0;
         req->send.data = data;
-        req->send.lkey = rdma_ctx_->data_mr_->lkey;
+        req->send.lkey = mr->lkey;
 
         if (kTestRC)
             req->events = kTestRCEntropy;
@@ -1365,6 +1370,9 @@ void UcclFlow::fast_retransmit(struct UCQPWrapper *qpw)
 
 void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw) 
 {
+    if (rdma_ctx_->inflight_retr_chunks_ > kMaxInflightRetrChunks)
+        return;
+
     if (!qpw->txtracking.empty()) {
         // LOG(INFO) << "RTO retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
         // Retransmit the oldest unacknowledged chunk.
@@ -1567,30 +1575,29 @@ void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
     auto *rdma_ctx = flow->rdma_ctx_;
     DCHECK(rdma_ctx != nullptr);
 
-    if (rdma_ctx->data_mr_) {
-        LOG(ERROR) << "Only one MR is allowed";
-        return;
-    }
-
     auto *mr = ibv_reg_mr(rdma_ctx->pd_, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     DCHECK(mr != nullptr);
 
-    rdma_ctx->data_mr_ = mr;
-
     LOG(INFO) << "Memory region address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
 
-    // Wakeup app thread waiting one endpoint.
+    // Wakeup app thread.
     {
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
         poll_ctx->cv.notify_one();
     }
+
+    Channel::CtrlMsg ctrl_work_rsp;
+    ctrl_work_rsp.meta.ToEndPoint.mr = mr;
+    ctrl_work_rsp.opcode = Channel::CtrlMsg::kCompleteRegMR;
+    while (jring_sp_enqueue_bulk(channel_->ctrl_rspq_, &ctrl_work_rsp, 1, nullptr) != 1) {}
 }
 
 void UcclRDMAEngine::handle_deregmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
 {
     auto *flow = active_flows_map_[ctrl_work.flow_id];
     auto *poll_ctx = ctrl_work.poll_ctx;
+    auto *mr = ctrl_work.meta.ToEngine.mr;
     if (flow == nullptr) {
         LOG(ERROR) << "Flow not found";
         return;
@@ -1598,15 +1605,9 @@ void UcclRDMAEngine::handle_deregmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
     
     auto *rdma_ctx = flow->rdma_ctx_;
 
-    if (!rdma_ctx->data_mr_) {
-        LOG(ERROR) << "MR not found";
-        return;
-    }
+    ibv_dereg_mr(mr);
 
-    ibv_dereg_mr(rdma_ctx->data_mr_);
-    rdma_ctx->data_mr_ = nullptr;
-
-    // Wakeup app thread waiting one endpoint.
+    // Wakeup app thread.
     {
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
@@ -1678,7 +1679,7 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         LOG(ERROR) << "Invalid ready_entropy_cnt_ " << rdma_ctx->ready_entropy_cnt_;
     }
 
-    // Wakeup app thread waiting one endpoint.
+    // Wakeup app thread.
     if (rdma_ctx->ready_entropy_cnt_ == RDMAContext::kTotalQP) {
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
@@ -1699,7 +1700,7 @@ void UcclRDMAEngine::handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_w
     std::tie(std::ignore, ret) = active_flows_map_.insert({flow_id, flow});
     DCHECK(ret);
 
-    // Wakeup app thread waiting one endpoint.
+    // Wakeup app thread.
     {
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
@@ -1862,7 +1863,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     serv_addr.sin_port = htons(kBootstrapPort);
 
     // Force the socket to bind to the local IP address.
-    sockaddr_in localaddr = {0};
+    sockaddr_in localaddr = {};
     localaddr.sin_family = AF_INET;
     auto local_ip_str = rdma_dev_list_[dev].local_ip_str;
     localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
@@ -1933,7 +1934,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     serv_addr.sin_port = htons(kBootstrapPort);
 
     // Force the socket to bind to the local IP address.
-    sockaddr_in localaddr = {0};
+    sockaddr_in localaddr = {};
     localaddr.sin_family = AF_INET;
     auto local_ip_str = rdma_dev_list_[dev].local_ip_str;
     localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
@@ -2118,7 +2119,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
                   .boostrap_id = bootstrap_fd};
 }
 
-PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
+PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const void *data,
                                    const size_t size) {
     auto *poll_ctx = ctx_pool_->pop();
     auto *tx_ready_poll_ctx = ctx_pool_->pop();
@@ -2131,6 +2132,7 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
     
     msg.tx.data = const_cast<void *>(data);
     msg.tx.size = size;
+    msg.tx.mr = mhandle->mr;
     
     std::atomic_store_explicit(&poll_ctx->fence, true,
                                std::memory_order_release);
@@ -2143,7 +2145,7 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void **data, int *size, int n) {
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
@@ -2154,6 +2156,7 @@ PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, void **data, int *size, i
     for (int i = 0; i < n; i++) {
         msg.rx.data[i] = data[i];
         msg.rx.size[i] = size[i];
+        msg.rx.mr[i] = mhandles[i]->mr;
     }
     msg.rx.n = n;
 
@@ -2256,6 +2259,8 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         ;
 
     // Wait until the flow has been installed on the engine.
+    // This also serves as a barrier to ensure that only this flow 
+    // is being installed by the engine.
     {
         std::unique_lock<std::mutex> lock(poll_ctx->mu);
         poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
@@ -2372,11 +2377,11 @@ void RDMAEndpoint::stats_thread_fn() {
     }
 }
 
-bool RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*unsed for now*/)
+int RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*unsed for now*/, struct Mhandle **mhandle)
 {
     auto *poll_ctx = new PollCtx();
 
-    struct RDMAExchangeFormatLocal meta = { 0 };
+    struct RDMAExchangeFormatLocal meta = {};
 
     meta.ToEngine.addr = addr;
     meta.ToEngine.len = len;
@@ -2392,17 +2397,28 @@ bool RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_cmdq_,
                                  &ctrl_msg, 1, nullptr) != 1)
         ;
-    // Wait until the information has been received on the engine.
+    // Wait until the flow has been installed on the engine.
+    // This also serves as a barrier to ensure that only this flow 
+    // is being installed by the engine.
     {
         std::unique_lock<std::mutex> lock(poll_ctx->mu);
         poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
     }
     delete poll_ctx;
 
-    return true;
+    Channel::CtrlMsg rsp_msg;
+    while (1) {
+        if (jring_mc_dequeue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) == 1) {
+            DCHECK(rsp_msg.opcode == Channel::CtrlMsg::Op::kCompleteRegMR);
+            (*mhandle)->mr = rsp_msg.meta.ToEndPoint.mr;
+            break;
+        }
+    }
+
+    return 0;
 }
 
-void RDMAEndpoint::uccl_deregmr(ConnID conn_id)
+void RDMAEndpoint::uccl_deregmr(ConnID conn_id, struct Mhandle *mhandle)
 {
     auto *poll_ctx = new PollCtx();
 
@@ -2411,6 +2427,8 @@ void RDMAEndpoint::uccl_deregmr(ConnID conn_id)
         .flow_id = conn_id.flow_id,
         .poll_ctx = poll_ctx
     };
+
+    ctrl_msg.meta.ToEngine.mr = mhandle->mr;
 
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_cmdq_,
                                  &ctrl_msg, 1, nullptr) != 1)
