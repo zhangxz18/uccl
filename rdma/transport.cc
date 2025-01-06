@@ -76,7 +76,58 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
     rem_fifo->fifo_tail++;
 }
 
-void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work) {
+void UcclFlow::flush_rx_buf(Channel::Msg &rx_work)
+{
+    auto data = rx_work.rx.data;
+    auto size = rx_work.rx.size;
+    auto mr = rx_work.rx.mr;
+    auto n = rx_work.rx.n;
+    auto poll_ctx = rx_work.poll_ctx;
+
+    auto recv_comm_ = &rdma_ctx_->recv_comm_;
+
+    if (unlikely(n > kMaxRecv)) {
+        LOG(ERROR) << "Number of buffers exceeds the limit.";
+        return;
+    }
+
+    // Only flush once using the last non-zero receive
+    int last = -1;
+    for (int i = 0; i < n; i++) if (size[i]) last = i;
+    if (last == -1) return;
+
+    auto req = rdma_ctx_->get_request(&recv_comm_->base);
+    if (unlikely(!req)) {
+        LOG(ERROR) << "Number of outstanding requests exceeds the limit.";
+        return;
+    }
+
+    req->type = FlowRequest::FLUSH;
+    req->nmsgs = n;
+    req->poll_ctx = poll_ctx;
+    if (kTestRC)
+        req->events = 1;
+
+    struct ibv_send_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    
+    wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
+
+    wr.wr.rdma.remote_addr = reinterpret_cast<uint64_t>(data[last]);
+    wr.wr.rdma.rkey = mr[last]->rkey;
+    wr.sg_list = &rdma_ctx_->gpu_flush_sge_;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_RDMA_READ;
+    wr.send_flags = IBV_SEND_SIGNALED;
+
+    struct ibv_send_wr *bad_wr;
+    DCHECK(ibv_post_send(rdma_ctx_->gpu_flush_qp_, &wr, &bad_wr) == 0);
+
+    LOG(INFO) << rdma_ctx_->gpu_flush_qp_->qp_num << " Post flush: addr: " << wr.wr.rdma.remote_addr << ", rkey: " << wr.wr.rdma.rkey;
+}
+
+void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
+{
     auto data = rx_work.rx.data;
     auto size = rx_work.rx.size;
     auto mr = rx_work.rx.mr;
@@ -1117,22 +1168,27 @@ void UcclFlow::test_rc_poll_cq(void)
 
     while (1) {
 
-        auto qp_num = ibv_wc_read_qp_num(cq_ex);
-        auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
-        LOG(INFO) << "Event from UC QP#" << qpidx << ", wr_id: " << cq_ex->wr_id;
-
         DCHECK(cq_ex->status == IBV_WC_SUCCESS);
 
-        auto send = ibv_wc_read_opcode(cq_ex) == IBV_WC_RDMA_WRITE;
+        auto opcode = ibv_wc_read_opcode(cq_ex);
+
+        if (opcode != IBV_WC_RDMA_READ) {
+            auto qp_num = ibv_wc_read_qp_num(cq_ex);
+            auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
+            LOG(INFO) << "Event from UC QP#" << qpidx << ", wr_id: " << cq_ex->wr_id;
+        }
+
+        auto send = opcode == IBV_WC_RDMA_WRITE;
+        struct NetCommBase *comm_base = send ? &rdma_ctx_->send_comm_.base : &rdma_ctx_->recv_comm_.base;
         
         auto wr_id = cq_ex->wr_id;
-        auto req0 = rdma_ctx_->get_request_by_id(wr_id & 0xff, &rdma_ctx_->send_comm_.base);
+        auto req0 = rdma_ctx_->get_request_by_id(wr_id & 0xff, comm_base);
         auto fin = true;
 
-        if (send) {
+        if (opcode == IBV_WC_RDMA_WRITE) {
             // For sender, one FlowRequest for one message.
             for (int i = 0; i < req0->nmsgs; i++) {
-                auto req = rdma_ctx_->get_request_by_id((wr_id >> (i * 8)) & 0xff, &rdma_ctx_->send_comm_.base);
+                auto req = rdma_ctx_->get_request_by_id((wr_id >> (i * 8)) & 0xff, comm_base);
                 if (--req->events)
                     fin = false;
                 else if (i) {
@@ -1144,9 +1200,10 @@ void UcclFlow::test_rc_poll_cq(void)
                     }
                     rdma_ctx_->free_request(req);
                 }
-                LOG(INFO) << req->events << " events left for request " << rdma_ctx_->get_request_id(req, &rdma_ctx_->send_comm_.base);
+                LOG(INFO) << req->events << " events left for request " << rdma_ctx_->get_request_id(req, comm_base);
             }
         } else {
+            DCHECK(opcode == IBV_WC_RECV_RDMA_WITH_IMM || opcode == IBV_WC_RDMA_READ);
             // For receiver, only one FlowRequest for multiple messages.
             if (--req0->events)
                 fin = false;
@@ -1199,9 +1256,21 @@ void UcclFlow::poll_uc_cq(void)
             } else if (opcode == IBV_WC_RECV) {
                 DCHECK(ibv_wc_read_byte_len(cq_ex) == 0);
                 rx_barrier(&ack_list, post_recv_qidx_list, &num_post_recv);
+            } else if (opcode == IBV_WC_RDMA_READ) {
+                auto req = rdma_ctx_->get_request_by_id(cq_ex->wr_id, 
+                    &rdma_ctx_->recv_comm_.base);
+                auto poll_ctx = req->poll_ctx;
+                // Wakeup app thread.
+                {
+                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                    poll_ctx->done = true;
+                    poll_ctx->cv.notify_one();
+                }
+                rdma_ctx_->free_request(req);
+                LOG(INFO) << "Flush operation complete";
             }
         } else {
-            LOG(ERROR) << "UC CQ state error: " << cq_ex->status;
+            LOG(ERROR) << "UC CQ state error: " << cq_ex->status << " from QP:" << ibv_wc_read_qp_num(cq_ex);
         }
         
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
@@ -1437,8 +1506,14 @@ void UcclRDMAEngine::handle_rx_work(void)
     Channel::Msg rx_work;
     if (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
         1) {
-        LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRX";
-        active_flows_map_[rx_work.flow_id]->app_supply_rx_buf(rx_work);
+        if (rx_work.opcode == Channel::Msg::kRx) {
+            LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRX";
+            active_flows_map_[rx_work.flow_id]->app_supply_rx_buf(rx_work);
+        } else {
+            DCHECK(rx_work.opcode == Channel::Msg::kFlush);
+            LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kFlush";
+            active_flows_map_[rx_work.flow_id]->flush_rx_buf(rx_work);
+        }
     }
 }
 
@@ -1553,6 +1628,10 @@ void UcclRDMAEngine::process_ctl_reqs() {
                     LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRegMR";
                     handle_regmr_on_engine_rdma(ctrl_work);
                 break;
+            case Channel::CtrlMsg::kRegMRDMABUF:
+                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRegMRDMABUF";
+                    handle_regmr_dmabuf_on_engine_rdma(ctrl_work);
+                break;
             case Channel::CtrlMsg::kDeregMR:
                     LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kDeregMR";
                     handle_deregmr_on_engine_rdma(ctrl_work);
@@ -1561,6 +1640,38 @@ void UcclRDMAEngine::process_ctl_reqs() {
                 break;
         }
     }
+}
+
+void UcclRDMAEngine::handle_regmr_dmabuf_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
+{
+    auto *flow = active_flows_map_[ctrl_work.flow_id];
+    auto *poll_ctx = ctrl_work.poll_ctx;
+    if (flow == nullptr) {
+        LOG(ERROR) << "Flow not found";
+        return;
+    }
+
+    auto *rdma_ctx = flow->rdma_ctx_;
+    DCHECK(rdma_ctx != nullptr);
+
+    auto *mr = ibv_reg_dmabuf_mr(rdma_ctx->pd_, 
+        ctrl_work.meta.ToEngine.offset, ctrl_work.meta.ToEngine.len, (uint64_t)ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.fd, 
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+    DCHECK(mr != nullptr);
+
+    LOG(INFO) << "Memory region (DMA-BUF) address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
+
+    // Wakeup app thread.
+    {
+        std::lock_guard<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->done = true;
+        poll_ctx->cv.notify_one();
+    }
+
+    Channel::CtrlMsg ctrl_work_rsp;
+    ctrl_work_rsp.meta.ToEndPoint.mr = mr;
+    ctrl_work_rsp.opcode = Channel::CtrlMsg::kCompleteRegMR;
+    while (jring_sp_enqueue_bulk(channel_->ctrl_rspq_, &ctrl_work_rsp, 1, nullptr) != 1) {}
 }
 
 void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
@@ -1575,7 +1686,7 @@ void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
     auto *rdma_ctx = flow->rdma_ctx_;
     DCHECK(rdma_ctx != nullptr);
 
-    auto *mr = ibv_reg_mr(rdma_ctx->pd_, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    auto *mr = ibv_reg_mr(rdma_ctx->pd_, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     DCHECK(mr != nullptr);
 
     LOG(INFO) << "Memory region address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
@@ -1679,8 +1790,17 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         LOG(ERROR) << "Invalid ready_entropy_cnt_ " << rdma_ctx->ready_entropy_cnt_;
     }
 
-    // Wakeup app thread.
     if (rdma_ctx->ready_entropy_cnt_ == RDMAContext::kTotalQP) {
+        
+        if (!rdma_ctx->is_send_) {
+            // GPU flush QP.
+            ret = modify_qp_rtr_gpuflush(rdma_ctx->gpu_flush_qp_, rdma_ctx);
+            DCHECK(ret == 0) << "Failed to modify GPU flush QP to RTR";
+            ret = modify_qp_rts(rdma_ctx->gpu_flush_qp_, rdma_ctx, 0, true);
+            DCHECK(ret == 0) << "Failed to modify GPU flush QP to RTS";
+        }
+        
+        // Wakeup app thread.
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
         poll_ctx->cv.notify_one();
@@ -1768,7 +1888,6 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     // Create multiple engines. Each engine has its own thread and channel to let the endpoint communicate with.
     for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();
 
-    LOG(INFO) << engine_vec_.size();
     for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
          engine_id < total_num_engines; engine_id++, engine_cpu_id++) {
         
@@ -2145,6 +2264,27 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, 
     return poll_ctx;
 }
 
+PollCtx *RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n)
+{
+    auto *poll_ctx = ctx_pool_->pop();
+    Channel::Msg msg = {
+        .opcode = Channel::Msg::Op::kFlush,
+        .flow_id = conn_id.flow_id,
+        .poll_ctx = poll_ctx,  
+    };
+
+    for (int i = 0; i < n; i++) {
+        msg.flush.data[i] = data[i];
+        msg.flush.size[i] = size[i];
+        msg.flush.mr[i] = mhandles[i]->mr;
+    }
+    msg.flush.n = n;
+
+    while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->rx_cmdq_,
+                                 &msg, 1, nullptr) != 1);
+    return poll_ctx;
+}
+
 PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
@@ -2373,6 +2513,49 @@ void RDMAEndpoint::stats_thread_fn() {
         // }
         // LOG(INFO) << s;
     }
+}
+
+int RDMAEndpoint::uccl_regmr_dmabuf(ConnID conn_id, void *addr, size_t len, int type, int offset, int fd, struct Mhandle **mhandle)
+{
+    auto *poll_ctx = new PollCtx();
+
+    struct XchgMeta meta = {};
+
+    meta.ToEngine.addr = addr;
+    meta.ToEngine.len = len;
+    meta.ToEngine.type = type;
+    meta.ToEngine.offset = offset;
+    meta.ToEngine.fd = fd;
+    
+    Channel::CtrlMsg ctrl_msg = {
+        .opcode = Channel::CtrlMsg::Op::kRegMRDMABUF,
+        .flow_id = conn_id.flow_id,
+        .meta = meta,
+        .poll_ctx = poll_ctx
+    };
+
+    while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_cmdq_,
+                                 &ctrl_msg, 1, nullptr) != 1)
+        ;
+    // Wait until the flow has been installed on the engine.
+    // This also serves as a barrier to ensure that only this flow 
+    // is being installed by the engine.
+    {
+        std::unique_lock<std::mutex> lock(poll_ctx->mu);
+        poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
+    }
+    delete poll_ctx;
+
+    Channel::CtrlMsg rsp_msg;
+    while (1) {
+        if (jring_mc_dequeue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) == 1) {
+            DCHECK(rsp_msg.opcode == Channel::CtrlMsg::Op::kCompleteRegMR);
+            (*mhandle)->mr = rsp_msg.meta.ToEndPoint.mr;
+            break;
+        }
+    }
+
+    return 0;
 }
 
 int RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*unsed for now*/, struct Mhandle **mhandle)

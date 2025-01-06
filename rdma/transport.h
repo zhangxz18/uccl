@@ -68,10 +68,17 @@ class Channel {
         enum Op : uint8_t {
             kTx,
             kRx,
+            kFlush,
         };
         Op opcode;
         FlowID flow_id;
         union {
+            // kTx
+            struct {
+                void *data;
+                size_t size;
+                struct ibv_mr *mr;
+            } tx;
             // kRx
             struct {
                 void *data[kMaxRecv];
@@ -79,12 +86,13 @@ class Channel {
                 struct ibv_mr *mr[kMaxRecv];
                 int n;
             } rx;
-            // kTx
+            // kFlush
             struct {
-                void *data;
-                size_t size;
-                struct ibv_mr *mr;
-            } tx;
+                void *data[kMaxRecv];
+                size_t size[kMaxRecv];
+                struct ibv_mr *mr[kMaxRecv];
+                int n;
+            } flush;
         };
         // Wakeup handler
         PollCtx *poll_ctx;
@@ -99,6 +107,7 @@ class Channel {
             kInstallFlowRDMA = 0,
             kSyncFlowRDMA,
             kRegMR,
+            kRegMRDMABUF,
             kDeregMR,
             // Engine --> Endpoint
             kCompleteFlowRDMA,
@@ -257,6 +266,12 @@ class UcclFlow {
      * @param rx_work 
      */
     void app_supply_rx_buf(Channel::Msg &rx_work);
+
+    /**
+     * @brief Flush the receive buffer.
+     * @param rx_work 
+     */
+    void flush_rx_buf(Channel::Msg &rx_work);
 
     /**
      * @brief Transmit a message described by the tx_work.
@@ -536,6 +551,12 @@ class UcclRDMAEngine {
     void handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
 
     /**
+     * @brief Registering a memory region with DMA-BUF support.
+     * @param ctrl_work 
+     */
+    void handle_regmr_dmabuf_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
+
+    /**
      * @brief Deregistering a memory region.
      * @param ctrl_work 
      */
@@ -691,6 +712,8 @@ class RDMAEndpoint {
     
     // Register a memory region.
     int uccl_regmr(ConnID flow_id, void *data, size_t len, int type, struct Mhandle **mhandle);
+    // Register a DMA-BUF memory region.
+    int uccl_regmr_dmabuf(ConnID flow_id, void *data, size_t len, int type, int offset, int fd, struct Mhandle **mhandle);
     // Deregister a memory region.
     void uccl_deregmr(ConnID flow_id, struct Mhandle *mhandle);
 
@@ -699,6 +722,9 @@ class RDMAEndpoint {
                              const size_t size);
     // Post n buffers to engine for receiving data asynchronously.
     PollCtx *uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);
+
+    // Ensure that all received data is visible to GPU.
+    PollCtx *uccl_flush(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);

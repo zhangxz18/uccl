@@ -1,4 +1,7 @@
 #pragma once
+
+#include <unistd.h>
+
 #include <cstdint>
 #include <thread>
 #include <string>
@@ -42,6 +45,7 @@ static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
 static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxInflightRetrChunks = 8;
 static const uint32_t kMaxBatchPost = 32;
+static const uintptr_t kPageSize = sysconf(_SC_PAGESIZE);
 
 // For debugging and testing.
 // Use RDMA RC instead of UC.

@@ -279,7 +279,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     // Create Ctrl QP, CQ, and MR.
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
     util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, true, true,
-        (struct ibv_cq **)&ctrl_cq_ex_, kCQSize, pd_, &ctrl_mr_, kCtrlMRSize, 
+        (struct ibv_cq **)&ctrl_cq_ex_, false, kCQSize, pd_, &ctrl_mr_, nullptr, kCtrlMRSize, 
             CtrlPktBuffPool::kNumPkt, CtrlPktBuffPool::kNumPkt, 1, 1);
     
     // Initialize Control packet buffer pool.
@@ -288,7 +288,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     // Create FIFO QP, CQ, and MR.
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
     util_rdma_create_qp(this, context_, &fifo_qp_, IBV_QPT_RC, false, false,
-        &fifo_cq_, kCQSize, pd_, &fifo_mr_, kFifoMRSize, 
+        &fifo_cq_, false, kCQSize, pd_, &fifo_mr_, nullptr, kFifoMRSize, 
             kMaxReq * kMaxRecv, kMaxReq * kMaxRecv, 1, 1);
 
     comm_base->fifo = reinterpret_cast<struct RemFifo *>(fifo_mr_->addr);
@@ -296,7 +296,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     // Create Retr QP, CQ and MR.
     retr_local_psn_ = 0xDEADBEEF + kPortEntropy + 2;
     util_rdma_create_qp(this, context_, &retr_qp_, IBV_QPT_UC, true, false,
-        (struct ibv_cq **)&retr_cq_ex_, kCQSize, pd_, &retr_mr_, kRetrMRSize, 
+        (struct ibv_cq **)&retr_cq_ex_, false, kCQSize, pd_, &retr_mr_, nullptr, kRetrMRSize, 
             RetrChunkBuffPool::kNumChunk, RetrChunkBuffPool::kNumChunk, 2, 1);
     void *retr_hdr = mmap(nullptr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if (retr_hdr == MAP_FAILED)
@@ -310,6 +310,16 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     {
         retr_chunk_pool_.emplace(retr_mr_);
         retr_hdr_pool_.emplace(retr_hdr_mr_);
+    }
+
+    if (!is_send_) {
+        // Create QP, MR for GPU flush, share the same CQ with UC QPs.
+        util_rdma_create_qp(this, context_, &gpu_flush_qp_, IBV_QPT_RC, false, false,
+            (struct ibv_cq **)&cq_ex_, true, 0, pd_, &gpu_flush_mr_, &gpu_flush_, sizeof(int), kMaxReq * kMaxRecv, kMaxReq * kMaxRecv, kMaxSge, kMaxSge);
+
+        gpu_flush_sge_.addr = (uint64_t)&gpu_flush_;
+        gpu_flush_sge_.length = 1;
+        gpu_flush_sge_.lkey = gpu_flush_mr_->lkey;
     }
 
     struct ibv_recv_wr wr;
@@ -375,6 +385,15 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
 
 RDMAContext::~RDMAContext()
 {
+    if (gpu_flush_mr_ != nullptr) {
+        munmap(gpu_flush_mr_->addr, gpu_flush_mr_->length);
+        ibv_dereg_mr(gpu_flush_mr_);
+    }
+
+    if (gpu_flush_qp_ != nullptr) {
+        ibv_destroy_qp(gpu_flush_qp_);
+    }
+
     if (ctrl_mr_ != nullptr) {
         munmap(ctrl_mr_->addr, ctrl_mr_->length);
         ibv_dereg_mr(ctrl_mr_);

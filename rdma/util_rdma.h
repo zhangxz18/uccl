@@ -228,11 +228,13 @@ struct XchgMeta {
                     bool is_send;
                 };
 
-                // kRegMR
+                // kRegMR/kRegMRDMABUF
                 struct {
                     void *addr;
                     size_t len;
                     int type;
+                    int offset;
+                    int fd;
                 };
 
                 // kDeregMR
@@ -342,21 +344,11 @@ struct FlowRequest {
     };
 };
 
-struct RemSizesFifo {
-    int elems[kMaxReq][kMaxRecv];
-    uint64_t fifo_tail;
-    uint64_t addr;
-    uint32_t rkey;
-    uint32_t flags;
-    struct ibv_mr *mr;
-    struct ibv_sge sge;
-};
-
 /// @ref ncclIbNetCommBase
 struct alignas(32) NetCommBase {
     // Is this a send or receive flow?
     bool is_send;
-    // Tack outstanding requests.
+    // Track outstanding SEND/RECV requests.
     struct FlowRequest reqs[kMaxReq];
     // Remote RDMA context.
     struct RemoteRDMAContext remote_ctx;
@@ -368,12 +360,9 @@ struct alignas(32) NetCommBase {
 struct SendComm {
     struct NetCommBase base;
 
-    // Track outstanding requests.
+    // Track outstanding FIFO requests.
     struct FlowRequest *fifo_reqs[kMaxReq][kMaxRecv];
     uint64_t fifo_head;
-    
-    struct RemSizesFifo rem_sizes_fifo;
-
 };
 
 /// @ref ncclIbRecvComm
@@ -521,6 +510,14 @@ class RDMAContext {
 
         // Whether its FIFO CQ is under polling.
         bool fifo_cq_polling_;
+
+        // QP for GPU flush.
+        struct ibv_qp *gpu_flush_qp_;
+        // Memory region for GPU flush.
+        struct ibv_mr *gpu_flush_mr_;
+        struct ibv_sge gpu_flush_sge_;
+        // GPU flush buffer
+        int gpu_flush_;
         
         // (high-priority) QP for control messages (e.g., ACK).
         struct ibv_qp *ctrl_qp_;
@@ -613,6 +610,7 @@ class RDMAContext {
         }
 
         inline void free_request(struct FlowRequest *req) {
+            LOG(INFO) << "free_request: " << req;
             req->type = FlowRequest::UNUSED;
             req->nmsgs = 0;
             req->poll_ctx = nullptr;
@@ -635,9 +633,11 @@ class RDMAContext {
                 if (req->type == FlowRequest::UNUSED) {
                     req->nmsgs = 0;
                     req->poll_ctx = nullptr;
+                    LOG(INFO) << "get_request: " << req;
                     return req;
                 }
             }
+            LOG(INFO) << "get_request: nullptr";
             return nullptr;
         }
         
@@ -708,6 +708,48 @@ class RDMAFactory {
 static inline uint16_t util_rdma_extract_local_subnet_prefix(uint64_t subnet_prefix)
 {
     return (be64toh(subnet_prefix) & 0xffff);
+}
+
+static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, RDMAContext *rdma_ctx)
+{
+    struct ibv_qp_attr attr;
+    int attr_mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV | IBV_QP_DEST_QPN |
+        IBV_QP_RQ_PSN;
+
+    auto comm_base = &rdma_ctx->recv_comm_.base;
+
+    memset(&attr, 0, sizeof(attr));
+
+    attr.qp_state = IBV_QPS_RTR;
+    attr.path_mtu = rdma_ctx->mtu_;
+    if (USE_ROCE) {
+        attr.ah_attr.is_global = 1;
+        attr.ah_attr.grh.dgid = rdma_ctx->local_gid_;
+        attr.ah_attr.grh.sgid_index = rdma_ctx->sgid_index_;
+        attr.ah_attr.grh.hop_limit = 0xff;
+    } else {
+        attr.ah_attr.is_global = 0;
+        attr.ah_attr.dlid = rdma_ctx->port_attr_.lid;
+    }
+
+    attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
+    attr.dest_qp_num = qp->qp_num;
+    attr.rq_psn = 0;
+
+    attr.min_rnr_timer = 12;
+    attr.max_dest_rd_atomic = 1;
+    attr_mask |= IBV_QP_MIN_RNR_TIMER | IBV_QP_MAX_DEST_RD_ATOMIC;
+
+    if (FLAGS_v >= 1) {
+        std::ostringstream oss;
+        oss << "QP#";
+        oss << qp->qp_num;
+        oss << " RTR(mtu, port_num, sgidx_idx, dest_qp_num, rq_psn):" << (uint32_t)attr.path_mtu << "," << (uint32_t)attr.ah_attr.port_num << ","
+        << (uint32_t)attr.ah_attr.grh.sgid_index << "," << attr.dest_qp_num << "," << attr.rq_psn;
+        VLOG(1) << oss.str();
+    }
+    
+    return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
 static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32_t remote_qpn, uint32_t remote_psn)
@@ -784,35 +826,40 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
 }
 
 static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex, bool ts,
-    struct ibv_cq **cq, uint32_t cqsize, struct ibv_pd *pd, struct ibv_mr **mr, size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr, uint32_t max_send_sge, uint32_t max_recv_sge)
+    struct ibv_cq **cq, bool share_cq, uint32_t cqsize, struct ibv_pd *pd, struct ibv_mr **mr, void *addr, 
+        size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr, uint32_t max_send_sge, uint32_t max_recv_sge)
 {
     // Creating CQ
-    if (cq_ex) {
-        struct ibv_cq_init_attr_ex cq_ex_attr;
-        cq_ex_attr.cqe = cqsize;
-        cq_ex_attr.cq_context = nullptr;
-        cq_ex_attr.channel = nullptr;
-        cq_ex_attr.comp_vector = 0;
-        cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
-            IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
-        if (kTestNoHWTimestamp)
-            cq_ex_attr.wc_flags &= ~IBV_WC_EX_WITH_COMPLETION_TIMESTAMP;
-        cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
-        cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
-        auto cq_ex = (struct ibv_cq_ex **)cq;
-        *cq_ex= ibv_create_cq_ex(context, &cq_ex_attr);
-        if (*cq_ex == nullptr)
-            throw std::runtime_error("ibv_create_cq_ex failed");
-    } else {
-        *cq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
-        if (*cq == nullptr)
-            throw std::runtime_error("ibv_create_cq failed");
+    if (!share_cq) {
+        if (cq_ex) {
+            struct ibv_cq_init_attr_ex cq_ex_attr;
+            cq_ex_attr.cqe = cqsize;
+            cq_ex_attr.cq_context = nullptr;
+            cq_ex_attr.channel = nullptr;
+            cq_ex_attr.comp_vector = 0;
+            cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
+                IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
+            if (kTestNoHWTimestamp)
+                cq_ex_attr.wc_flags &= ~IBV_WC_EX_WITH_COMPLETION_TIMESTAMP;
+            cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
+            cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
+            auto cq_ex = (struct ibv_cq_ex **)cq;
+            *cq_ex= ibv_create_cq_ex(context, &cq_ex_attr);
+            if (*cq_ex == nullptr)
+                throw std::runtime_error("ibv_create_cq_ex failed");
+        } else {
+            *cq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
+            if (*cq == nullptr)
+                throw std::runtime_error("ibv_create_cq failed");
+        }
     }
     
     // Creating MR
-    void *addr = mmap(nullptr, mr_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (addr == MAP_FAILED)
-        throw std::runtime_error("mmap failed");
+    if (addr == nullptr) {
+        addr = mmap(nullptr, mr_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if (addr == MAP_FAILED)
+            throw std::runtime_error("mmap failed");
+    }
     memset(addr, 0, mr_size);
 
     *mr = ibv_reg_mr(pd, addr, mr_size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | ((qp_type == IBV_QPT_RC) ? IBV_ACCESS_REMOTE_READ : 0));
@@ -845,7 +892,7 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
     qp_attr.qp_state = IBV_QPS_INIT;
     qp_attr.pkey_index = 0;
     qp_attr.port_num = rdma_ctx->ib_port_num_;
-    qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
+    qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | ((qp_type == IBV_QPT_RC) ? IBV_ACCESS_REMOTE_READ : 0);
 
     if (ibv_modify_qp(*qp, &qp_attr, attr_mask)) {
         throw std::runtime_error("ibv_modify_qp failed");

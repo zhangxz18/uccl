@@ -35,6 +35,7 @@ DEFINE_uint32(nmsg, 8, "Number of messages within one request to post.");
 DEFINE_uint32(nreq, 4, "Outstanding requests to post.");
 DEFINE_uint32(msize, 65536, "Size of message.");
 DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
+DEFINE_bool(flush, true, "Whether to flush after receiving.");
 
 static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
@@ -135,6 +136,10 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     int len[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     struct Mhandle *mhs[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     void *recv_data[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
+    
+    int flag[FLAGS_nflow][FLAGS_nreq];
+    memset(flag, 0, sizeof(int) * FLAGS_nflow * FLAGS_nreq);
+    
     std::vector<std::vector<PollCtx *>> poll_ctx_vec(FLAGS_nflow);
     for (int i = 0; i < FLAGS_nflow; i++) {
         poll_ctx_vec[i].resize(FLAGS_nreq);
@@ -159,9 +164,22 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     while (FLAGS_iterations) {
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
-                if (ep.uccl_poll_once(poll_ctx_vec[f][r])) {
+                if (!ep.uccl_poll_once(poll_ctx_vec[f][r])) continue;
+
+                if (!FLAGS_flush) {
                     poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
                     FLAGS_iterations--;
+                    continue;
+                }
+                
+                if (flag[f][r] == 0) {
+                    poll_ctx_vec[f][r] = ep.uccl_flush(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
+                    flag[f][r] = 1;
+                }
+                else if (flag[f][r] == 1) {
+                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
+                    FLAGS_iterations--;
+                    flag[f][r] = 0;
                 }
             }
         }
