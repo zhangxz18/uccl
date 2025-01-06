@@ -177,8 +177,7 @@ struct __attribute__((packed)) UcclSackHdr {
 static const size_t kUcclHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
 static_assert(kUcclHdrLen == 24, "UcclPktHdr size mismatch");
-static_assert(kUcclSackHdrLen == 138, "UcclSackHdr size mismatch");
-static_assert(kUcclHdrLen + kUcclSackHdrLen <= 256, "UcclHdr + SackHdr size mismatch");
+static_assert(kUcclSackHdrLen == 18, "UcclSackHdr size mismatch");
 
 #ifdef USE_TCP
 static const size_t kNetHdrLen =

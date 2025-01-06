@@ -16,7 +16,7 @@ static const uint32_t MAX_UNACKED_PKTS = 512;
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 // CC parameters.
 static const uint32_t kPortEntropy = 128;
-static const std::size_t kSackBitmapSize = 1024;
+static const std::size_t kSackBitmapSize = 64;
 static const std::size_t kFastRexmitDupAckThres = 5;
 
 // IB interface.
@@ -50,7 +50,7 @@ static const uintptr_t kPageSize = sysconf(_SC_PAGESIZE);
 // For debugging and testing.
 // Use RDMA RC instead of UC.
 static const bool kTestRC = false;
-static const uint32_t kTestRCEntropy = 8;
+static const uint32_t kTestRCEntropy = 4;
 // Disable hardware timestamp.
 static const bool kTestNoHWTimestamp = false;
 // Bypass the timing wheel.

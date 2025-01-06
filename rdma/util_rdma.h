@@ -153,7 +153,7 @@ class RetrHdrBuffPool : public BuffPool {
 
 class CtrlPktBuffPool : public BuffPool {
     public:
-        static constexpr uint32_t kPktSize = 256;
+        static constexpr uint32_t kPktSize = 64;
         static constexpr uint32_t kNumPkt = 2048;
         static_assert((kNumPkt & (kNumPkt - 1)) == 0, "kNumPkt must be power of 2");
 
