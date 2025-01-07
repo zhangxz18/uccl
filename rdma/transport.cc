@@ -389,6 +389,8 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
             sges[m].addr = reinterpret_cast<uint64_t>(reqs[m]->send.data) + send_offset[m];
             sges[m].length = length;
 
+            wrs[m].wr.rdma.remote_addr = slots[m].addr + send_offset[m];
+            
             send_offset[m] += length;
 
             LOG(INFO) << "Sending " << length << " bytes to QP#" << qpidx;

@@ -36,8 +36,8 @@ static const uint8_t NUM_DEVICES = 2;
 static const uint32_t kChunkSize = 32 << 10;
 static const uint32_t kSignalInterval = 256;
 static const uint32_t kSyncClockIntervalNS = 100000;
-static const uint32_t kCQMODCount = 16;
-static const uint32_t kCQMODPeriod = 10;
+static const uint32_t kCQMODCount = 32;
+static const uint32_t kCQMODPeriod = 100;
 static const uint32_t kMaxSge = 1;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
@@ -50,13 +50,13 @@ static const uintptr_t kPageSize = sysconf(_SC_PAGESIZE);
 // For debugging and testing.
 // Use RDMA RC instead of UC.
 static const bool kTestRC = false;
-static const uint32_t kTestRCEntropy = 4;
+static const uint32_t kTestRCEntropy = 64;
 // Disable hardware timestamp.
 static const bool kTestNoHWTimestamp = false;
 // Bypass the timing wheel.
 static const bool kTestNoTimingWheel = false;
 // Use constant(maximum) rate for transmission.
-static const bool kTestConstantRate = false;
+static const bool kTestConstantRate = true;
 // Test lossy network.
 static const double kTestLossRate = 0.0;
 
