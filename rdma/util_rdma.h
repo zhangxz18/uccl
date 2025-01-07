@@ -87,8 +87,8 @@ class BuffPool {
         int alloc_buff(uint64_t *buff_addr) {
             if (empty()) return -1;
 
-            head_ = (head_ + 1) & (num_elements_ - 1);
             *buff_addr = (uint64_t)base_addr_ + buffer_pool_[head_];
+            head_ = (head_ + 1) & (num_elements_ - 1);
             return 0;
         }
 
@@ -153,7 +153,7 @@ class RetrHdrBuffPool : public BuffPool {
 
 class CtrlPktBuffPool : public BuffPool {
     public:
-        static constexpr uint32_t kPktSize = 64;
+        static constexpr uint32_t kPktSize = 192;
         static constexpr uint32_t kNumPkt = 2048;
         static_assert((kNumPkt & (kNumPkt - 1)) == 0, "kNumPkt must be power of 2");
 
