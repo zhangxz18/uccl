@@ -450,7 +450,7 @@ uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
     
     while (num_acked_chunks) {
         auto &chunk = unacked_chunks_.front();
-        if (chunk.last_chunk) {
+        if (--chunk.req->events == 0) {
             auto poll_ctx = chunk.req->poll_ctx;
             // Wakeup app thread waiting one endpoint
             {

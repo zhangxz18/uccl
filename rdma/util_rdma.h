@@ -419,7 +419,6 @@ class TXTracking {
             struct FlowRequest *req;
             uint32_t csn;
             struct wr_ex *wr_ex;
-            bool last_chunk;
             uint64_t timestamp;
         };
 
@@ -440,8 +439,8 @@ class TXTracking {
 
         uint64_t ack_chunks(uint32_t num_acked_chunks);
 
-        inline void track_chunk(struct FlowRequest *req, uint32_t csn, struct wr_ex * wr_ex, bool last_chunk, uint64_t timestamp) {
-            unacked_chunks_.push_back({req, csn, wr_ex, last_chunk, timestamp});
+        inline void track_chunk(struct FlowRequest *req, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
+            unacked_chunks_.push_back({req, csn, wr_ex, timestamp});
         }
 
         inline size_t track_size(void) {

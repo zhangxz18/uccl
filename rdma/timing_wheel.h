@@ -29,7 +29,6 @@ struct alignas(64) wr_ex {
 
     struct FlowRequest *req;
     uint32_t qpidx;
-    bool last_chunk;
 };
 static_assert(sizeof(wr_ex) == 192, "wr_ex size mismatch");
 

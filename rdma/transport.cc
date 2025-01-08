@@ -186,6 +186,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
     while (*sent_offset < size) {
         if (kTestNoTimingWheel) {
+            req->events++;
             DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
             auto wr = &wr_ex->wr;
@@ -221,11 +222,12 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
             *sent_offset += chunk_size;
             // Track this chunk.
-            qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *sent_offset == size /* last_chunk */, rdtsc());
+            qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, rdtsc());
 
             continue;
         }
 
+        req->events++;
         // Prepare SGE.
         DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
@@ -278,7 +280,6 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                     qpw->in_wheel_cnt_++;
                     // For future tracking.
                     wr_ex->req = req;
-                    wr_ex->last_chunk = (*sent_offset == size);
                     LOG(INFO) << "Queue " << chunk_size << " bytes on QP#" << qpidx;
             }
             else {
@@ -287,7 +288,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                 DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
                 // Track this chunk.
-                qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *sent_offset == size /* last_chunk */, rdtsc());
+                qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, rdtsc());
 
                 LOG(INFO) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
             }
@@ -690,7 +691,7 @@ void UcclFlow::burst_timing_wheel(void)
 
         // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
-        qpw->txtracking.track_chunk(wr_ex->req, imm_data.GetCSN(), wr_ex, wr_ex->last_chunk, rdtsc());
+        qpw->txtracking.track_chunk(wr_ex->req, imm_data.GetCSN(), wr_ex, rdtsc());
 
         qpw->in_wheel_cnt_--;
 
