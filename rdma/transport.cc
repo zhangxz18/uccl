@@ -656,11 +656,7 @@ void UcclFlow::poll_ctrl_cq(void)
                     return;
                 }
                 rx_ack_sges_[i].addr = pkt_addr;
-                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
-                rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
                 rx_ack_wrs_[i].wr_id = pkt_addr;
-                rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
-                rx_ack_wrs_[i].num_sge = 1;
             }
             rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
             DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
@@ -1138,16 +1134,10 @@ void UcclFlow::craft_ack(int qpidx, int wr_idx)
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
     tx_ack_sges_[wr_idx].addr = pkt_addr;
-    tx_ack_sges_[wr_idx].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
-    tx_ack_sges_[wr_idx].length = kControlPayloadBytes;
 
     // We use wr_id to store the packet address for future freeing.
     tx_ack_wrs_[wr_idx].wr_id = pkt_addr;
-    tx_ack_wrs_[wr_idx].sg_list = &tx_ack_sges_[wr_idx];
-    tx_ack_wrs_[wr_idx].num_sge = 1;
-    tx_ack_wrs_[wr_idx].opcode = IBV_WR_SEND_WITH_IMM;
     tx_ack_wrs_[wr_idx].imm_data = qpidx;
-    tx_ack_wrs_[wr_idx].send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
 
     LOG(INFO) << "craft_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpidx;
 }

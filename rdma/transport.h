@@ -243,8 +243,21 @@ class UcclFlow {
                 retr_wrs_[i].sg_list = nullptr;
                 retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
                 
+                // Prepare sges, wrs for TX/RX ACKs.
+                tx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
+                tx_ack_sges_[i].length = kUcclHdrLen + kUcclSackHdrLen;
+                tx_ack_wrs_[i].sg_list = &tx_ack_sges_[i];
+                tx_ack_wrs_[i].num_sge = 1;
                 tx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &tx_ack_wrs_[i + 1];
+                tx_ack_wrs_[i].opcode = IBV_WR_SEND_WITH_IMM;
+                tx_ack_wrs_[i].send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
+
+                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
+                rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
+                rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
+                rx_ack_wrs_[i].num_sge = 1;
                 rx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &rx_ack_wrs_[i + 1];
+
             }
         };
 
