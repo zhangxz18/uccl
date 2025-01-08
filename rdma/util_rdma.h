@@ -48,7 +48,7 @@ static constexpr uint32_t MAX_CHUNK_IB_4096_HDR_OVERHEAD = ((kChunkSize + 4096) 
 class BuffPool {
     public:
 
-        BuffPool(uint32_t num_elements, size_t element_size, struct ibv_mr *mr = nullptr)
+        BuffPool(uint32_t num_elements, size_t element_size, struct ibv_mr *mr = nullptr, void (*init_cb)(uint64_t buff) = nullptr)
             : num_elements_(num_elements), element_size_(element_size), mr_(mr) {
             if (mr_) {
                 base_addr_ = mr->addr;
@@ -60,6 +60,7 @@ class BuffPool {
             buffer_pool_ = new uint64_t[num_elements_];
             head_ = tail_ = 0;
             for (uint32_t i = 0; i < num_elements_ - 1; i++) {
+                if (init_cb) init_cb((uint64_t)base_addr_ + i * element_size_);
                 free_buff((uint64_t)base_addr_ + i * element_size_);
             }
         }
@@ -118,7 +119,15 @@ class WrExBuffPool : public BuffPool {
     static constexpr uint32_t kNumWr = 4096;
     static_assert((kNumWr & (kNumWr - 1)) == 0, "kNumWr must be power of 2");
     public:
-        WrExBuffPool() : BuffPool(kNumWr, kWrSize, nullptr) {}
+
+        WrExBuffPool() : BuffPool(kNumWr, kWrSize, nullptr, [] (uint64_t buff) {
+            struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(buff);
+            auto wr = &wr_ex->wr;
+            wr->sg_list = &wr_ex->sge;
+            wr->num_sge = 1;
+            wr->next = nullptr;
+            wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        }) {}
 
         ~WrExBuffPool() = default;
 };
@@ -641,16 +650,16 @@ class RDMAContext {
             return nullptr;
         }
         
+        // Select a QP index in a round-robin manner.
         inline uint32_t select_qpidx_rr(void) {
+            static uint32_t next_qp_idx = 0;
             return next_qp_idx++ % kPortEntropy;
         }
 
+        // Select a QP index randomly.
         inline uint32_t select_qpidx_rand(void) {
             return std::rand() % kPortEntropy;
         }
-
-        // Next QP index to use for RR.
-        uint32_t next_qp_idx = 0;
 
         // When ready_entropy_cnt_ equals to kTotalQP, the flow is ready.
         uint32_t ready_entropy_cnt_;

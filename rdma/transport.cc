@@ -185,9 +185,6 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
     uint64_t wr_addr;
 
     while (*sent_offset < size) {
-        auto qpidx = rdma_ctx_->select_qpidx_rr();
-        auto qpw = &rdma_ctx_->uc_qps_[qpidx];
-
         if (kTestNoTimingWheel) {
             DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
@@ -202,20 +199,20 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
             wr->wr.rdma.rkey = rkey;
 
-            wr->sg_list = &wr_ex->sge;
-            wr->num_sge = 1;
-            wr->next = nullptr;
-            wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+            IMMData imm_data(0);
+
+            imm_data.SetHint(0);
+            imm_data.SetRID(slot.rid);
+            imm_data.SetMID(mid);
+            
+            // Select QP.
+            auto qpidx = rdma_ctx_->select_qpidx_rr();
+            auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
             if (qpw->signal_cnt_++ % kSignalInterval == 0)
                 wr->send_flags = IBV_SEND_SIGNALED;
             
-            IMMData imm_data(0);
-
-            imm_data.SetHint(0);
             imm_data.SetCSN(qpw->pcb.get_snd_nxt().to_uint32());
-            imm_data.SetRID(slot.rid);
-            imm_data.SetMID(mid);
 
             wr->imm_data = htonl(imm_data.GetImmData());
 
@@ -238,27 +235,28 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         wr_ex->sge.length = std::min(size - *sent_offset, (int)kChunkSize);
         auto chunk_size = wr_ex->sge.length;
 
-        wr->sg_list = &wr_ex->sge;
-        wr->num_sge = 1;
-        wr->next = nullptr;
-        wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+        // wr->sg_list/num_sge/next/opcode are already set.
 
         wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
         wr->wr.rdma.rkey = rkey;
 
         LOG(INFO) << "remote_addr: " << wr->wr.rdma.remote_addr << ", rkey: " << wr->wr.rdma.rkey;
 
+        IMMData imm_data(0);
+
+        imm_data.SetHint(0);
+        imm_data.SetRID(slot.rid);
+        imm_data.SetMID(mid);
+        
+        // Select QP.
+        auto qpidx = rdma_ctx_->select_qpidx_rr();
+        auto qpw = &rdma_ctx_->uc_qps_[qpidx];
         // There is no need to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
         if (qpw->signal_cnt_++ % kSignalInterval == 0)
             wr_ex->wr.send_flags = IBV_SEND_SIGNALED;
 
-        IMMData imm_data(0);
-
-        imm_data.SetHint(0);
         imm_data.SetCSN(qpw->pcb.get_snd_nxt().to_uint32());
-        imm_data.SetRID(slot.rid);
-        imm_data.SetMID(mid);
 
         wr->imm_data = htonl(imm_data.GetImmData());
 
@@ -1329,15 +1327,13 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     auto send_comm_ = &rdma_ctx_->send_comm_;
 
     int slot = send_comm_->fifo_head % kMaxReq;
-
     auto reqs = send_comm_->fifo_reqs[slot];
-
     auto rem_fifo = send_comm_->base.fifo;
-
     volatile struct FifoItem *slots = rem_fifo->elems[slot];
 
     auto idx = send_comm_->fifo_head + 1;
     if (slots[0].idx != idx) {
+        LOG(INFO) << "Receiver is not ready, pending this tx work.";
         return false;
     }
     
@@ -1352,6 +1348,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     for (int i = 0; i < nmsgs; i++) {
         if (reqs[i] != nullptr) continue;
         DCHECK(!(slots[i].size < 0 || slots[i].addr == 0 || slots[i].rkey == 0));
+        
         // Can't send more than what the receiver can receive.
         if (size > slots[i].size) size = slots[i].size;
         
