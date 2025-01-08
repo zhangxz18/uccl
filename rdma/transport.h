@@ -149,7 +149,7 @@ class Channel {
 struct __attribute__((packed)) UcclPktHdr {
     static constexpr uint16_t kMagic = 0x4e53;
     be16_t magic;         // Magic value tagged after initialization for the flow.
-    be16_t reserved1;     // Reserved for future use.
+    be16_t qpidx;         // QP index.
     enum class UcclFlags : uint8_t {
         kData = 0b0,              // Data packet.
         kAck = 0b10,              // ACK packet.
@@ -159,7 +159,7 @@ struct __attribute__((packed)) UcclPktHdr {
         kAckRttProbe = 0b100000,  // RTT probing packet.
     };
     UcclFlags net_flags;  // Network flags.
-    uint8_t reserved2;    // Reserved for future use.
+    uint8_t reserved1;    // Reserved for future use.
     be16_t frame_len;     // Length of the frame.
     be64_t flow_id;       // Flow ID to denote the connection.
     be32_t seqno;  // Sequence number to denote the packet counter in the flow.
@@ -243,22 +243,17 @@ class UcclFlow {
                 retr_wrs_[i].sg_list = nullptr;
                 retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
                 
-                // Prepare sges, wrs for TX/RX ACKs.
-                tx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
-                tx_ack_sges_[i].length = kUcclHdrLen + kUcclSackHdrLen;
-                tx_ack_wrs_[i].sg_list = &tx_ack_sges_[i];
-                tx_ack_wrs_[i].num_sge = 1;
-                tx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &tx_ack_wrs_[i + 1];
-                tx_ack_wrs_[i].opcode = IBV_WR_SEND_WITH_IMM;
-                tx_ack_wrs_[i].send_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
-
-                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_pkt_pool_->get_lkey();
-                rx_ack_sges_[i].length = CtrlPktBuffPool::kPktSize;
+                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_chunk_pool_->get_lkey();
+                rx_ack_sges_[i].length = CtrlChunkBuffPool::kChunkSize;
                 rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
                 rx_ack_wrs_[i].num_sge = 1;
                 rx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &rx_ack_wrs_[i + 1];
-
             }
+
+            tx_ack_wr_.num_sge = 1;
+            tx_ack_wr_.next = nullptr;
+            tx_ack_wr_.opcode = IBV_WR_SEND_WITH_IMM;
+            tx_ack_wr_.send_flags = IBV_SEND_SIGNALED;
         };
 
     ~UcclFlow() {}
@@ -322,17 +317,23 @@ class UcclFlow {
     /**
      * @brief Poll the completion queues for all UC QPs.
      */
-    void poll_uc_cq(void);
+    inline void poll_uc_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_uc_cq() : receiver_poll_uc_cq(); }
+    void sender_poll_uc_cq(void);
+    void receiver_poll_uc_cq(void);
 
     /**
      * @brief Poll the completion queue for the Ctrl QP.
      */
-    void poll_ctrl_cq(void);
+    inline void poll_ctrl_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_ctrl_cq() : receiver_poll_ctrl_cq(); }
+    void sender_poll_ctrl_cq(void);
+    void receiver_poll_ctrl_cq(void);
 
     /**
      * @brief Poll the completion queue for the Retr QP.
      */
-    void poll_retr_cq(void);
+    inline void poll_retr_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_retr_cq() : receiver_poll_retr_cq(); }
+    void sender_poll_retr_cq(void);
+    void receiver_poll_retr_cq(void);
 
     /**
      * @brief Only used for testing RC.
@@ -343,23 +344,27 @@ class UcclFlow {
 
     /**
      * @brief Rceive an ACK from the Ctrl QP.
+     * 
+     * @param pkt_addr
      */
-    void rx_ack(void);
+    void rx_ack(uint64_t pkt_addr);
 
     /**
      * @brief Craft an ACK for a UC QP using the given WR index.
      * 
      * @param qpidx 
-     * @param wr_idx 
+     * @param chunk_addr
+     * @param num_sge
      */
-    void craft_ack(int qpidx, int wr_idx);
+    void craft_ack(int qpidx, uint64_t chunk_addr, int num_sge);
 
     /**
      * @brief Flush all ACKs in the batch.
      * 
-     * @param size 
+     * @param num_ack 
+     * @param chunk_addr
      */
-    void flush_acks(int size);
+    void flush_acks(int num_ack, uint64_t chunk_addr);
 
     void burst_timing_wheel(void);
 
@@ -416,10 +421,8 @@ class UcclFlow {
     // Pre-allocated WQEs for consuming immediate data.
     struct ibv_recv_wr imm_wrs_[kMaxBatchCQ];
 
-    // Pre-allocated WQEs for sending ACKs.
-    struct ibv_send_wr tx_ack_wrs_[kMaxBatchCQ];
-    // Pre-allocted SGEs for sending ACKs.
-    struct ibv_sge tx_ack_sges_[kMaxBatchCQ];
+    // WQE for sending ACKs.
+    struct ibv_send_wr tx_ack_wr_;
     
     // Pre-allocated WQEs for receiving ACKs.
     struct ibv_recv_wr rx_ack_wrs_[kMaxBatchCQ];

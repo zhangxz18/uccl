@@ -450,18 +450,16 @@ void UcclFlow::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
         << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
 }
 
-void UcclFlow::rx_ack(void)
+void UcclFlow::rx_ack(uint64_t pkt_addr)
 {
     auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
-    auto pkt_addr = cq_ex->wr_id;
-    auto wc_opcode = ibv_wc_read_opcode(cq_ex);
     
     auto t6 = rdtsc();
-    auto qpidx = ibv_wc_read_imm_data(cq_ex);
-    auto qpw = &rdma_ctx_->uc_qps_[qpidx];
     auto *ucclh = reinterpret_cast<UcclPktHdr *>(pkt_addr);
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
-
+    
+    auto qpidx = ucclh->qpidx.value();
+    auto qpw = &rdma_ctx_->uc_qps_[qpidx];
     auto seqno = ucclh->seqno.value();
     auto ackno = ucclh->ackno.value();
 
@@ -547,11 +545,32 @@ void UcclFlow::rx_ack(void)
     
 }
 
-void UcclFlow::poll_retr_cq(void)
+void UcclFlow::sender_poll_retr_cq(void)
+{
+    auto cq_ex = rdma_ctx_->retr_cq_ex_;
+    int cq_budget = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+
+    while (1) {
+        if (cq_ex->status == IBV_WC_SUCCESS) {
+            auto wr_id = cq_ex->wr_id;
+            rdma_ctx_->retr_hdr_pool_->free_buff(wr_id);
+            rdma_ctx_->inflight_retr_chunks_--;
+        } else {
+            LOG(ERROR) << "Retr CQ state error: " << cq_ex->status;
+        }
+
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+    ibv_end_poll(cq_ex);
+}
+
+void UcclFlow::receiver_poll_retr_cq(void)
 {
     auto cq_ex = rdma_ctx_->retr_cq_ex_;
     struct ibv_sge sges[kMaxBatchCQ];
-    struct ibv_wc wcs[kMaxBatchCQ];
     LIST_HEAD(ack_list);
     int cq_budget = 0;
     int num_post_recv = 0;
@@ -561,14 +580,8 @@ void UcclFlow::poll_retr_cq(void)
 
     while (1) {
         if (cq_ex->status == IBV_WC_SUCCESS) {
-            if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
-                rx_retr_chunk(&ack_list);
-                num_post_recv++;
-            } else {
-                auto wr_id = cq_ex->wr_id;
-                rdma_ctx_->retr_hdr_pool_->free_buff(wr_id);
-                rdma_ctx_->inflight_retr_chunks_--;
-            }
+            rx_retr_chunk(&ack_list);
+            num_post_recv++;
         } else {
             LOG(ERROR) << "Retr CQ state error: " << cq_ex->status;
         }
@@ -578,20 +591,24 @@ void UcclFlow::poll_retr_cq(void)
     ibv_end_poll(cq_ex);
 
     // Send coalescing ACKs.
-    {
-        int wr_idx = 0;
+    if (!rdma_ctx_->is_send_) {
+        int num_ack = 0;
         struct list_head *pos, *n;
+        uint64_t chunk_addr;
+        DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
         list_for_each_safe(pos, n, &ack_list) {
             auto ack_item = list_entry(pos, struct ack_item, ack_link);
             auto qpidx = ack_item->qpidx;
-            craft_ack(qpidx, wr_idx++);
+            craft_ack(qpidx, chunk_addr, num_ack++);
             list_del(pos);
         }
-        flush_acks(wr_idx);
+        flush_acks(num_ack, chunk_addr);
+        if (num_ack == 0)
+            rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
     }
 
     // Populate recv work requests for consuming retransmission chunks.
-    if (num_post_recv) {
+    if (!rdma_ctx_->is_send_ && num_post_recv) {
         int i;
         for (i = 0; i < num_post_recv; i++) {
             uint64_t chunk_addr;
@@ -616,10 +633,9 @@ void UcclFlow::poll_retr_cq(void)
 
 }
 
-void UcclFlow::poll_ctrl_cq(void) 
+void UcclFlow::sender_poll_ctrl_cq(void)
 {
     while (1) {
-        struct ibv_wc wcs[kMaxBatchCQ];
         int nb_post_recv = 0;
 
         struct ibv_poll_cq_attr poll_cq_attr = {};
@@ -629,14 +645,17 @@ void UcclFlow::poll_ctrl_cq(void)
         int cq_budget = 0;
 
         while (1) {
-            
             if (cq_ex->status == IBV_WC_SUCCESS) {
-                if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
-                    rx_ack();
-                    nb_post_recv++;
+                // Completion for receiving ACKs.
+                auto num_ack = ntohl(ibv_wc_read_imm_data(cq_ex));
+                LOG(INFO) << "Receive " << num_ack << " ACKs in one CtrlChunk, Chunk addr: " << cq_ex->wr_id;
+                auto chunk_addr = cq_ex->wr_id;
+                for (int i = 0; i < num_ack; i++) {
+                    auto pkt_addr = chunk_addr + i * CtrlChunkBuffPool::kPktSize;
+                    rx_ack(pkt_addr);
                 }
-
-                rdma_ctx_->ctrl_pkt_pool_->free_buff(cq_ex->wr_id);
+                nb_post_recv++;
+                rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
             } else {
                 LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
             }
@@ -650,13 +669,10 @@ void UcclFlow::poll_ctrl_cq(void)
         if (nb_post_recv) {
             struct ibv_recv_wr *bad_wr;
             for (int i = 0; i < nb_post_recv; i++) {
-                uint64_t pkt_addr;
-                if (rdma_ctx_->ctrl_pkt_pool_->alloc_buff(&pkt_addr)) {
-                    LOG(ERROR) << "Failed to allocate control packet buffer";
-                    return;
-                }
-                rx_ack_sges_[i].addr = pkt_addr;
-                rx_ack_wrs_[i].wr_id = pkt_addr;
+                uint64_t chunk_addr;
+                DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+                rx_ack_sges_[i].addr = chunk_addr;
+                rx_ack_wrs_[i].wr_id = chunk_addr;
             }
             rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
             DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
@@ -665,7 +681,33 @@ void UcclFlow::poll_ctrl_cq(void)
             LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
         }
     }
+}
 
+void UcclFlow::receiver_poll_ctrl_cq(void) 
+{   
+    while (1) {
+
+        struct ibv_poll_cq_attr poll_cq_attr = {};
+        auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
+        if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+
+        int cq_budget = 0;
+
+        while (1) {
+            
+            if (cq_ex->status == IBV_WC_SUCCESS) {
+                // Completion for sending ACKs.
+                auto chunk_addr = cq_ex->wr_id;
+                rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
+            } else {
+                LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
+            }
+
+            if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+        }
+
+        ibv_end_poll(cq_ex);
+    }
 }
 
 void UcclFlow::burst_timing_wheel(void)
@@ -1076,8 +1118,10 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
 
     // Send ACK if needed.
     if (qpw->rxtracking.need_imm_ack()) {
-        craft_ack(qpidx, 0);
-        flush_acks(1);
+        uint64_t chunk_addr;
+        DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+        craft_ack(qpidx, chunk_addr, 0);
+        flush_acks(1, chunk_addr);
 
         qpw->rxtracking.clear_imm_ack();
         list_del(&qpw->ack.ack_link);
@@ -1088,32 +1132,41 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
     }
 }
 
-void UcclFlow::flush_acks(int size)
+void UcclFlow::flush_acks(int num_ack, uint64_t chunk_addr)
 {
-    if (size == 0) return;
+    if (num_ack == 0) return;
+
+    struct ibv_sge sge = {
+        .addr = chunk_addr,
+        .length = CtrlChunkBuffPool::kPktSize * num_ack,
+        .lkey = rdma_ctx_->ctrl_chunk_pool_->get_lkey(),
+    };
+
+    tx_ack_wr_.sg_list = &sge;
+    
+    // For future free.
+    tx_ack_wr_.wr_id = chunk_addr;
+    
+    // Tell sender how many acks are in this wqe.
+    tx_ack_wr_.imm_data = htonl(num_ack);
+
     struct ibv_send_wr *bad_wr;
-    tx_ack_wrs_[size - 1].next = nullptr;
-    DCHECK(ibv_post_send(rdma_ctx_->ctrl_qp_, &tx_ack_wrs_[0], &bad_wr) == 0);
-    // Restore
-    tx_ack_wrs_[size - 1].next = size == kMaxBatchCQ ? nullptr : &tx_ack_wrs_[size];
+    DCHECK(ibv_post_send(rdma_ctx_->ctrl_qp_, &tx_ack_wr_, &bad_wr) == 0);
 }
 
-void UcclFlow::craft_ack(int qpidx, int wr_idx)
+void UcclFlow::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
 {
+    uint64_t pkt_addr = chunk_addr + CtrlChunkBuffPool::kPktSize * num_sge;
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
-    uint64_t pkt_addr;
-    if (rdma_ctx_->ctrl_pkt_pool_->alloc_buff(&pkt_addr)) {
-        LOG(ERROR) << "Failed to allocate control packet buffer";
-        return;
-    }
-    const size_t kControlPayloadBytes = kUcclHdrLen + kUcclSackHdrLen;
     auto *ucclh = reinterpret_cast<UcclPktHdr* >(pkt_addr);
+    
     ucclh->magic = be16_t(UcclPktHdr::kMagic);
     ucclh->net_flags = UcclPktHdr::UcclFlags::kAck;
-    ucclh->frame_len = be16_t(kControlPayloadBytes);
+    ucclh->frame_len = be16_t(kUcclHdrLen + kUcclSackHdrLen);
     ucclh->seqno = be32_t(qpw->pcb.seqno().to_uint32());
     ucclh->ackno = be32_t(qpw->pcb.ackno().to_uint32());
     ucclh->flow_id= be64_t(flow_id_);
+    ucclh->qpidx = be16_t(qpidx);
 
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
 
@@ -1133,19 +1186,12 @@ void UcclFlow::craft_ack(int qpidx, int wr_idx)
     }
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
-    tx_ack_sges_[wr_idx].addr = pkt_addr;
-
-    // We use wr_id to store the packet address for future freeing.
-    tx_ack_wrs_[wr_idx].wr_id = pkt_addr;
-    tx_ack_wrs_[wr_idx].imm_data = qpidx;
-
     LOG(INFO) << "craft_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpidx;
 }
 
 void UcclFlow::test_rc_poll_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
-    struct ibv_wc wcs[kMaxBatchCQ];
     int cq_budget = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
@@ -1211,10 +1257,26 @@ void UcclFlow::test_rc_poll_cq(void)
     ibv_end_poll(cq_ex);
 }
 
-void UcclFlow::poll_uc_cq(void)
+void UcclFlow::sender_poll_uc_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
-    struct ibv_wc wcs[kMaxBatchCQ];
+    int cq_budget = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+    
+    while (1) {
+        if (cq_ex->status != IBV_WC_SUCCESS)
+            LOG(ERROR) << "UC CQ state error: " << cq_ex->status << " from QP:" << ibv_wc_read_qp_num(cq_ex);
+        
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+    ibv_end_poll(cq_ex);
+}
+
+void UcclFlow::receiver_poll_uc_cq(void)
+{
+    auto cq_ex = rdma_ctx_->cq_ex_;
     int post_recv_qidx_list[kMaxBatchCQ];
     LIST_HEAD(ack_list);
     int cq_budget = 0;
@@ -1263,16 +1325,20 @@ void UcclFlow::poll_uc_cq(void)
     ibv_end_poll(cq_ex);
     
     // Send coalescing ACKs.
-    {
-        int wr_idx = 0;
+    if (!rdma_ctx_->is_send_) {
+        int num_ack = 0;
         struct list_head *pos, *n;
+        uint64_t chunk_addr;
+        DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
         list_for_each_safe(pos, n, &ack_list) {
             auto ack_item = list_entry(pos, struct ack_item, ack_link);
             auto qpidx = ack_item->qpidx;
-            craft_ack(qpidx, wr_idx++);
+            craft_ack(qpidx, chunk_addr, num_ack++);
             list_del(pos);
         }
-        flush_acks(wr_idx);
+        flush_acks(num_ack, chunk_addr);
+        if (num_ack == 0)
+            rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
     }
 
     // Populate recv work requests for consuming immediate data.
@@ -1297,13 +1363,9 @@ bool UcclFlow::poll_fifo_cq(void)
 {
     FlowRequest *req = nullptr;
     auto cq = rdma_ctx_->fifo_cq_;
-    struct ibv_wc wc;
-    int nb_cqe = ibv_poll_cq(cq, 1, &wc);
+    struct ibv_wc wcs[kMaxBatchCQ];
+    int nb_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
     if (nb_cqe <= 0) return false;
-    if (wc.status != IBV_WC_SUCCESS) {
-        LOG(ERROR) << "Error in FIFO CQ completion:" << wc.status;
-        return false;
-    }
     
     rdma_ctx_->fifo_cq_polling_ = false;
     return true;
@@ -1424,7 +1486,7 @@ void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw)
         auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
 
-        retransmit_chunk(qpw, wr_ex);
+        // retransmit_chunk(qpw, wr_ex);
     }
 
     qpw->pcb.rto_reset();

@@ -280,10 +280,10 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     ctrl_local_psn_ = 0xDEADBEEF + kPortEntropy;
     util_rdma_create_qp(this, context_, &ctrl_qp_, IBV_QPT_UC, true, true,
         (struct ibv_cq **)&ctrl_cq_ex_, false, kCQSize, pd_, &ctrl_mr_, nullptr, kCtrlMRSize, 
-            CtrlPktBuffPool::kNumPkt, CtrlPktBuffPool::kNumPkt, 1, 1);
+            CtrlChunkBuffPool::kNumChunk, CtrlChunkBuffPool::kNumChunk, kMaxBatchCQ, 1);
     
     // Initialize Control packet buffer pool.
-    ctrl_pkt_pool_.emplace(ctrl_mr_);
+    ctrl_chunk_pool_.emplace(ctrl_mr_);
 
     // Create FIFO QP, CQ, and MR.
     fifo_local_psn_ = 0xDEADBEEF + kPortEntropy + 1;
@@ -341,14 +341,14 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     if (is_send_)
     {
         struct ibv_sge sge;
-        for (int i = 0; i < CtrlPktBuffPool::kNumPkt - 1; i++) {
-            uint64_t pkt_addr;
-            if (ctrl_pkt_pool_->alloc_buff(&pkt_addr))
+        for (int i = 0; i < CtrlChunkBuffPool::kNumChunk - 1; i++) {
+            uint64_t chunk_addr;
+            if (ctrl_chunk_pool_->alloc_buff(&chunk_addr))
                 throw std::runtime_error("Failed to allocate buffer for control packet");
-            sge.addr = pkt_addr;
-            sge.length = CtrlPktBuffPool::kPktSize;
-            sge.lkey = ctrl_pkt_pool_->get_lkey();
-            wr.wr_id = pkt_addr;
+            sge.addr = chunk_addr;
+            sge.length = CtrlChunkBuffPool::kChunkSize;
+            sge.lkey = ctrl_chunk_pool_->get_lkey();
+            wr.wr_id = chunk_addr;
             wr.next = nullptr;
             wr.sg_list = &sge;
             wr.num_sge = 1;

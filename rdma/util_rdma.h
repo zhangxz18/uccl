@@ -59,6 +59,7 @@ class BuffPool {
             }
             buffer_pool_ = new uint64_t[num_elements_];
             head_ = tail_ = 0;
+            // Reserve one element for distinguished empty/full state.
             for (uint32_t i = 0; i < num_elements_ - 1; i++) {
                 if (init_cb) init_cb((uint64_t)base_addr_ + i * element_size_);
                 free_buff((uint64_t)base_addr_ + i * element_size_);
@@ -72,20 +73,20 @@ class BuffPool {
             delete[] buffer_pool_;
         }
 
-        bool full(void) {
+        inline bool full(void) {
             return ((tail_ + 1) & (num_elements_ - 1)) == head_;
         }
 
-        bool empty(void) {
+        inline bool empty(void) {
             return head_ == tail_;
         }
 
-        uint32_t get_lkey(void) {
+        inline uint32_t get_lkey(void) {
             if (!mr_) return 0;
             return mr_->lkey;
         }
 
-        int alloc_buff(uint64_t *buff_addr) {
+        inline int alloc_buff(uint64_t *buff_addr) {
             if (empty()) return -1;
 
             *buff_addr = (uint64_t)base_addr_ + buffer_pool_[head_];
@@ -93,7 +94,7 @@ class BuffPool {
             return 0;
         }
 
-        void free_buff(uint64_t buff_addr) {
+        inline void free_buff(uint64_t buff_addr) {
             if (full()) return;
             buff_addr -= (uint64_t)base_addr_;
             buffer_pool_[tail_] = buff_addr;
@@ -160,15 +161,16 @@ class RetrHdrBuffPool : public BuffPool {
         ~RetrHdrBuffPool() = default;
 };
 
-class CtrlPktBuffPool : public BuffPool {
+class CtrlChunkBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kPktSize = 192;
-        static constexpr uint32_t kNumPkt = 2048;
-        static_assert((kNumPkt & (kNumPkt - 1)) == 0, "kNumPkt must be power of 2");
+        static constexpr uint32_t kChunkSize = kPktSize * kMaxBatchCQ;
+        static constexpr uint32_t kNumChunk = kPortEntropy * kMaxRecv;
+        static_assert((kNumChunk & (kNumChunk - 1)) == 0, "kNumChunk must be power of 2");
 
-        CtrlPktBuffPool(struct ibv_mr *mr) : BuffPool(kNumPkt, kPktSize, mr) {}
+        CtrlChunkBuffPool(struct ibv_mr *mr) : BuffPool(kNumChunk, kChunkSize, mr) {}
 
-        ~CtrlPktBuffPool() = default;
+        ~CtrlChunkBuffPool() = default;
 };
 
 class IMMData{
@@ -491,7 +493,7 @@ class RDMAContext {
         constexpr static int kTotalQP = kPortEntropy + 3;
         constexpr static int kFifoIndex = kPortEntropy + 1;
         constexpr static int kFifoMRSize = sizeof(struct RemFifo);
-        constexpr static int kCtrlMRSize = CtrlPktBuffPool::kPktSize * CtrlPktBuffPool::kNumPkt;
+        constexpr static int kCtrlMRSize = CtrlChunkBuffPool::kChunkSize * CtrlChunkBuffPool::kNumChunk;
         /// TODO: How to determine the size of retransmission MR?
         constexpr static int kRetrMRSize = RetrChunkBuffPool::kRetrChunkSize * RetrChunkBuffPool::kNumChunk;
         constexpr static int kCQSize = 4096;
@@ -586,8 +588,8 @@ class RDMAContext {
         // Whether this context is for sending or receiving.
         bool is_send_;
 
-        // Buffer pool for control packets.
-        std::optional<CtrlPktBuffPool> ctrl_pkt_pool_;
+        // Buffer pool for control chunks.
+        std::optional<CtrlChunkBuffPool> ctrl_chunk_pool_;
 
         // Buffer pool for retransmission headers.
         std::optional<RetrHdrBuffPool> retr_hdr_pool_;
@@ -898,7 +900,8 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
     qp_init_attr.cap.max_recv_wr = max_recv_wr;
     qp_init_attr.cap.max_send_sge = max_send_sge;
     qp_init_attr.cap.max_recv_sge = max_recv_sge;
-    qp_init_attr.cap.max_inline_data = kMaxRecv * sizeof(struct FifoItem);
+    // kMaxRecv * sizeof(struct FifoItem)
+    qp_init_attr.cap.max_inline_data = kMaxInline;
 
     // Creating QP
     *qp = ibv_create_qp(pd, &qp_init_attr);
