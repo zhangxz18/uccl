@@ -593,24 +593,22 @@ int UcclFlow::receiver_poll_retr_cq(void)
     ibv_end_poll(cq_ex);
 
     // Send coalescing ACKs.
-    if (!rdma_ctx_->is_send_) {
-        int num_ack = 0;
-        struct list_head *pos, *n;
-        uint64_t chunk_addr;
-        DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
-        list_for_each_safe(pos, n, &ack_list) {
-            auto ack_item = list_entry(pos, struct ack_item, ack_link);
-            auto qpidx = ack_item->qpidx;
-            craft_ack(qpidx, chunk_addr, num_ack++);
-            list_del(pos);
-        }
-        flush_acks(num_ack, chunk_addr);
-        if (num_ack == 0)
-            rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
+    int num_ack = 0;
+    struct list_head *pos, *n;
+    uint64_t chunk_addr;
+    DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+    list_for_each_safe(pos, n, &ack_list) {
+        auto ack_item = list_entry(pos, struct ack_item, ack_link);
+        auto qpidx = ack_item->qpidx;
+        craft_ack(qpidx, chunk_addr, num_ack++);
+        list_del(pos);
     }
+    flush_acks(num_ack, chunk_addr);
+    if (num_ack == 0)
+        rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
 
     // Populate recv work requests for consuming retransmission chunks.
-    if (!rdma_ctx_->is_send_ && num_post_recv) {
+    if (num_post_recv) {
         int i;
         for (i = 0; i < num_post_recv; i++) {
             uint64_t chunk_addr;
@@ -1344,21 +1342,19 @@ int UcclFlow::receiver_poll_uc_cq(void)
     ibv_end_poll(cq_ex);
     
     // Send coalescing ACKs.
-    if (!rdma_ctx_->is_send_) {
-        int num_ack = 0;
-        struct list_head *pos, *n;
-        uint64_t chunk_addr;
-        DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
-        list_for_each_safe(pos, n, &ack_list) {
-            auto ack_item = list_entry(pos, struct ack_item, ack_link);
-            auto qpidx = ack_item->qpidx;
-            craft_ack(qpidx, chunk_addr, num_ack++);
-            list_del(pos);
-        }
-        flush_acks(num_ack, chunk_addr);
-        if (num_ack == 0)
-            rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
+    int num_ack = 0;
+    struct list_head *pos, *n;
+    uint64_t chunk_addr;
+    DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+    list_for_each_safe(pos, n, &ack_list) {
+        auto ack_item = list_entry(pos, struct ack_item, ack_link);
+        auto qpidx = ack_item->qpidx;
+        craft_ack(qpidx, chunk_addr, num_ack++);
+        list_del(pos);
     }
+    flush_acks(num_ack, chunk_addr);
+    if (num_ack == 0)
+        rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
 
     return cq_budget;
 }
