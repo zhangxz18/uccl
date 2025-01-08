@@ -96,8 +96,6 @@ class Channel {
         };
         // Wakeup handler
         PollCtx *poll_ctx;
-        // Only used for uccl_send_async
-        PollCtx *tx_ready_poll_ctx;
     };
     static_assert(sizeof(Msg) % 4 == 0, "channelMsg must be 32-bit aligned");
 

@@ -1325,7 +1325,6 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     auto size = tx_work.tx.size;
     auto mr = tx_work.tx.mr;
     auto poll_ctx = tx_work.poll_ctx;
-    auto tx_ready_poll_ctx = tx_work.tx_ready_poll_ctx;
 
     auto send_comm_ = &rdma_ctx_->send_comm_;
 
@@ -1347,13 +1346,6 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     for (int i = 1; i < nmsgs; i++) while(slots[i].idx != idx) {}
 
     LOG(INFO) << "Receiver is ready to receive";
-
-    // Wakeup the application thread waiting for the receiver to be ready.
-    {
-        std::lock_guard<std::mutex> lock(tx_ready_poll_ctx->mu);
-        tx_ready_poll_ctx->done = true;
-        tx_ready_poll_ctx->cv.notify_one();
-    }
 
     __sync_synchronize();
 
@@ -1526,7 +1518,9 @@ void UcclRDMAEngine::handle_tx_work(void)
         }
 
         if (!flow->tx_messages(tx_work)) {
-            it++;
+            // All tx works are processed in order, so if one tx work blocks,
+            // the following tx works will also block.
+            return;
         } else {
             // Good, the tx work is done.
             it = pending_tx_work_.erase(it);
@@ -2237,12 +2231,10 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
 PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const void *data,
                                    const size_t size) {
     auto *poll_ctx = ctx_pool_->pop();
-    auto *tx_ready_poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
         .flow_id = conn_id.flow_id,
         .poll_ctx = poll_ctx,
-        .tx_ready_poll_ctx = tx_ready_poll_ctx,
     };
     
     msg.tx.data = const_cast<void *>(data);
@@ -2253,9 +2245,6 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, 
                                std::memory_order_release);
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->tx_cmdq_,
                                  &msg, 1, nullptr) != 1);
-
-    // Wait until tx is ready.
-    uccl_poll(tx_ready_poll_ctx);
 
     return poll_ctx;
 }
