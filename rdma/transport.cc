@@ -207,7 +207,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             imm_data.SetMID(mid);
             
             // Select QP.
-            auto qpidx = rdma_ctx_->select_qpidx_rr();
+            auto qpidx = rdma_ctx_->select_qpidx_pow2();
             auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
             if (qpw->signal_cnt_++ % kSignalInterval == 0)

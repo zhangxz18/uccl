@@ -660,6 +660,15 @@ class RDMAContext {
             return std::rand() % kPortEntropy;
         }
 
+        // Select a QP index in a power-of-two manner.
+        inline uint32_t select_qpidx_pow2(void) {
+            auto q1 = select_qpidx_rand();
+            auto q2 = select_qpidx_rand();
+
+            // Return the QP with lower RTT.
+            return uc_qps_[q1].pcb.timely.prev_rtt_ < uc_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
+        }
+
         // When ready_entropy_cnt_ equals to kTotalQP, the flow is ready.
         uint32_t ready_entropy_cnt_;
 
