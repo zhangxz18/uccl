@@ -238,18 +238,18 @@ class UcclFlow {
                 retr_wrs_[i].num_sge = 1;
                 retr_wrs_[i].sg_list = nullptr;
                 retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
-                
+            }
+
+            for (int i = 0; i < kPostRQThreshold; i++) {
+                imm_wrs_[i].num_sge = 0;
+                imm_wrs_[i].sg_list = nullptr;
+                imm_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &imm_wrs_[i + 1];
+
                 rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_chunk_pool_->get_lkey();
                 rx_ack_sges_[i].length = CtrlChunkBuffPool::kChunkSize;
                 rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
                 rx_ack_wrs_[i].num_sge = 1;
-                rx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &rx_ack_wrs_[i + 1];
-            }
-
-            for (int i = 0; i < kPostSRQThreshold; i++) {
-                imm_wrs_[i].num_sge = 0;
-                imm_wrs_[i].sg_list = nullptr;
-                imm_wrs_[i].next = (i == kPostSRQThreshold - 1) ? nullptr : &imm_wrs_[i + 1];
+                rx_ack_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &rx_ack_wrs_[i + 1];
             }
 
             tx_ack_wr_.num_sge = 1;
@@ -346,6 +346,12 @@ class UcclFlow {
     void check_srq(bool force = false);
 
     /**
+     * @brief Check if we need to post enough recv WQEs to the Ctrl QP.
+     * @param force 
+     */
+    void check_ctrl_rq(bool force = false);
+
+    /**
      * @brief Rceive an ACK from the Ctrl QP.
      * 
      * @param pkt_addr
@@ -425,12 +431,13 @@ class UcclFlow {
     struct ibv_send_wr tx_ack_wr_;
     
     // Pre-allocated WQEs for receiving ACKs.
-    struct ibv_recv_wr rx_ack_wrs_[kMaxBatchCQ];
+    struct ibv_recv_wr rx_ack_wrs_[kPostRQThreshold];
     // Pre-allocted SGEs for receiving ACKs.
-    struct ibv_sge rx_ack_sges_[kMaxBatchCQ];
+    struct ibv_sge rx_ack_sges_[kPostRQThreshold];
+    uint32_t post_ctrl_rq_cnt_ = 0;
 
     // Pre-allocated WQEs for consuming immediate data.
-    struct ibv_recv_wr imm_wrs_[kPostSRQThreshold];
+    struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
     uint32_t post_srq_cnt_ = 0;
 
     /**

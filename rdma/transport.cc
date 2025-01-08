@@ -639,7 +639,6 @@ int UcclFlow::sender_poll_ctrl_cq(void)
 {
     int work = 0;
     while (1) {
-        int nb_post_recv = 0;
 
         struct ibv_poll_cq_attr poll_cq_attr = {};
         auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
@@ -657,7 +656,7 @@ int UcclFlow::sender_poll_ctrl_cq(void)
                     auto pkt_addr = chunk_addr + i * CtrlChunkBuffPool::kPktSize;
                     rx_ack(pkt_addr);
                 }
-                nb_post_recv++;
+                post_ctrl_rq_cnt_++;
                 rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
             } else {
                 LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
@@ -667,22 +666,6 @@ int UcclFlow::sender_poll_ctrl_cq(void)
         }
 
         ibv_end_poll(cq_ex);
-
-        // Populate recv work requests for consuming control packets.
-        if (nb_post_recv) {
-            struct ibv_recv_wr *bad_wr;
-            for (int i = 0; i < nb_post_recv; i++) {
-                uint64_t chunk_addr;
-                DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
-                rx_ack_sges_[i].addr = chunk_addr;
-                rx_ack_wrs_[i].wr_id = chunk_addr;
-            }
-            rx_ack_wrs_[nb_post_recv - 1].next = nullptr;
-            DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-            // Restore
-            rx_ack_wrs_[nb_post_recv - 1].next = nb_post_recv == kMaxBatchCQ ? nullptr : &rx_ack_wrs_[nb_post_recv];
-            LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
-        }
 
         work += cq_budget;
     }
@@ -1259,13 +1242,45 @@ int UcclFlow::sender_poll_uc_cq(void)
     return cq_budget;
 }
 
+void UcclFlow::check_ctrl_rq(bool force)
+{
+    // Populate recv work requests for consuming control packets.
+    while (post_ctrl_rq_cnt_ >= kPostRQThreshold) {
+        struct ibv_recv_wr *bad_wr;
+        for (int i = 0; i < kPostRQThreshold; i++) {
+            uint64_t chunk_addr;
+            DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+            rx_ack_sges_[i].addr = chunk_addr;
+            rx_ack_wrs_[i].wr_id = chunk_addr;
+        }
+        DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
+        LOG(INFO) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
+        post_ctrl_rq_cnt_ -= kPostRQThreshold;
+    }
+
+    if (force && post_ctrl_rq_cnt_) {
+        struct ibv_recv_wr *bad_wr;
+        for (int i = 0; i < post_ctrl_rq_cnt_; i++) {
+            uint64_t chunk_addr;
+            DCHECK(rdma_ctx_->ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+            rx_ack_sges_[i].addr = chunk_addr;
+            rx_ack_wrs_[i].wr_id = chunk_addr;
+        }
+        rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = nullptr;
+        DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
+        LOG(INFO) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
+        rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = &rx_ack_wrs_[post_ctrl_rq_cnt_];
+        post_ctrl_rq_cnt_ = 0;
+    }
+}
+
 void UcclFlow::check_srq(bool force)
 {
-    while (post_srq_cnt_ > kPostSRQThreshold) {
+    while (post_srq_cnt_ >= kPostRQThreshold) {
         struct ibv_recv_wr *bad_wr;
         DCHECK(ibv_post_srq_recv(rdma_ctx_->srq_, &imm_wrs_[0], &bad_wr) == 0);
         LOG(INFO) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
-        post_srq_cnt_ -= kPostSRQThreshold;
+        post_srq_cnt_ -= kPostRQThreshold;
     }
 
     if (force && post_srq_cnt_) {
@@ -1525,9 +1540,8 @@ void UcclRDMAEngine::handle_completion(void)
     // Last, poll the CQ for UC QPs.
     for (auto flow: active_flows_map_) {
         work += flow.second->poll_uc_cq();
-        flow.second->check_srq();
-
-        if (!work) flow.second->check_srq(true);
+        flow.second->check_srq(!!work);
+        flow.second->check_ctrl_rq(!!work);
     }
 }
 

@@ -49,7 +49,7 @@ static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxInflightRetrChunks = 8;
 static const uint32_t kMaxBatchPost = 32;
 static const uintptr_t kPageSize = sysconf(_SC_PAGESIZE);
-static const uint32_t kPostSRQThreshold = 256;
+static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 
 // For debugging and testing.
 // Use RDMA RC instead of UC.
