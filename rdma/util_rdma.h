@@ -656,8 +656,10 @@ class RDMAContext {
         }
 
         // Select a QP index randomly.
-        inline uint32_t select_qpidx_rand(void) {
-            return std::rand() % kPortEntropy;
+        inline uint32_t select_qpidx_rand() {
+            static thread_local std::mt19937 generator(std::random_device{}());
+            std::uniform_int_distribution<uint32_t> distribution(0, kPortEntropy - 1);
+            return distribution(generator);
         }
 
         // Select a QP index in a power-of-two manner.

@@ -251,7 +251,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         imm_data.SetMID(mid);
         
         // Select QP.
-        auto qpidx = rdma_ctx_->select_qpidx_rr();
+        auto qpidx = rdma_ctx_->select_qpidx_pow2();
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
         // There is no need to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
