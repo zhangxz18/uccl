@@ -1486,7 +1486,7 @@ void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw)
         auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
 
-        // retransmit_chunk(qpw, wr_ex);
+        retransmit_chunk(qpw, wr_ex);
     }
 
     qpw->pcb.rto_reset();
