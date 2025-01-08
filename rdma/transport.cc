@@ -177,14 +177,14 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
 void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid)
 {
     auto *sent_offset = &req->send.sent_offset;
-    auto *size = &req->send.size;
-    auto data = req->send.data;
+    auto size = req->send.size;
+    auto data = (uint64_t)req->send.data;
     auto lkey = req->send.lkey;
     auto rkey = slot.rkey;
     auto remote_addr = slot.addr;
     uint64_t wr_addr;
 
-    while (*size) {
+    while (*sent_offset < size) {
         auto qpidx = rdma_ctx_->select_qpidx_rr();
         auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
@@ -193,13 +193,11 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
             auto wr = &wr_ex->wr;
 
-            wr_ex->sge.addr = (uintptr_t)data;
+            wr_ex->sge.addr = data + *sent_offset;
             wr_ex->sge.lkey = lkey;
-            wr_ex->sge.length = std::min(*size, (int)kChunkSize);
+            wr_ex->sge.length = std::min(size - *sent_offset, (int)kChunkSize);
 
             auto chunk_size = wr_ex->sge.length;
-            *size -= chunk_size;
-            data = static_cast<char*>(data) + wr_ex->sge.length;
 
             wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
             wr->wr.rdma.rkey = rkey;
@@ -224,10 +222,10 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             struct ibv_send_wr *bad_wr;
             DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
-            // Track this chunk.
-            qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *size == 0, rdtsc());
-
             *sent_offset += chunk_size;
+            // Track this chunk.
+            qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *sent_offset == size /* last_chunk */, rdtsc());
+
             continue;
         }
 
@@ -235,12 +233,10 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
         auto wr = &wr_ex->wr;
-        wr_ex->sge.addr = (uintptr_t)data;
+        wr_ex->sge.addr = data + *sent_offset;
         wr_ex->sge.lkey = lkey;
-        wr_ex->sge.length = std::min(*size, (int)kChunkSize);
+        wr_ex->sge.length = std::min(size - *sent_offset, (int)kChunkSize);
         auto chunk_size = wr_ex->sge.length;
-        *size -= chunk_size;
-        data = static_cast<char*>(data) + wr_ex->sge.length;
 
         wr->sg_list = &wr_ex->sge;
         wr->num_sge = 1;
@@ -268,6 +264,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         wr_ex->qpidx = qpidx;
 
+        *sent_offset += chunk_size;
         // Queue the SGE on the timing wheel.
         {
             auto wheel = &rdma_ctx_->wheel_;
@@ -283,7 +280,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                     qpw->in_wheel_cnt_++;
                     // For future tracking.
                     wr_ex->req = req;
-                    wr_ex->last_chunk = *size == 0;
+                    wr_ex->last_chunk = (*sent_offset == size);
                     LOG(INFO) << "Queue " << chunk_size << " bytes on QP#" << qpidx;
             }
             else {
@@ -292,15 +289,13 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                 DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
                 // Track this chunk.
-                qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *size == 0, rdtsc());
+                qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, *sent_offset == size /* last_chunk */, rdtsc());
 
                 LOG(INFO) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
             }
         }
 
         LOG(INFO) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
-        
-        *sent_offset += chunk_size;
     }
 
 }
@@ -405,8 +400,7 @@ void UcclFlow::post_multi_messages(int slot)
 {
     auto send_comm_ = &rdma_ctx_->send_comm_;
     auto reqs = send_comm_->fifo_reqs[slot];
-    auto rem_fifo = send_comm_->base.fifo;
-    auto slots = rem_fifo->elems[slot];
+    auto slots = send_comm_->base.fifo->elems[slot];
     auto nmsgs = slots[0].nmsgs;
 
     for (int i = 0; i < nmsgs; i++) post_single_message(reqs[i], slots[i], i);
