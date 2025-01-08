@@ -1020,8 +1020,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     // Compare CSN with the expected CSN.
     auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
 
-    // It's impossible to receive a chunk with a CSN less than the expected CSN.
-    // For CSN that lags behind, RNIC has already handled it.
+    // It's impossible to receive a chunk with a CSN less than the expected CSN here.
     DCHECK(!swift::seqno_lt(csn, ecsn));
 
     auto distance = csn - ecsn;
@@ -1032,16 +1031,15 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
         return;
     }
 
-    auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
-    auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
-    auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
-
-    if (*sack_bitmap & (1ULL << cursor)) {
-        // Duplicate chunk.
-        // This happens when the sender retransmits a chunk that has been received.
-        LOG(INFO) << "Duplicate chunk: " << csn << " from QP#" << qpidx;
-        return;
-    }
+    /* 
+     * No need for the following code to check as we can only accept a retransmission chunk when 
+     * the barrier after this chunk has arrived.
+    */
+    
+    // auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
+    // auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    // auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
+    // DCHECK(!(*sack_bitmap & (1ULL << cursor)));
 
     qpw->rxtracking.ready_csn_.insert(csn);
 
