@@ -315,23 +315,23 @@ class UcclFlow {
     /**
      * @brief Poll the completion queues for all UC QPs.
      */
-    inline void poll_uc_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_uc_cq() : receiver_poll_uc_cq(); }
-    void sender_poll_uc_cq(void);
-    void receiver_poll_uc_cq(void);
+    inline int poll_uc_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_uc_cq() : receiver_poll_uc_cq(); }
+    int sender_poll_uc_cq(void);
+    int receiver_poll_uc_cq(void);
 
     /**
      * @brief Poll the completion queue for the Ctrl QP.
      */
-    inline void poll_ctrl_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_ctrl_cq() : receiver_poll_ctrl_cq(); }
-    void sender_poll_ctrl_cq(void);
-    void receiver_poll_ctrl_cq(void);
+    inline int poll_ctrl_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_ctrl_cq() : receiver_poll_ctrl_cq(); }
+    int sender_poll_ctrl_cq(void);
+    int receiver_poll_ctrl_cq(void);
 
     /**
      * @brief Poll the completion queue for the Retr QP.
      */
-    inline void poll_retr_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_retr_cq() : receiver_poll_retr_cq(); }
-    void sender_poll_retr_cq(void);
-    void receiver_poll_retr_cq(void);
+    inline int poll_retr_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_retr_cq() : receiver_poll_retr_cq(); }
+    int sender_poll_retr_cq(void);
+    int receiver_poll_retr_cq(void);
 
     /**
      * @brief Only used for testing RC.
@@ -343,7 +343,7 @@ class UcclFlow {
     /**
      * @brief Check if we need to post enough recv WQEs to the SRQ.
      */
-    void check_srq(void);
+    void check_srq(bool force = false);
 
     /**
      * @brief Rceive an ACK from the Ctrl QP.

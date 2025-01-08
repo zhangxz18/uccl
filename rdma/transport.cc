@@ -545,13 +545,13 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
     
 }
 
-void UcclFlow::sender_poll_retr_cq(void)
+int UcclFlow::sender_poll_retr_cq(void)
 {
     auto cq_ex = rdma_ctx_->retr_cq_ex_;
     int cq_budget = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
-    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
 
     while (1) {
         if (cq_ex->status == IBV_WC_SUCCESS) {
@@ -565,9 +565,11 @@ void UcclFlow::sender_poll_retr_cq(void)
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }
     ibv_end_poll(cq_ex);
+
+    return cq_budget;
 }
 
-void UcclFlow::receiver_poll_retr_cq(void)
+int UcclFlow::receiver_poll_retr_cq(void)
 {
     auto cq_ex = rdma_ctx_->retr_cq_ex_;
     struct ibv_sge sges[kMaxBatchCQ];
@@ -576,7 +578,7 @@ void UcclFlow::receiver_poll_retr_cq(void)
     int num_post_recv = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
-    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
 
     while (1) {
         if (cq_ex->status == IBV_WC_SUCCESS) {
@@ -630,17 +632,18 @@ void UcclFlow::receiver_poll_retr_cq(void)
         // Restore
         retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
     }
-
+    return cq_budget;
 }
 
-void UcclFlow::sender_poll_ctrl_cq(void)
+int UcclFlow::sender_poll_ctrl_cq(void)
 {
+    int work = 0;
     while (1) {
         int nb_post_recv = 0;
 
         struct ibv_poll_cq_attr poll_cq_attr = {};
         auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
-        if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+        if (ibv_start_poll(cq_ex, &poll_cq_attr)) return work;
 
         int cq_budget = 0;
 
@@ -680,16 +683,21 @@ void UcclFlow::sender_poll_ctrl_cq(void)
             rx_ack_wrs_[nb_post_recv - 1].next = nb_post_recv == kMaxBatchCQ ? nullptr : &rx_ack_wrs_[nb_post_recv];
             LOG(INFO) << "Posted " << nb_post_recv << " recv requests for Ctrl QP";
         }
+
+        work += cq_budget;
     }
+    
+    return work;
 }
 
-void UcclFlow::receiver_poll_ctrl_cq(void) 
+int UcclFlow::receiver_poll_ctrl_cq(void) 
 {   
+    int work = 0;
     while (1) {
 
         struct ibv_poll_cq_attr poll_cq_attr = {};
         auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
-        if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+        if (ibv_start_poll(cq_ex, &poll_cq_attr)) return work;
 
         int cq_budget = 0;
 
@@ -707,7 +715,11 @@ void UcclFlow::receiver_poll_ctrl_cq(void)
         }
 
         ibv_end_poll(cq_ex);
+
+        work += cq_budget;
     }
+
+    return work;
 }
 
 void UcclFlow::burst_timing_wheel(void)
@@ -1228,13 +1240,13 @@ void UcclFlow::test_rc_poll_cq(void)
     ibv_end_poll(cq_ex);
 }
 
-void UcclFlow::sender_poll_uc_cq(void)
+int UcclFlow::sender_poll_uc_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
     int cq_budget = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
-    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
     
     while (1) {
         if (cq_ex->status != IBV_WC_SUCCESS)
@@ -1243,9 +1255,11 @@ void UcclFlow::sender_poll_uc_cq(void)
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }
     ibv_end_poll(cq_ex);
+
+    return cq_budget;
 }
 
-void UcclFlow::check_srq(void)
+void UcclFlow::check_srq(bool force)
 {
     while (post_srq_cnt_ > kPostSRQThreshold) {
         struct ibv_recv_wr *bad_wr;
@@ -1253,16 +1267,25 @@ void UcclFlow::check_srq(void)
         LOG(INFO) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
         post_srq_cnt_ -= kPostSRQThreshold;
     }
+
+    if (force && post_srq_cnt_) {
+        struct ibv_recv_wr *bad_wr;
+        imm_wrs_[post_srq_cnt_ - 1].next = nullptr;
+        DCHECK(ibv_post_srq_recv(rdma_ctx_->srq_, &imm_wrs_[0], &bad_wr) == 0);
+        LOG(INFO) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
+        imm_wrs_[post_srq_cnt_ - 1].next = &imm_wrs_[post_srq_cnt_];
+        post_srq_cnt_ = 0;
+    }
 }
 
-void UcclFlow::receiver_poll_uc_cq(void)
+int UcclFlow::receiver_poll_uc_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
     LIST_HEAD(ack_list);
     int cq_budget = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
-    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
     
     while (1) {
         if (cq_ex->status == IBV_WC_SUCCESS) {
@@ -1322,7 +1345,7 @@ void UcclFlow::receiver_poll_uc_cq(void)
             rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
     }
 
-    check_srq();
+    return cq_budget;
 }
 
 bool UcclFlow::poll_fifo_cq(void)
@@ -1478,9 +1501,10 @@ void UcclRDMAEngine::test_rc_handle_completion(void)
 
 void UcclRDMAEngine::handle_completion(void) 
 {
+    int work = 0;
     // First, poll the CQ for Ctrl QPs.
     for (auto flow: active_flows_map_) {
-        flow.second->poll_ctrl_cq();
+        work += flow.second->poll_ctrl_cq();
     }
 
     // Second, poll FIFO CQ.
@@ -1495,14 +1519,16 @@ void UcclRDMAEngine::handle_completion(void)
 
     // Third, poll the CQ for Retr QP.
     for (auto flow: active_flows_map_) {
-        flow.second->poll_retr_cq();
+        work += flow.second->poll_retr_cq();
     }
     
     // Last, poll the CQ for UC QPs.
     for (auto flow: active_flows_map_) {
-        flow.second->poll_uc_cq();
-    }
+        work += flow.second->poll_uc_cq();
+        flow.second->check_srq();
 
+        if (!work) flow.second->check_srq(true);
+    }
 }
 
 void UcclRDMAEngine::handle_rx_work(void) 
