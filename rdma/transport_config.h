@@ -44,10 +44,12 @@ static const uint32_t kMaxSge = 1;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
+static const uint32_t kMaxSRQ = 32 * kMaxReq;
 static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxInflightRetrChunks = 8;
 static const uint32_t kMaxBatchPost = 32;
 static const uintptr_t kPageSize = sysconf(_SC_PAGESIZE);
+static const uint32_t kPostSRQThreshold = 256;
 
 // For debugging and testing.
 // Use RDMA RC instead of UC.

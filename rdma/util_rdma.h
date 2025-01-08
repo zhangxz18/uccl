@@ -403,17 +403,11 @@ class RXTracking {
             cumulative_wqe_ = 0;
             cumulative_bytes_ = 0;
         }
-        
-        // Post recv WQEs.
-        inline uint32_t need_fill(void) { return fill_cnt_++;}
-        inline uint32_t fill_count(void) { return fill_cnt_;}
-        inline void clear_fill(void) { fill_cnt_ = 0;}
     
     private:
         bool ooo_ = false;
         uint32_t cumulative_wqe_ = 0;
         uint32_t cumulative_bytes_ = 0;
-        uint32_t fill_cnt_ = 0;
 };
 
 class TXTracking {
@@ -507,6 +501,7 @@ class RDMAContext {
         std::unordered_map<uint32_t, int> qpn2idx_;
         // Shared CQ for all UC QPs.
         struct ibv_cq_ex *cq_ex_;
+        struct ibv_srq *srq_;
 
         // Fifo QP based on Reliable Connection (RC).
         struct ibv_qp *fifo_qp_;

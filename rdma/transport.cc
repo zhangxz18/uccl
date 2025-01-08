@@ -754,7 +754,7 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
     }
 }
 
-void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
+void UcclFlow::rx_barrier(struct list_head *ack_list)
 {
     LOG(INFO) << "rx_barrier";
     auto cq_ex = rdma_ctx_->cq_ex_;
@@ -789,9 +789,6 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-        }
         return;
     }
 
@@ -805,9 +802,6 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
             rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
-        }
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
         }
         return;
     }
@@ -827,18 +821,12 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-        }
         return;
     }
 
     if ((*barrier_bitmap & (1ULL << cursor))) {
         // Duplicate barrier. This barrier is invalid.
         LOG(INFO) << "Received duplicate barrier " << csn << " from QP#" << qpidx;
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-        }
         return;
     }
 
@@ -850,9 +838,6 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
     if (pending_retr_chunk == qpw->pcb.pending_retr_chunks.end()) {
         // No pending retransmission chunk.
         LOG(INFO) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-        }
         return;
     }
 
@@ -904,9 +889,6 @@ void UcclFlow::rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, 
 
     qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
 
-    if (qpw->rxtracking.need_fill() == 0) {
-        post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-    }
 }
 
 void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
@@ -1019,7 +1001,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     }
 }
 
-void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv)
+void UcclFlow::rx_chunk(struct list_head *ack_list)
 {
     LOG(INFO) << "rx_chunk";
     auto cq_ex = rdma_ctx_->cq_ex_;
@@ -1054,9 +1036,6 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
     if (distance > kReassemblyMaxSeqnoDistance) {
         LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn;
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-        }
         return;
     }
 
@@ -1068,10 +1047,6 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
         // Duplicate chunk.
         // This happens when the sender retransmits a chunk that has been received.
         LOG(INFO) << "Duplicate chunk: " << csn << " from QP#" << qpidx;
-
-        if (qpw->rxtracking.need_fill() == 0) {
-            post_recv_qidx_list[(*num_post_recv)++] = qpidx;
-        }
         return;
     }
 
@@ -1125,10 +1100,6 @@ void UcclFlow::rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, in
 
         qpw->rxtracking.clear_imm_ack();
         list_del(&qpw->ack.ack_link);
-    }
-
-    if (qpw->rxtracking.need_fill() == 0) {
-        post_recv_qidx_list[(*num_post_recv)++] = qpidx;
     }
 }
 
@@ -1274,13 +1245,21 @@ void UcclFlow::sender_poll_uc_cq(void)
     ibv_end_poll(cq_ex);
 }
 
+void UcclFlow::check_srq(void)
+{
+    while (post_srq_cnt_ > kPostSRQThreshold) {
+        struct ibv_recv_wr *bad_wr;
+        DCHECK(ibv_post_srq_recv(rdma_ctx_->srq_, &imm_wrs_[0], &bad_wr) == 0);
+        LOG(INFO) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
+        post_srq_cnt_ -= kPostSRQThreshold;
+    }
+}
+
 void UcclFlow::receiver_poll_uc_cq(void)
 {
     auto cq_ex = rdma_ctx_->cq_ex_;
-    int post_recv_qidx_list[kMaxBatchCQ];
     LIST_HEAD(ack_list);
     int cq_budget = 0;
-    int num_post_recv = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) return;
@@ -1290,19 +1269,21 @@ void UcclFlow::receiver_poll_uc_cq(void)
             auto opcode = ibv_wc_read_opcode(cq_ex);
             if (likely(opcode == IBV_WC_RECV_RDMA_WITH_IMM)) {
                 if (kTestLossRate == 0)
-                    rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);
+                    rx_chunk(&ack_list);
                 else {
                     auto drop_period = (uint32_t)(1 / kTestLossRate);
                     static uint32_t drop_cnt = 0;
                     if (drop_cnt++ % drop_period == 0) {
                         LOG(INFO) << "Drop a chunk";
                     } else {
-                        rx_chunk(&ack_list, post_recv_qidx_list, &num_post_recv);
+                        rx_chunk(&ack_list);
                     }
                 }
+                post_srq_cnt_++;
             } else if (opcode == IBV_WC_RECV) {
                 DCHECK(ibv_wc_read_byte_len(cq_ex) == 0);
-                rx_barrier(&ack_list, post_recv_qidx_list, &num_post_recv);
+                rx_barrier(&ack_list);
+                post_srq_cnt_++;
             } else if (opcode == IBV_WC_RDMA_READ) {
                 auto req = rdma_ctx_->get_request_by_id(cq_ex->wr_id, 
                     &rdma_ctx_->recv_comm_.base);
@@ -1341,22 +1322,7 @@ void UcclFlow::receiver_poll_uc_cq(void)
             rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
     }
 
-    // Populate recv work requests for consuming immediate data.
-    for (auto i = 0; i < num_post_recv; i++) {
-        auto idx = post_recv_qidx_list[i];
-        auto qpw = &rdma_ctx_->uc_qps_[idx];
-        imm_wrs_[qpw->rxtracking.fill_count() - 1].next = nullptr;
-        auto qp = qpw->qp;
-        struct ibv_recv_wr *bad_wr;
-        DCHECK(ibv_post_recv(qp, &imm_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << qpw->rxtracking.fill_count() << " recv requests for UC QP#" << idx;
-        
-        // Restore
-        {
-            imm_wrs_[qpw->rxtracking.fill_count() - 1].next = (qpw->rxtracking.fill_count() == kMaxBatchCQ) ? nullptr : &imm_wrs_[qpw->rxtracking.fill_count()];
-            qpw->rxtracking.clear_fill();
-        }
-    }
+    check_srq();
 }
 
 bool UcclFlow::poll_fifo_cq(void)

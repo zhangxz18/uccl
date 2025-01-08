@@ -235,10 +235,6 @@ class UcclFlow {
     UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
         engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {
             for (int i = 0; i < kMaxBatchCQ; i++) {
-                imm_wrs_[i].num_sge = 0;
-                imm_wrs_[i].sg_list = nullptr;
-                imm_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &imm_wrs_[i + 1];
-
                 retr_wrs_[i].num_sge = 1;
                 retr_wrs_[i].sg_list = nullptr;
                 retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
@@ -248,6 +244,12 @@ class UcclFlow {
                 rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
                 rx_ack_wrs_[i].num_sge = 1;
                 rx_ack_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &rx_ack_wrs_[i + 1];
+            }
+
+            for (int i = 0; i < kPostSRQThreshold; i++) {
+                imm_wrs_[i].num_sge = 0;
+                imm_wrs_[i].sg_list = nullptr;
+                imm_wrs_[i].next = (i == kPostSRQThreshold - 1) ? nullptr : &imm_wrs_[i + 1];
             }
 
             tx_ack_wr_.num_sge = 1;
@@ -288,10 +290,8 @@ class UcclFlow {
     /**
      * @brief Receive a chunk from the flow.
      * @param ack_list 
-     * @param post_recv_qidx_list 
-     * @param num_post_recv 
      */
-    void rx_chunk(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
+    void rx_chunk(struct list_head *ack_list);
 
     /**
      * @brief Receive a retransmitted chunk from the flow.
@@ -302,11 +302,9 @@ class UcclFlow {
 
     /**
      * @brief Receive a barrier from the flow.
-     * 
-     * @param post_recv_qidx_list 
-     * @param num_post_recv 
+     * @param ack_list
      */
-    void rx_barrier(struct list_head *ack_list, int *post_recv_qidx_list, int *num_post_recv);
+    void rx_barrier(struct list_head *ack_list);
 
     /**
      * @brief Poll the completion queue for the FIFO QP.
@@ -341,6 +339,11 @@ class UcclFlow {
     void test_rc_poll_cq(void);
 
     void retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex);
+
+    /**
+     * @brief Check if we need to post enough recv WQEs to the SRQ.
+     */
+    void check_srq(void);
 
     /**
      * @brief Rceive an ACK from the Ctrl QP.
@@ -418,9 +421,6 @@ class UcclFlow {
     // Pre-allocated WQEs for consuming retransmission chunks.
     struct ibv_recv_wr retr_wrs_[kMaxBatchCQ];
 
-    // Pre-allocated WQEs for consuming immediate data.
-    struct ibv_recv_wr imm_wrs_[kMaxBatchCQ];
-
     // WQE for sending ACKs.
     struct ibv_send_wr tx_ack_wr_;
     
@@ -428,6 +428,10 @@ class UcclFlow {
     struct ibv_recv_wr rx_ack_wrs_[kMaxBatchCQ];
     // Pre-allocted SGEs for receiving ACKs.
     struct ibv_sge rx_ack_sges_[kMaxBatchCQ];
+
+    // Pre-allocated WQEs for consuming immediate data.
+    struct ibv_recv_wr imm_wrs_[kPostSRQThreshold];
+    uint32_t post_srq_cnt_ = 0;
 
     /**
      * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.

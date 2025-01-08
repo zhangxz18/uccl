@@ -202,6 +202,18 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     if (pd_ == nullptr)
         throw std::runtime_error("ibv_alloc_pd failed");
 
+    // SRQ for all UC QPs.
+    struct ibv_srq_init_attr srq_init_attr;
+    memset(&srq_init_attr, 0, sizeof(srq_init_attr));
+
+    srq_init_attr.attr.max_sge = 1;
+    srq_init_attr.attr.max_wr = kMaxSRQ;
+    srq_init_attr.attr.srq_limit = 0;
+
+    srq_ = ibv_create_srq(pd_, &srq_init_attr);
+    if (srq_ == nullptr)
+        throw std::runtime_error("ibv_create_srq failed");
+
     // Create a dedicated CQ for UC QPs.
     struct ibv_cq_init_attr_ex cq_ex_attr;
     cq_ex_attr.cqe = kCQSize;
@@ -247,6 +259,8 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
         qp_init_attr.cap.max_send_sge = kMaxSge;
         qp_init_attr.cap.max_recv_sge = kMaxSge;
         qp_init_attr.cap.max_inline_data = 0;
+
+        qp_init_attr.srq = srq_;
 
         struct ibv_qp *qp = ibv_create_qp(pd_, &qp_init_attr);
         if (qp == nullptr)
@@ -325,15 +339,11 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     struct ibv_recv_wr wr;
     memset(&wr, 0, sizeof(wr));
 
-    // Populate recv work requests on all UC QPs for consuming immediate data.
+    // Populate recv work requests to SRQ for consuming immediate data.
     if (!kTestRC) {
-        for (int i = 0; i < kPortEntropy; i++) {
-            auto qp = uc_qps_[i].qp;
-            /// FIXME: 
-            for (int i = 0; i < kMaxReq * kMaxRecv + kMaxRetr; i++) {
-                struct ibv_recv_wr *bad_wr;
-                DCHECK(ibv_post_recv(qp, &wr, &bad_wr) == 0);
-            }
+        for (int i = 0; i < kMaxSRQ; i++) {
+            struct ibv_recv_wr *bad_wr;
+            DCHECK(ibv_post_srq_recv(srq_, &wr, &bad_wr) == 0);
         }
     }
 
@@ -385,6 +395,10 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
 
 RDMAContext::~RDMAContext()
 {
+    if (srq_ != nullptr) {
+        ibv_destroy_srq(srq_);
+    }
+    
     if (gpu_flush_mr_ != nullptr) {
         munmap(gpu_flush_mr_->addr, gpu_flush_mr_->length);
         ibv_dereg_mr(gpu_flush_mr_);
