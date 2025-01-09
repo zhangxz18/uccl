@@ -1461,10 +1461,9 @@ void UcclFlow::fast_retransmit(struct UCQPWrapper *qpw)
         auto wr_ex = chunk.wr_ex;
         
         retransmit_chunk(qpw, wr_ex);
+        qpw->pcb.rto_reset();
+        qpw->pcb.fast_rexmits++;
     }
-
-    qpw->pcb.rto_reset();
-    qpw->pcb.fast_rexmits++;
 }
 
 void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw) 
@@ -1479,11 +1478,11 @@ void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw)
         auto wr_ex = chunk.wr_ex;
 
         retransmit_chunk(qpw, wr_ex);
+        
+        qpw->pcb.rto_reset();
+        qpw->pcb.rto_rexmits++;
+        qpw->pcb.rto_rexmits_consectutive++;
     }
-
-    qpw->pcb.rto_reset();
-    qpw->pcb.rto_rexmits++;
-    qpw->pcb.rto_rexmits_consectutive++;
 }
 
 void UcclRDMAEngine::test_rc_handle_completion(void)
@@ -2534,13 +2533,14 @@ void RDMAEndpoint::stats_thread_fn() {
             if (shutdown) break;
         }
 
-        // if (engine_vec_.empty()) continue;
-        // std::string s;
-        // s += "\n\t[Uccl Engine] ";
-        // for (auto &engine : engine_vec_) {
-        //     s += engine->status_to_string();
-        // }
-        // LOG(INFO) << s;
+        if (engine_vec_.empty()) continue;
+        std::string s;
+        s += "\n\t[Uccl Engine] ";
+        for (auto &engine : engine_vec_) {
+            s += engine->status_to_string();
+        }
+
+        // std::cout << s << std::endl;
     }
 }
 
@@ -2651,5 +2651,27 @@ void RDMAEndpoint::uccl_deregmr(ConnID conn_id, struct Mhandle *mhandle)
     delete poll_ctx;
 }
 
+std::string UcclFlow::to_string()
+{
+    std::string s; s.clear();
+
+    for (int qpidx = 0; qpidx < kPortEntropy; qpidx++) {
+        auto qpw = rdma_ctx_->uc_qps_[qpidx];
+        s += "\n\t[UC] QP#" + std::to_string(qpidx);
+        s += qpw.pcb.to_string();
+    }
+
+    return s;
+}
+
+std::string UcclRDMAEngine::status_to_string()
+{
+    std::string s; s.clear();
+    for (auto [flow_id, flow] : active_flows_map_) {
+        s += "\nEngine " + std::to_string(engine_idx_) + "Flow 0x%" + std::to_string(flow_id);
+        s += flow->to_string();
+    }
+    return s;
+}
 
 }  // namespace uccl

@@ -109,7 +109,6 @@ class Timely {
         assert(_rdtsc >= 1000000000 &&
                _rdtsc >= last_update_tsc_);  // Sanity check
         static constexpr bool kCcOptTimelyBypass = true;
-
         if (kCcOptTimelyBypass &&
             (rate_ == link_bandwidth_ && sample_rtt_tsc <= t_low_tsc_)) {
             // Bypass expensive computation, but include the latency sample in
@@ -204,7 +203,7 @@ class Timely {
     }
 
     /// Get RTT percentile if latency stats are enabled, and reset latency stats
-    double get_rtt_perc(double perc) {
+    double get_rtt_perc(double perc) const {
         if (!kLatencyStats || latency_.count() == 0) return -1.0;
         double ret = latency_.perc(perc);
         return ret;
@@ -212,6 +211,7 @@ class Timely {
 
     void reset_rtt_stats() { latency_.reset(); }
 
+    double get_avg_rtt() const {return prev_rtt_; }
     double get_avg_rtt_diff() const { return avg_rtt_diff_; }
     double get_rate_gbps() const { return rate_to_gbps(rate_); }
 

@@ -98,12 +98,6 @@ class UINT_20 {
             return seqno_ge(value_, other.value_);
         }
 
-        std::string to_string() const {
-            std::stringstream ss;
-            ss << std::hex << std::setw(5) << std::setfill('0') << value_;
-            return ss.str();
-        }
-
         inline uint32_t to_uint32() const { return value_; }
 
     private:
@@ -161,15 +155,13 @@ struct Pcb {
     std::string to_string() const {
         auto avg_rtt_diff = timely.get_avg_rtt_diff();
         auto rate_gbps = timely.get_rate_gbps();
-        std::string s;
-        s += "[CC] snd_nxt: " + snd_nxt.to_string() +
-             " snd_una: " + snd_una.to_string() +
-             " rcv_nxt: " + rcv_nxt.to_string() +
-             " fast_rexmits: " + std::to_string(fast_rexmits) +
-             " rto_rexmits: " + std::to_string(rto_rexmits) +
-             Format(" timely prev_rtt: %.2lf us ", timely.prev_rtt_) +
-             Format(" timely avg_rtt_diff: %.2lf us ", avg_rtt_diff) +
-             Format(" timely rate: %.2lf Gbps ", rate_gbps);
+        std::string s; s.clear();
+        s += "[CC] snd_nxt: " + std::to_string(snd_nxt.to_uint32()) +
+             " snd_una: " + std::to_string(snd_una.to_uint32()) +
+             " rcv_nxt: " + std::to_string(rcv_nxt.to_uint32()) +
+             " fast/rto rexmits: " + std::to_string(fast_rexmits) + "/" + std::to_string(rto_rexmits) +
+             Format(" prev_rtt: %.2lf us ", timely.get_avg_rtt()) + 
+             Format(" rate: %.2lf Gbps ", rate_gbps);
         return s;
     }
 
