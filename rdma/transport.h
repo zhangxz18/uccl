@@ -144,60 +144,20 @@ class Channel {
 };
 
 /**
- * Uccl Packet Header.
+ * Uccl SACK Packet Header.
  */
-struct __attribute__((packed)) UcclPktHdr {
-    static constexpr uint16_t kMagic = 0x4e53;
-    be16_t magic;         // Magic value tagged after initialization for the flow.
-    be16_t qpidx;         // QP index.
-    enum class UcclFlags : uint8_t {
-        kData = 0b0,              // Data packet.
-        kAck = 0b10,              // ACK packet.
-        kRssProbe = 0b100,        // RSS probing packet.
-        kRssProbeRsp = 0b1000,    // RSS probing rsp packet.
-        kDataRttProbe = 0b10000,  // RTT probing packet.
-        kAckRttProbe = 0b100000,  // RTT probing packet.
-    };
-    UcclFlags net_flags;  // Network flags.
-    uint8_t reserved1;    // Reserved for future use.
-    be16_t frame_len;     // Length of the frame.
-    be64_t flow_id;       // Flow ID to denote the connection.
-    be32_t seqno;  // Sequence number to denote the packet counter in the flow.
-    be32_t ackno;  // Sequence number to denote the packet counter in the flow.
-};
 struct __attribute__((packed)) UcclSackHdr {
+    be16_t qpidx;  // QP index.
+    be32_t ackno;  // Sequence number to denote the packet counter in the flow.
     be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
     be64_t sack_bitmap[kSackBitmapSize /
                        swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
                                                             // SACKs received.
     be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
 };
-static const size_t kUcclHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
-static_assert(kUcclHdrLen == 24, "UcclPktHdr size mismatch");
-static_assert(kUcclSackHdrLen == 138, "UcclSackHdr size mismatch");
-
-#ifdef USE_TCP
-static const size_t kNetHdrLen =
-    sizeof(ethhdr) + sizeof(iphdr) + sizeof(tcphdr);
-#else
-static const size_t kNetHdrLen =
-    sizeof(ethhdr) + sizeof(iphdr) + sizeof(udphdr);
-#endif
-
-inline UcclPktHdr::UcclFlags operator|(UcclPktHdr::UcclFlags lhs,
-                                       UcclPktHdr::UcclFlags rhs) {
-    using UcclFlagsType = std::underlying_type<UcclPktHdr::UcclFlags>::type;
-    return UcclPktHdr::UcclFlags(static_cast<UcclFlagsType>(lhs) |
-                                 static_cast<UcclFlagsType>(rhs));
-}
-
-inline UcclPktHdr::UcclFlags operator&(UcclPktHdr::UcclFlags lhs,
-                                       UcclPktHdr::UcclFlags rhs) {
-    using UcclFlagsType = std::underlying_type<UcclPktHdr::UcclFlags>::type;
-    return UcclPktHdr::UcclFlags(static_cast<UcclFlagsType>(lhs) &
-                                 static_cast<UcclFlagsType>(rhs));
-}
+static_assert(kUcclSackHdrLen == 32, "UcclSackHdr size mismatch");
+static_assert(CtrlChunkBuffPool::kPktSize >= kUcclSackHdrLen, "CtrlChunkBuffPool::PktSize must be larger than UcclSackHdr");
 
 class UcclFlow;
 class UcclRDMAEngine;
@@ -207,7 +167,7 @@ class RDMAEndpoint;
  * @class UcclFlow, a connection between a local and a remote endpoint.
  * @brief Class to abstract the components and functionality of a single flow.
  * A flow is a bidirectional connection between two hosts, uniquely identified
- * by a TCP-negotiated `FlowID', Protocol is always UDP.
+ * by a TCP-negotiated `FlowID'.
  *
  * A flow is always associated with a single `Channel' object which serves as
  * the communication interface with the application to which the flow belongs.

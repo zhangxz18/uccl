@@ -163,7 +163,7 @@ class RetrHdrBuffPool : public BuffPool {
 
 class CtrlChunkBuffPool : public BuffPool {
     public:
-        static constexpr uint32_t kPktSize = 192;
+        static constexpr uint32_t kPktSize = 32;
         static constexpr uint32_t kChunkSize = kPktSize * kMaxBatchCQ;
         static constexpr uint32_t kNumChunk = kPortEntropy * kMaxRecv;
         static_assert((kNumChunk & (kNumChunk - 1)) == 0, "kNumChunk must be power of 2");

@@ -16,7 +16,7 @@ static const uint32_t MAX_UNACKED_PKTS = 512;
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 // CC parameters.
 static const uint32_t kPortEntropy = 128;
-static const std::size_t kSackBitmapSize = 64 << 4;
+static const std::size_t kSackBitmapSize = 64 << 1;
 static const std::size_t kFastRexmitDupAckThres = 5;
 
 // IB interface.

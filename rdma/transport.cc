@@ -455,13 +455,11 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
     auto cq_ex = rdma_ctx_->ctrl_cq_ex_;
     
     auto t6 = rdtsc();
-    auto *ucclh = reinterpret_cast<UcclPktHdr *>(pkt_addr);
-    auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
+    auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr);
     
-    auto qpidx = ucclh->qpidx.value();
+    auto qpidx = ucclsackh->qpidx.value();
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
-    auto seqno = ucclh->seqno.value();
-    auto ackno = ucclh->ackno.value();
+    auto ackno = ucclsackh->ackno.value();
 
     if (swift::UINT_20::uint20_seqno_lt(ackno, qpw->pcb.snd_una)) {
         LOG(INFO) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
@@ -1120,17 +1118,10 @@ void UcclFlow::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
 {
     uint64_t pkt_addr = chunk_addr + CtrlChunkBuffPool::kPktSize * num_sge;
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
-    auto *ucclh = reinterpret_cast<UcclPktHdr* >(pkt_addr);
-    
-    ucclh->magic = be16_t(UcclPktHdr::kMagic);
-    ucclh->net_flags = UcclPktHdr::UcclFlags::kAck;
-    ucclh->frame_len = be16_t(kUcclHdrLen + kUcclSackHdrLen);
-    ucclh->seqno = be32_t(qpw->pcb.seqno().to_uint32());
-    ucclh->ackno = be32_t(qpw->pcb.ackno().to_uint32());
-    ucclh->flow_id= be64_t(flow_id_);
-    ucclh->qpidx = be16_t(qpidx);
+    auto *ucclsackh = reinterpret_cast<UcclSackHdr* >(pkt_addr);
 
-    auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclHdrLen);
+    ucclsackh->ackno = be32_t(qpw->pcb.ackno().to_uint32());
+    ucclsackh->qpidx = be16_t(qpidx);
 
     auto t4 = rdtsc();
     uint64_t t2;
