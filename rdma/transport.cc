@@ -1460,6 +1460,9 @@ bool UcclFlow::periodic_check() {
 
 void UcclFlow::fast_retransmit(struct UCQPWrapper *qpw) 
 {
+    if (rdma_ctx_->inflight_retr_chunks_ > kMaxInflightRetrChunks)
+        return;
+    
     if (!qpw->txtracking.empty()) {
         // LOG(INFO) << "Fast retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
         // Retransmit the oldest unacknowledged chunk.
