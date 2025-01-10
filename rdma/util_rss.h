@@ -50,7 +50,7 @@ inline bool get_rss_config(const std::string& interface_name,
     uint32_t key_size = rss_query->key_size;
     free(rss_query);
 
-    VLOG(3) << "Interface " << interface_name
+    VLOG(4) << "Interface " << interface_name
               << ": RSS indirection table size " << indir_size
               << ", RSS key size " << key_size;
 

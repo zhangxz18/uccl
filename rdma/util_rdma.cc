@@ -115,7 +115,7 @@ void RDMAFactory::init_dev(int gid_idx)
         dev.dma_buf_support = !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
         ibv_dealloc_pd(pd);
 
-        VLOG(3) << "DMA-BUF support: " << dev.dma_buf_support;
+        VLOG(4) << "DMA-BUF support: " << dev.dma_buf_support;
     }
 
     rdma_ctl.gid_2_dev_map.insert({gid_idx, rdma_ctl.devices_.size()});
@@ -453,7 +453,7 @@ RDMAContext::~RDMAContext()
         ibv_destroy_cq(ibv_cq_ex_to_cq(cq_ex_));
     }
 
-    VLOG(3) << "RDMAContext destroyed";
+    VLOG(4) << "RDMAContext destroyed";
 }
 
 uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
@@ -472,7 +472,7 @@ uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
                 poll_ctx->done = true;
                 poll_ctx->cv.notify_one();
             }
-            VLOG(2) << "Message complete";
+            VLOG(3) << "Message complete";
             // Free the request.
             rdma_ctx_->free_request(chunk.req);
         }

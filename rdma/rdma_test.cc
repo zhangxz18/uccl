@@ -52,7 +52,7 @@ static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
             assert(((uint32_t *)data)[i] == 0x123456);
         }
 
-        // VLOG(3) << "Iteration " << i << " done";
+        // VLOG(4) << "Iteration " << i << " done";
         std::cout << "Iteration " << i << " done" << std::endl;
     }
 }
@@ -70,7 +70,7 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
 
         ep.uccl_poll(poll_ctx);
 
-        // VLOG(3) << "Iteration " << i << " done";
+        // VLOG(4) << "Iteration " << i << " done";
         std::cout << "Iteration " << i << " done" << std::endl;
     }
 }
