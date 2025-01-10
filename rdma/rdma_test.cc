@@ -255,9 +255,9 @@ static void server_worker(void)
     std::vector<struct Mhandle *> mhandles;
 
     mhandles.resize(FLAGS_nflow);
-    for (int i = 0; i < FLAGS_nflow; i++) {
-        mhandles[i] = new struct Mhandle();
-    }
+    // for (int i = 0; i < FLAGS_nflow; i++) {
+    //     mhandles[i] = new struct Mhandle();
+    // }
 
     for (int i = 0; i < FLAGS_nflow; i++) {
         auto conn_id = ep.uccl_accept(0, i % NUM_ENGINES, remote_ip);
@@ -300,9 +300,9 @@ static void client_worker(void)
     std::vector<struct Mhandle *> mhandles;
 
     mhandles.resize(FLAGS_nflow);
-    for (int i = 0; i < FLAGS_nflow; i++) {
-        mhandles[i] = new struct Mhandle();
-    }
+    // for (int i = 0; i < FLAGS_nflow; i++) {
+    //     mhandles[i] = new struct Mhandle();
+    // }
 
     for (int i = 0; i < FLAGS_nflow; i++) {
         auto conn_id = ep.uccl_connect(0, i % NUM_ENGINES, FLAGS_serverip);

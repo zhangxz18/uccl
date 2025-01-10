@@ -2619,6 +2619,7 @@ int RDMAEndpoint::uccl_regmr_dmabuf(ConnID conn_id, void *addr, size_t len, int 
     while (1) {
         if (jring_mc_dequeue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) == 1) {
             DCHECK(rsp_msg.opcode == Channel::CtrlMsg::Op::kCompleteRegMR);
+            *mhandle = new Mhandle();
             (*mhandle)->mr = rsp_msg.meta.ToEndPoint.mr;
             break;
         }
@@ -2660,6 +2661,7 @@ int RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*
     while (1) {
         if (jring_mc_dequeue_bulk(channel_vec_[conn_id.engine_idx]->ctrl_rspq_, &rsp_msg, 1, nullptr) == 1) {
             DCHECK(rsp_msg.opcode == Channel::CtrlMsg::Op::kCompleteRegMR);
+            *mhandle = new Mhandle();
             (*mhandle)->mr = rsp_msg.meta.ToEndPoint.mr;
             break;
         }
