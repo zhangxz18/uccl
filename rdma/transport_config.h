@@ -15,7 +15,7 @@ static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t MAX_UNACKED_PKTS = 512;
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 // CC parameters.
-static const uint32_t kPortEntropy = 128;
+static const uint32_t kPortEntropy = 256;
 
 // Reliability.
 static const std::size_t kSackBitmapSize = 64 << 1;
@@ -67,7 +67,7 @@ static const bool kTestNoHWTimestamp = false;
 // Bypass the timing wheel.
 static const bool kTestNoTimingWheel = false;
 // Use constant(maximum) rate for transmission.
-static const bool kTestConstantRate = true;
+static const bool kTestConstantRate = false;
 // Test lossy network.
 static const double kTestLossRate = 0.0;
 
