@@ -298,6 +298,11 @@ class UcclFlow {
      */
     void test_rc_poll_cq(void);
 
+    /**
+     * @brief Retransmit a chunk for the given UC QP.
+     * @param qpw 
+     * @param wr_ex 
+     */
     void retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex);
 
     /**
@@ -380,8 +385,9 @@ class UcclFlow {
 
    private:
 
-    void fast_retransmit(struct UCQPWrapper *qpw);
-    void rto_retransmit(struct UCQPWrapper *qpw);
+    void __retransmit(struct UCQPWrapper *qpw, bool rto);
+    inline void fast_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, false); }
+    inline void rto_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, true); }
 
     // <Slot, i>
     std::deque<std::pair<int, int> > pending_tx_msgs_;

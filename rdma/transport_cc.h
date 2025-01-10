@@ -176,6 +176,7 @@ struct Pcb {
     void advance_rcv_nxt(UINT_20 n) { rcv_nxt += n; }
     void advance_rcv_nxt() { rcv_nxt += 1; }
 
+    /************* RTO related *************/
     void rto_enable() { rto_timer = 0; }
     void rto_disable() { rto_timer = kRtoDisabled; }
     void rto_reset() { rto_enable(); }
@@ -186,6 +187,8 @@ struct Pcb {
             rto_reset();
     }
     void rto_advance() { rto_timer++; }
+
+    /************* RTO related *************/
 
     void barrier_bitmap_shift_left_one() {
         constexpr size_t barrier_bitmap_bucket_max_idx = 
@@ -268,8 +271,14 @@ struct Pcb {
     UINT_20 snd_una{0};
     UINT_20 snd_ooo_acks{0};
     UINT_20 rcv_nxt{0};
-    uint64_t sack_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{0};
+    uint64_t sack_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{};
     uint8_t sack_bitmap_count{0};
+    // Sender copy of SACK bitmap for retransmission.
+    uint64_t tx_sack_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{};
+    uint8_t tx_sack_bitmap_count{0};
+    // The starting CSN of the copy of SACK bitmap.
+    uint32_t base_csn{0};
+
     // For RDMA retransmission.
     uint64_t barrier_bitmap[kSackBitmapSize / kSackBitmapBucketSize] {0};
     uint8_t barrier_bitmap_count{0};

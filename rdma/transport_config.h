@@ -16,8 +16,14 @@ static const uint32_t MAX_UNACKED_PKTS = 512;
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 // CC parameters.
 static const uint32_t kPortEntropy = 128;
+
+// Reliability.
 static const std::size_t kSackBitmapSize = 64 << 1;
-static const std::size_t kFastRexmitDupAckThres = 5;
+// kFastRexmitDupAckThres equals to 0 means all duplicate acks are caused by packet loss.
+// This is true for flow-level ECMP, which is the common case.
+// When the network supports adaptive routing, duplicate acks may be caused by adaptive routing.
+// In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
+static const std::size_t kFastRexmitDupAckThres = 0;
 
 // IB interface.
 // If USE_ROCE is set, RoCE will be used instead of IB.

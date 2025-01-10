@@ -461,6 +461,8 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
     auto ackno = ucclsackh->ackno.value();
 
+    bool update_sackbitmap = false;
+
     if (swift::UINT_20::uint20_seqno_lt(ackno, qpw->pcb.snd_una)) {
         VLOG(4) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
     } else if (swift::UINT_20::uint20_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
@@ -468,12 +470,13 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
             << qpw->pcb.snd_nxt.to_uint32() << " from QP#" << qpidx << " by Ctrl QP";
     } else if (swift::UINT_20::uint20_seqno_eq(ackno, qpw->pcb.snd_una)) {
         VLOG(4) << "Received duplicate ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
+        update_sackbitmap = true;
+        
         qpw->pcb.duplicate_acks++;
         qpw->pcb.snd_ooo_acks = ucclsackh->sack_bitmap_count.value();
-
+        
         if (qpw->pcb.duplicate_acks < kFastRexmitDupAckThres) {
-            // We have not reached the threshold yet, so we do not do
-            // anything.
+            // We have not reached the threshold yet, so we do not do retransmission.
         } else if (qpw->pcb.duplicate_acks == kFastRexmitDupAckThres) {
             // Fast retransmit.
             fast_retransmit(qpw);
@@ -511,6 +514,8 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
 
     } else {
         VLOG(4) << "Received valid ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
+
+        update_sackbitmap = true;
         
         size_t num_acked_chunks = ackno - qpw->pcb.snd_una.to_uint32();
 
@@ -541,6 +546,13 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
         qpw->pcb.rto_maybe_reset();
     }
     
+    // For duplicate ACKs and valid ACKs, we may need to update the SACK bitmap at the sender side.
+    if (update_sackbitmap) {
+        for (int i = 0; i < kSackBitmapSize / swift::Pcb::kSackBitmapBucketSize; i++)
+            qpw->pcb.tx_sack_bitmap[i] = ucclsackh->sack_bitmap[i].value();
+        qpw->pcb.tx_sack_bitmap_count = ucclsackh->sack_bitmap_count.value();
+        qpw->pcb.base_csn = ackno + 1;
+    }
 }
 
 int UcclFlow::sender_poll_retr_cq(void)
@@ -1442,46 +1454,75 @@ bool UcclFlow::periodic_check() {
         }
 
         if (qpw->pcb.rto_expired()) {
-            // Retransmit the oldest unacknowledged chunk.
             rto_retransmit(qpw);
         }
     }
     return true;
 }
 
-void UcclFlow::fast_retransmit(struct UCQPWrapper *qpw) 
+void UcclFlow::__retransmit(struct UCQPWrapper *qpw, bool rto)
 {
-    if (rdma_ctx_->inflight_retr_chunks_ > kMaxInflightRetrChunks)
+    /// TODO: We should throttle the volume of retransmission. 
+    /// Currently, we hard limit the number of inflight retransmission chunks.
+    if (rdma_ctx_->inflight_retr_chunks_ > kMaxInflightRetrChunks || qpw->txtracking.empty())
         return;
-    
-    if (!qpw->txtracking.empty()) {
-        // VLOG(4) << "Fast retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
-        // Retransmit the oldest unacknowledged chunk.
+
+    // Case#1: SACK bitmap at the sender side is empty. Retransmit the oldest unacked chunk.
+    auto sack_bitmap_count = qpw->pcb.tx_sack_bitmap_count;
+    if (!sack_bitmap_count) {
         auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
-        
         retransmit_chunk(qpw, wr_ex);
         qpw->pcb.rto_reset();
-        qpw->pcb.fast_rexmits++;
+        if (rto) {
+            qpw->pcb.rto_rexmits++;
+            qpw->pcb.rto_rexmits_consectutive++;
+        } else {
+            qpw->pcb.fast_rexmits++;
+        }
+        return;
     }
-}
+    
+    // Case#2: Retransmit the unacked chunks according to the SACK bitmap.
+    bool done = false;
+    auto base_csn = swift::UINT_20(qpw->pcb.base_csn);
+    DCHECK(swift::UINT_20::uint20_seqno_lt(base_csn, qpw->pcb.snd_una) || 
+        swift::UINT_20::uint20_seqno_eq(base_csn, qpw->pcb.snd_una));
 
-void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw) 
-{
-    if (rdma_ctx_->inflight_retr_chunks_ > kMaxInflightRetrChunks)
-        return;
-
-    if (!qpw->txtracking.empty()) {
-        // VLOG(4) << "RTO retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
-        // Retransmit the oldest unacknowledged chunk.
-        auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
-        auto wr_ex = chunk.wr_ex;
-
-        retransmit_chunk(qpw, wr_ex);
+    uint32_t index = 0;
+    while (sack_bitmap_count && index < kSackBitmapSize && !qpw->txtracking.empty()) {
+        auto bucket_idx = index / swift::Pcb::kSackBitmapBucketSize;
+        auto sack_bitmap = qpw->pcb.tx_sack_bitmap[bucket_idx];
         
-        qpw->pcb.rto_reset();
-        qpw->pcb.rto_rexmits++;
-        qpw->pcb.rto_rexmits_consectutive++;
+        auto cursor = index % swift::Pcb::kSackBitmapBucketSize;
+
+        if ((sack_bitmap & (1ULL << cursor)) == 0) {
+            // We found a hole.
+            auto seqno = base_csn.to_uint32() + index;
+            auto chunk = qpw->txtracking.get_unacked_chunk_from_idx(index);
+            if (seqno == chunk.csn) {
+                auto wr_ex = chunk.wr_ex;
+                retransmit_chunk(qpw, wr_ex);
+                done = true;
+            } else {
+                // This bit is stale and its corresponding chunk is already acked.
+                // Do nothing.
+                DCHECK(swift::UINT_20::uint20_seqno_lt(seqno, chunk.csn));
+            }
+        } else {
+            sack_bitmap_count--;
+        }
+        index++;
+    }
+
+    qpw->pcb.rto_reset();
+    if (done) {
+        if (rto) {
+            qpw->pcb.rto_rexmits++;
+            qpw->pcb.rto_rexmits_consectutive++;
+        } else {
+            qpw->pcb.fast_rexmits++;
+        }
     }
 }
 
