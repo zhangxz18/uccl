@@ -3,6 +3,7 @@
  * @brief Test for NCCL plugin.
  */
 
+#include <assert.h>
 #include <iostream>
 #include <dlfcn.h>
 
@@ -25,8 +26,20 @@ int main() {
         return 1;
     }
 
-    int result = ncclNet->init(nullptr);
-    std::cout << result << std::endl;
+    int ret = ncclNet->init(nullptr);
+    assert(ret == 0);
+    std::cout << ret << std::endl;
+
+    int num_devices;
+    ret = ncclNet->devices(&num_devices);
+    assert(ret == 0);
+
+    ncclNetProperties_v8_t properties;
+    ret = ncclNet->getProperties(0, &properties);
+    assert(ret == 0);
+    
+    std::cout << "# of devices: " << num_devices << std::endl;
+
 
     dlclose(handle);
     return 0;

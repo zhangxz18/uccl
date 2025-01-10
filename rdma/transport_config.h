@@ -6,6 +6,8 @@
 #include <thread>
 #include <string>
 
+#define CLOUDLAB_DEV
+
 static const uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
@@ -26,18 +28,22 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 static const std::size_t kFastRexmitDupAckThres = 0;
 
 // IB interface.
-// If USE_ROCE is set, RoCE will be used instead of IB.
+static const uint32_t MAX_IB_DEVICES = 32;
+static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
+#ifdef CLOUDLAB_DEV
 static const bool USE_ROCE = true;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
-static const uint32_t MAX_IB_DEVICES = 32;
-static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
-static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {
-    2,
-    3,
-};
-static const uint8_t IB_PORT_NUM = 1;
+static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {2,3};
 static const uint8_t NUM_DEVICES = 2;
+#else
+static const bool USE_ROCE = false;
+// If SINGLE_IP is set, all devices will use the same IP.
+static std::string SINGLE_IP("");
+static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
+static const uint8_t NUM_DEVICES = 8;
+#endif
+static const uint8_t IB_PORT_NUM = 1;
 
 static const uint32_t kChunkSize = 32 << 10;
 static const uint32_t kSignalInterval = 256;

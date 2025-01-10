@@ -1662,7 +1662,7 @@ void UcclRDMAEngine::run() {
             handle_completion();
 
     }
-    std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
+    // std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
 }
 
 /**

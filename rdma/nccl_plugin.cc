@@ -101,42 +101,54 @@ ncclResult_t pluginDevices(int* ndev)
     return ncclSuccess;
 }
 
-ncclResult_t pluginPciPath(int dev, char** path) { return ncclSuccess; }
-ncclResult_t pluginPtrSupport(int dev, int* supportedTypes) {
+/// @ref ncclIbGetPciPath
+ncclResult_t pluginPciPath(const char *ib_name, char **path)
+{
+    char devicePath[256];
+    snprintf(devicePath, 256, "/sys/class/infiniband/%s/device", ib_name);
+    char* p = realpath(devicePath, NULL);
+    if (p == NULL) {
+        LOG(ERROR) << "Could not find device path for " << ib_name;
+        return ncclInternalError;
+    }
+    *path = p;
     return ncclSuccess;
 }
+
 ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t* props) 
 {
     auto factory_dev = RDMAFactory::get_factory_dev(dev);
-    sprintf(props->name, "%s%d", IB_DEVICE_NAME_PREFIX, dev);
+    
+    props->name = factory_dev->ib_name;
+    
+    // Speed in *Mbps*. 100000 means 100G
     props->speed = kLinkBandwidth * 8 / 1e6;
-    // Fill for proper topology detection, e.g.
-    // /sys/devices/pci0000:00/0000:00:10.0/0000:0b:00.0
-    /// TODO:
-    props->pciPath = NULL;
+
+    pluginPciPath(factory_dev->ib_name, &props->pciPath);
+    
     // Only used to detect NICs with multiple PCI attachments.
-    props->guid = 0;
-    // Add NCCL_PTR_CUDA if GPU Direct RDMA is supported and regMr can take CUDA
-    // pointers.
+    props->guid = factory_dev->dev_attr.sys_image_guid;
+    
     props->ptrSupport = NCCL_PTR_HOST;
+
     if (factory_dev->dma_buf_support)
         props->ptrSupport |= NCCL_PTR_CUDA | NCCL_PTR_DMABUF;
+    
     // If you regMr has a fast registration cache, set to 1. If set to 0, user
     // buffer registration may be disabled.
     props->regIsGlobal = 0;
-    // Speed in *Mbps*. 100000 means 100G
-    props->speed = 400000;
+    
     // Port number, used in conjunction with guid
-    props->port = 0;
+    props->port = IB_PORT_NUM;
     // Custom latency (used to help tuning if latency is high. If set to 0, use
     // default NCCL values.
     props->latency = 0;
     // Maximum number of comm objects we can create.
     props->maxComms = 1024 * 1024;
     // Maximum number of receive operations taken by irecv().
-    props->maxRecvs = 1;
+    props->maxRecvs = kMaxRecv;
     // Coupling with NCCL network device-side code.
-    props->netDeviceType = (ncclNetDeviceType)0;
+    props->netDeviceType = NCCL_NET_DEVICE_HOST;
     props->netDeviceVersion = NCCL_NET_DEVICE_INVALID_VERSION;
     return ncclSuccess;
 }
