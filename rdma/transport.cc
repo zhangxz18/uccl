@@ -43,7 +43,7 @@ void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int
         // For sender to encode the request id in the immediate data.
         elems[i].rid = rdma_ctx_->get_request_id(req, &recv_comm_->base);
 
-        LOG(INFO) << "Post Recv: addr: " << elems[i].addr << ", rkey: " << elems[i].rkey << ", size: " << elems[i].size;
+        VLOG(3) << "Post Recv: addr: " << elems[i].addr << ", rkey: " << elems[i].rkey << ", size: " << elems[i].size;
     }
     
     // Figure out the remote address to write.
@@ -123,7 +123,7 @@ void UcclFlow::flush_rx_buf(Channel::Msg &rx_work)
     struct ibv_send_wr *bad_wr;
     DCHECK(ibv_post_send(rdma_ctx_->gpu_flush_qp_, &wr, &bad_wr) == 0);
 
-    LOG(INFO) << rdma_ctx_->gpu_flush_qp_->qp_num << " Post flush: addr: " << wr.wr.rdma.remote_addr << ", rkey: " << wr.wr.rdma.rkey;
+    VLOG(3) << rdma_ctx_->gpu_flush_qp_->qp_num << " Post flush: addr: " << wr.wr.rdma.remote_addr << ", rkey: " << wr.wr.rdma.rkey;
 }
 
 void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
@@ -166,7 +166,7 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
             wr.num_sge = 0;
             wr.next = nullptr;
             DCHECK(ibv_post_recv(qpw->qp, &wr, &bad_wr) == 0);
-            LOG(INFO) << "Post wr_id: " << wr.wr_id << " to QP#" << qpidx;
+            VLOG(3) << "Post wr_id: " << wr.wr_id << " to QP#" << qpidx;
         }
     }
 
@@ -242,7 +242,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         wr->wr.rdma.remote_addr = remote_addr + *sent_offset;
         wr->wr.rdma.rkey = rkey;
 
-        LOG(INFO) << "remote_addr: " << wr->wr.rdma.remote_addr << ", rkey: " << wr->wr.rdma.rkey;
+        VLOG(3) << "remote_addr: " << wr->wr.rdma.remote_addr << ", rkey: " << wr->wr.rdma.rkey;
 
         IMMData imm_data(0);
 
@@ -280,7 +280,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                     qpw->in_wheel_cnt_++;
                     // For future tracking.
                     wr_ex->req = req;
-                    LOG(INFO) << "Queue " << chunk_size << " bytes on QP#" << qpidx;
+                    VLOG(3) << "Queue " << chunk_size << " bytes on QP#" << qpidx;
             }
             else {
                 // Transmit this chunk directly.
@@ -290,11 +290,11 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
                 // Track this chunk.
                 qpw->txtracking.track_chunk(req, imm_data.GetCSN(), wr_ex, rdtsc());
 
-                LOG(INFO) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
+                VLOG(3) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
             }
         }
 
-        LOG(INFO) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
+        VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << slot.rid << ", mid: " << mid << " with QP#" << qpidx;
     }
 
 }
@@ -341,7 +341,7 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
 
         wr_id += rdma_ctx_->get_request_id(req, &send_comm_->base) << (i * 8);
 
-        LOG(INFO) << "Post wr_id: " << rdma_ctx_->get_request_id(req, &send_comm_->base);
+        VLOG(3) << "Post wr_id: " << rdma_ctx_->get_request_id(req, &send_comm_->base);
     }
 
     if (nmsgs > 1) {
@@ -369,7 +369,7 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
 
     // Store the request id for future acknowledgment.
     last_wr->wr_id = wr_id;
-    LOG(INFO) << "Post merged wr_id: " << wr_id;
+    VLOG(3) << "Post merged wr_id: " << wr_id;
 
     for (int i = 0; i < kTestRCEntropy; i++) {
         auto qpidx = i;
@@ -387,7 +387,7 @@ void UcclFlow::test_rc_post_multi_messages(int slot)
             
             send_offset[m] += length;
 
-            LOG(INFO) << "Sending " << length << " bytes to QP#" << qpidx;
+            VLOG(3) << "Sending " << length << " bytes to QP#" << qpidx;
         }
 
         struct ibv_send_wr *bad_wr;
@@ -446,7 +446,7 @@ void UcclFlow::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     DCHECK(ibv_post_send(rdma_ctx_->retr_qp_, &retr_wr, &bad_wr) == 0);
     rdma_ctx_->inflight_retr_chunks_++;
 
-    LOG(INFO) << "successfully retransmit chunk for QP#" << (qpw - rdma_ctx_->uc_qps_) 
+    VLOG(3) << "successfully retransmit chunk for QP#" << (qpw - rdma_ctx_->uc_qps_) 
         << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
 }
 
@@ -462,12 +462,12 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
     auto ackno = ucclsackh->ackno.value();
 
     if (swift::UINT_20::uint20_seqno_lt(ackno, qpw->pcb.snd_una)) {
-        LOG(INFO) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
+        VLOG(3) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
     } else if (swift::UINT_20::uint20_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
-        LOG(INFO) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " 
+        VLOG(3) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " 
             << qpw->pcb.snd_nxt.to_uint32() << " from QP#" << qpidx << " by Ctrl QP";
     } else if (swift::UINT_20::uint20_seqno_eq(ackno, qpw->pcb.snd_una)) {
-        LOG(INFO) << "Received duplicate ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
+        VLOG(3) << "Received duplicate ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
         qpw->pcb.duplicate_acks++;
         qpw->pcb.snd_ooo_acks = ucclsackh->sack_bitmap_count.value();
 
@@ -510,7 +510,7 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
         }
 
     } else {
-        LOG(INFO) << "Received valid ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
+        VLOG(3) << "Received valid ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
         
         size_t num_acked_chunks = ackno - qpw->pcb.snd_una.to_uint32();
 
@@ -526,13 +526,13 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
         auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
         auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
 
-        LOG(INFO) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
+        VLOG(3) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
             ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
             ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
         
         qpw->pcb.update_rate(rdtsc(), fabric_delay_tsc);
 
-        LOG(INFO) << "CC rate: " << qpw->pcb.timely.get_rate_gbps() << " Gbps";
+        VLOG(3) << "CC rate: " << qpw->pcb.timely.get_rate_gbps() << " Gbps";
 
         qpw->pcb.snd_una = ackno;
         qpw->pcb.duplicate_acks = 0;
@@ -611,7 +611,7 @@ int UcclFlow::receiver_poll_retr_cq(void)
         for (i = 0; i < num_post_recv; i++) {
             uint64_t chunk_addr;
             if (rdma_ctx_->retr_chunk_pool_->alloc_buff(&chunk_addr)) {
-                LOG(INFO) << "Failed to allocate retransmission chunk buffer";
+                VLOG(3) << "Failed to allocate retransmission chunk buffer";
             }
             sges[i].addr = chunk_addr;
             sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
@@ -623,7 +623,7 @@ int UcclFlow::receiver_poll_retr_cq(void)
         retr_wrs_[i - 1].next = nullptr;
         struct ibv_recv_wr *bad_wr;
         DCHECK(ibv_post_recv(rdma_ctx_->retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << i << " recv requests for Retr QP";
+        VLOG(3) << "Posted " << i << " recv requests for Retr QP";
         
         // Restore
         retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
@@ -646,7 +646,7 @@ int UcclFlow::sender_poll_ctrl_cq(void)
             if (cq_ex->status == IBV_WC_SUCCESS) {
                 // Completion for receiving ACKs.
                 auto num_ack = ntohl(ibv_wc_read_imm_data(cq_ex));
-                LOG(INFO) << "Receive " << num_ack << " ACKs in one CtrlChunk, Chunk addr: " << cq_ex->wr_id;
+                VLOG(3) << "Receive " << num_ack << " ACKs in one CtrlChunk, Chunk addr: " << cq_ex->wr_id;
                 auto chunk_addr = cq_ex->wr_id;
                 for (int i = 0; i < num_ack; i++) {
                     auto pkt_addr = chunk_addr + i * CtrlChunkBuffPool::kPktSize;
@@ -716,7 +716,7 @@ void UcclFlow::burst_timing_wheel(void)
 
         DCHECK(ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr) == 0);
 
-        LOG(INFO) << "Burst send: csn: " << wr_ex->wr.imm_data << " with QP#" << wr_ex->qpidx;
+        VLOG(3) << "Burst send: csn: " << wr_ex->wr.imm_data << " with QP#" << wr_ex->qpidx;
 
         // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
@@ -739,7 +739,7 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
         // Nothing more to do.
 
         qpw->pcb.advance_rcv_nxt();
-        LOG(INFO) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt.to_uint32() << " from QP#" << qpw - rdma_ctx_->uc_qps_;
+        VLOG(3) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt.to_uint32() << " from QP#" << qpw - rdma_ctx_->uc_qps_;
         qpw->pcb.sack_bitmap_shift_left_one();
         qpw->pcb.barrier_bitmap_shift_left_one();
     }
@@ -747,7 +747,7 @@ void UcclFlow::try_update_csn(struct UCQPWrapper *qpw)
 
 void UcclFlow::rx_barrier(struct list_head *ack_list)
 {
-    LOG(INFO) << "rx_barrier";
+    VLOG(3) << "rx_barrier";
     auto cq_ex = rdma_ctx_->cq_ex_;
 
     DCHECK(rdma_ctx_->is_send_ == false);
@@ -763,7 +763,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
     auto rid = imm_data.GetRID();
     auto mid = imm_data.GetMID();
 
-    LOG(INFO) << "Receive barrier: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
+    VLOG(3) << "Receive barrier: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
 
     // Compare CSN with the expected CSN.
     auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
@@ -778,13 +778,13 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
-            LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
+            VLOG(3) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
         return;
     }
 
     if (distance > kReassemblyMaxSeqnoDistance) {
-        LOG(INFO) << "Barrier too far ahead. Dropping as we can't handle SACK. "
+        VLOG(3) << "Barrier too far ahead. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn;
         // Try to remove the pending retransmission chunk if exists.
         auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
@@ -792,7 +792,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
-            LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
+            VLOG(3) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
         return;
     }
@@ -810,14 +810,14 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
             qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
-            LOG(INFO) << "Remove pending retransmission chunk for QP#" << qpidx;
+            VLOG(3) << "Remove pending retransmission chunk for QP#" << qpidx;
         }
         return;
     }
 
     if ((*barrier_bitmap & (1ULL << cursor))) {
         // Duplicate barrier. This barrier is invalid.
-        LOG(INFO) << "Received duplicate barrier " << csn << " from QP#" << qpidx;
+        VLOG(3) << "Received duplicate barrier " << csn << " from QP#" << qpidx;
         return;
     }
 
@@ -828,11 +828,11 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
     auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
     if (pending_retr_chunk == qpw->pcb.pending_retr_chunks.end()) {
         // No pending retransmission chunk.
-        LOG(INFO) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
+        VLOG(3) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
         return;
     }
 
-    LOG(INFO) << "Barrier found a pending retransmission chunk for QP#" << qpidx;
+    VLOG(3) << "Barrier found a pending retransmission chunk for QP#" << qpidx;
 
     // We found a pending retransmission chunk.
     imm_data = IMMData(pending_retr_chunk->second.imm_data);
@@ -858,7 +858,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
 
     if (msg_size == received_bytes[mid]) req->recv.fin_msg++;
     if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
-        LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
+        VLOG(2) << "Request complete (" << req->nmsgs << " messages)";
         auto poll_ctx = req->poll_ctx;
         // Wakeup app thread.
         {
@@ -884,7 +884,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
 
 void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
 {
-    LOG(INFO) << "rx_retr_chunk";
+    VLOG(3) << "rx_retr_chunk";
     auto cq_ex = rdma_ctx_->retr_cq_ex_;
 
     auto now = rdtsc();
@@ -899,7 +899,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     auto rid = imm_data.GetRID();
     auto mid = imm_data.GetMID();
 
-    LOG(INFO) << "Received retransmission chunk: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from Retr QP";
+    VLOG(3) << "Received retransmission chunk: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from Retr QP";
 
     auto chunk_addr = cq_ex->wr_id;
     auto chunk_len = ibv_wc_read_byte_len(cq_ex) - sizeof(struct retr_chunk_hdr);
@@ -915,14 +915,14 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     if (swift::seqno_lt(csn, ecsn)) {
         // Original chunk is already received.
         rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
-        LOG(INFO) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
+        VLOG(3) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
         return;
     }
 
     auto distance = csn - ecsn;
 
     if (distance > kReassemblyMaxSeqnoDistance) {
-        LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
+        VLOG(3) << "Packet too far ahead. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn;
         rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
         return;
@@ -935,7 +935,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     if ((*sack_bitmap & (1ULL << cursor))) {
         // Original chunk is already received.
         rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
-        LOG(INFO) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
+        VLOG(3) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
         return;
     }
     
@@ -948,9 +948,9 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
         // Store this retransmission chunk.
         pcb->pending_retr_chunks[distance + pcb->shift_count] = 
         {hdr->remote_addr, chunk_addr, (uint32_t)chunk_len, imm_data.GetImmData()};
-        LOG(INFO) << "Wait for the corresponding barrier for QP#" << hdr->qidx;
+        VLOG(3) << "Wait for the corresponding barrier for QP#" << hdr->qidx;
     } else {
-        LOG(INFO) << "This retransmission chunk is accepted!!!";
+        VLOG(3) << "This retransmission chunk is accepted!!!";
         // Accept this retransmission chunk.
         memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr), chunk_len);
 
@@ -969,7 +969,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
 
         if (msg_size == received_bytes[mid]) req->recv.fin_msg++;
         if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
-            LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
+            VLOG(2) << "Request complete (" << req->nmsgs << " messages)";
             auto poll_ctx = req->poll_ctx;
             // Wakeup app thread.
             {
@@ -994,7 +994,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
 
 void UcclFlow::rx_chunk(struct list_head *ack_list)
 {
-    LOG(INFO) << "rx_chunk";
+    VLOG(3) << "rx_chunk";
     auto cq_ex = rdma_ctx_->cq_ex_;
 
     auto now = rdtsc();
@@ -1013,7 +1013,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     auto rid = imm_data.GetRID();
     auto mid = imm_data.GetMID();
 
-    LOG(INFO) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
+    VLOG(3) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
 
     // Compare CSN with the expected CSN.
     auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
@@ -1024,7 +1024,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     auto distance = csn - ecsn;
 
     if (distance > kReassemblyMaxSeqnoDistance) {
-        LOG(INFO) << "Packet too far ahead. Dropping as we can't handle SACK. "
+        VLOG(3) << "Packet too far ahead. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn;
         return;
     }
@@ -1057,7 +1057,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     received_bytes[mid] += byte_len;
     if (msg_size == received_bytes[mid]) req->recv.fin_msg++;
     if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
-        LOG(INFO) << "Request complete (" << req->nmsgs << " messages)";
+        VLOG(2) << "Request complete (" << req->nmsgs << " messages)";
         auto poll_ctx = req->poll_ctx;
         // Wakeup app thread.
         {
@@ -1139,7 +1139,7 @@ void UcclFlow::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
     }
     ucclsackh->sack_bitmap_count = be16_t(qpw->pcb.sack_bitmap_count);
 
-    LOG(INFO) << "craft_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpidx;
+    VLOG(3) << "craft_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpidx;
 }
 
 void UcclFlow::test_rc_poll_cq(void)
@@ -1159,7 +1159,7 @@ void UcclFlow::test_rc_poll_cq(void)
         if (opcode != IBV_WC_RDMA_READ) {
             auto qp_num = ibv_wc_read_qp_num(cq_ex);
             auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
-            LOG(INFO) << "Event from UC QP#" << qpidx << ", wr_id: " << cq_ex->wr_id;
+            VLOG(3) << "Event from UC QP#" << qpidx << ", wr_id: " << cq_ex->wr_id;
         }
 
         auto send = opcode == IBV_WC_RDMA_WRITE;
@@ -1184,7 +1184,7 @@ void UcclFlow::test_rc_poll_cq(void)
                     }
                     rdma_ctx_->free_request(req);
                 }
-                LOG(INFO) << req->events << " events left for request " << rdma_ctx_->get_request_id(req, comm_base);
+                VLOG(3) << req->events << " events left for request " << rdma_ctx_->get_request_id(req, comm_base);
             }
         } else {
             DCHECK(opcode == IBV_WC_RECV_RDMA_WITH_IMM || opcode == IBV_WC_RDMA_READ);
@@ -1194,7 +1194,7 @@ void UcclFlow::test_rc_poll_cq(void)
         }
         
         if (fin) {
-            LOG(INFO) << "Request complete (" << req0->nmsgs << " messages)";
+            VLOG(2) << "Request complete (" << req0->nmsgs << " messages)";
             // Wakeup app thread.
             {
                 std::lock_guard<std::mutex> lock(req0->poll_ctx->mu);
@@ -1241,7 +1241,7 @@ void UcclFlow::check_ctrl_rq(bool force)
             rx_ack_wrs_[i].wr_id = chunk_addr;
         }
         DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
+        VLOG(3) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
         post_ctrl_rq_cnt_ -= kPostRQThreshold;
     }
 
@@ -1255,7 +1255,7 @@ void UcclFlow::check_ctrl_rq(bool force)
         }
         rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
+        VLOG(3) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
         rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = &rx_ack_wrs_[post_ctrl_rq_cnt_];
         post_ctrl_rq_cnt_ = 0;
     }
@@ -1266,7 +1266,7 @@ void UcclFlow::check_srq(bool force)
     while (post_srq_cnt_ >= kPostRQThreshold) {
         struct ibv_recv_wr *bad_wr;
         DCHECK(ibv_post_srq_recv(rdma_ctx_->srq_, &imm_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
+        VLOG(3) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
         post_srq_cnt_ -= kPostRQThreshold;
     }
 
@@ -1274,7 +1274,7 @@ void UcclFlow::check_srq(bool force)
         struct ibv_recv_wr *bad_wr;
         imm_wrs_[post_srq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_srq_recv(rdma_ctx_->srq_, &imm_wrs_[0], &bad_wr) == 0);
-        LOG(INFO) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
+        VLOG(3) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
         imm_wrs_[post_srq_cnt_ - 1].next = &imm_wrs_[post_srq_cnt_];
         post_srq_cnt_ = 0;
     }
@@ -1299,7 +1299,7 @@ int UcclFlow::receiver_poll_uc_cq(void)
                     auto drop_period = (uint32_t)(1 / kTestLossRate);
                     static uint32_t drop_cnt = 0;
                     if (drop_cnt++ % drop_period == 0) {
-                        LOG(INFO) << "Drop a chunk";
+                        VLOG(3) << "Drop a chunk";
                     } else {
                         rx_chunk(&ack_list);
                     }
@@ -1320,7 +1320,7 @@ int UcclFlow::receiver_poll_uc_cq(void)
                     poll_ctx->cv.notify_one();
                 }
                 rdma_ctx_->free_request(req);
-                LOG(INFO) << "Flush operation complete";
+                VLOG(2) << "Flush operation complete";
             }
         } else {
             LOG(ERROR) << "UC CQ state error: " << cq_ex->status << " from QP:" << ibv_wc_read_qp_num(cq_ex);
@@ -1375,7 +1375,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
 
     auto idx = send_comm_->fifo_head + 1;
     if (slots[0].idx != idx) {
-        LOG(INFO) << "Receiver is not ready, pending this tx work.";
+        VLOG(3) << "Receiver is not ready, pending this tx work.";
         return false;
     }
     
@@ -1383,7 +1383,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     auto nmsgs = slots[0].nmsgs;
     for (int i = 1; i < nmsgs; i++) while(slots[i].idx != idx) {}
 
-    LOG(INFO) << "Receiver is ready to receive";
+    VLOG(3) << "Receiver is ready to receive";
 
     __sync_synchronize();
 
@@ -1438,7 +1438,7 @@ bool UcclFlow::periodic_check() {
 
         // TODO(ilias): send RST packet, indicating removal of the flow.
         if (qpw->pcb.max_rto_rexmits_consectutive_reached()) {
-            LOG(INFO) << "Max RTO retransmits reached. Closing flow.";
+            VLOG(3) << "Max RTO retransmits reached. Closing flow.";
         }
 
         if (qpw->pcb.rto_expired()) {
@@ -1455,7 +1455,7 @@ void UcclFlow::fast_retransmit(struct UCQPWrapper *qpw)
         return;
     
     if (!qpw->txtracking.empty()) {
-        // LOG(INFO) << "Fast retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
+        // VLOG(3) << "Fast retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
         // Retransmit the oldest unacknowledged chunk.
         auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
@@ -1472,7 +1472,7 @@ void UcclFlow::rto_retransmit(struct UCQPWrapper *qpw)
         return;
 
     if (!qpw->txtracking.empty()) {
-        // LOG(INFO) << "RTO retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
+        // VLOG(3) << "RTO retransmitting oldest unacked chunk " << qpw->pcb.snd_una.to_uint32();
         // Retransmit the oldest unacknowledged chunk.
         auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
@@ -1538,11 +1538,11 @@ void UcclRDMAEngine::handle_rx_work(void)
     if (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
         1) {
         if (rx_work.opcode == Channel::Msg::kRx) {
-            LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRX";
+            VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kRX";
             active_flows_map_[rx_work.flow_id]->app_supply_rx_buf(rx_work);
         } else {
             DCHECK(rx_work.opcode == Channel::Msg::kFlush);
-            LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kFlush";
+            VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kFlush";
             active_flows_map_[rx_work.flow_id]->flush_rx_buf(rx_work);
         }
     }
@@ -1579,7 +1579,7 @@ void UcclRDMAEngine::handle_tx_work(void)
                                                 std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
 
-        LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kTX";
+        VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kTX";
 
         if (!active_flows_map_[tx_work.flow_id]->tx_messages(tx_work))
             pending_tx_work_.push_back(tx_work);
@@ -1650,23 +1650,23 @@ void UcclRDMAEngine::process_ctl_reqs() {
         1) {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::kInstallFlowRDMA:
-                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kInstallFlowRDMA";
+                    VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kInstallFlowRDMA";
                     handle_install_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kSyncFlowRDMA:
-                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kSyncFlowRDMA";
+                    VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kSyncFlowRDMA";
                     handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kRegMR:
-                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRegMR";
+                    VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kRegMR";
                     handle_regmr_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kRegMRDMABUF:
-                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kRegMRDMABUF";
+                    VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kRegMRDMABUF";
                     handle_regmr_dmabuf_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kDeregMR:
-                    LOG(INFO) << "[Engine#" << engine_idx_ << "] " << "kDeregMR";
+                    VLOG(2) << "[Engine#" << engine_idx_ << "] " << "kDeregMR";
                     handle_deregmr_on_engine_rdma(ctrl_work);
                 break;
             default:
@@ -1692,7 +1692,7 @@ void UcclRDMAEngine::handle_regmr_dmabuf_on_engine_rdma(Channel::CtrlMsg &ctrl_w
             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     DCHECK(mr != nullptr);
 
-    LOG(INFO) << "Memory region (DMA-BUF) address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
+    VLOG(3) << "Memory region (DMA-BUF) address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
 
     // Wakeup app thread.
     {
@@ -1722,7 +1722,7 @@ void UcclRDMAEngine::handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work)
     auto *mr = ibv_reg_mr(rdma_ctx->pd_, ctrl_work.meta.ToEngine.addr, ctrl_work.meta.ToEngine.len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     DCHECK(mr != nullptr);
 
-    LOG(INFO) << "Memory region address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
+    VLOG(3) << "Memory region address: "<< (uint64_t)mr->addr << ", lkey: " << mr->lkey << ", rkey: " << mr->rkey << ", size: " << mr->length;
 
     // Wakeup app thread.
     {
@@ -1782,7 +1782,7 @@ void UcclRDMAEngine::handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work
         comm_base->remote_ctx.fifo_key = meta.ToEngine.fifo_key;
     }
 
-    LOG(INFO) << "Remote FIFO addr " << comm_base->remote_ctx.fifo_addr
+    VLOG(3) << "Remote FIFO addr " << comm_base->remote_ctx.fifo_addr
               << " key " << comm_base->remote_ctx.fifo_key;
 
     if (rdma_ctx->ready_entropy_cnt_ < kPortEntropy) {
@@ -1931,7 +1931,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {
-                LOG(INFO) << "[Engine#" << engine_id << "] "
+                VLOG(3) << "[Engine#" << engine_id << "] "
                           << "running on CPU " << engine_cpu_id;
                 pin_thread_to_cpu(engine_cpu_id);
                 engine_ptr->run();
@@ -1963,7 +1963,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         << "ERROR: binding";
 
     DCHECK(!listen(listen_fd_, 128)) << "ERROR: listen";
-    LOG(INFO) << "[Endpoint] server ready, listening on port "
+    VLOG(3) << "[Endpoint] server ready, listening on port "
               << kBootstrapPort;
 }
 
@@ -2021,13 +2021,13 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
-    LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
+    VLOG(3) << "[Endpoint] connecting to " << remote_ip << ":"
               << kBootstrapPort;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
-        LOG(INFO) << "[Endpoint] connecting... Make sure the server is up.";
+        VLOG(3) << "[Endpoint] connecting... Make sure the server is up.";
         sleep(1);
     }
 
@@ -2043,7 +2043,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     while (true) {
         int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
-        LOG(INFO) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
+        VLOG(3) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
                   << "0x" << flow_id;
 
         // Check if the flow ID is unique, and return it to the server.
@@ -2092,13 +2092,13 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
-    LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
+    VLOG(3) << "[Endpoint] connecting to " << remote_ip << ":"
               << kBootstrapPort;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
-        LOG(INFO) << "[Endpoint] connecting... Make sure the server is up.";
+        VLOG(3) << "[Endpoint] connecting... Make sure the server is up.";
         sleep(1);
     }
 
@@ -2116,7 +2116,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     while (true) {
         int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
-        LOG(INFO) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
+        VLOG(3) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
                   << "0x" << flow_id;
 
         // Check if the flow ID is unique, and return it to the server.
@@ -2151,7 +2151,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
     DCHECK(bootstrap_fd >= 0);
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 
-    LOG(INFO) << "[Endpoint] accept from " << remote_ip << ":"
+    VLOG(3) << "[Endpoint] accept from " << remote_ip << ":"
               << cli_addr.sin_port;
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -2179,7 +2179,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
             }
         }
 
-        LOG(INFO) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
+        VLOG(3) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
                   << flow_id;
 
         // Ask client if this is unique
@@ -2215,7 +2215,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
     DCHECK(bootstrap_fd >= 0);
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 
-    LOG(INFO) << "[Endpoint] accept from " << remote_ip << ":"
+    VLOG(3) << "[Endpoint] accept from " << remote_ip << ":"
               << cli_addr.sin_port;
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -2245,7 +2245,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
             }
         }
 
-        LOG(INFO) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
+        VLOG(3) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
                   << flow_id;
 
         // Ask client if this is unique
@@ -2391,7 +2391,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         for (int i = 0; i < 16; ++i) {
             oss << ((i == 0)? "" : ":") << static_cast<int>(factory_dev->gid.raw[i]);
         }
-        VLOG(1) << oss.str();
+        VLOG(2) << oss.str();
     }
     
     if (FLAGS_v >= 1) {
@@ -2400,10 +2400,10 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         for (int i = 0; i < 16; ++i) {
             oss << ((i == 0)? "" : ":") << static_cast<int>(to_engine_meta->remote_gid.raw[i]);
         }
-        VLOG(1) << oss.str();
+        VLOG(2) << oss.str();
     }
 
-    LOG(INFO) << "[Endpoint] Sync GID done";
+    VLOG(3) << "[Endpoint] Sync GID done";
 
     // Which mtu to use?
     to_engine_meta->mtu = factory_dev->port_attr.active_mtu;
@@ -2433,7 +2433,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     }
     delete poll_ctx;
 
-    LOG(INFO) << "[Endpoint] Install flow done" << std::endl;
+    VLOG(3) << "[Endpoint] Install flow done" << std::endl;
 
     // Receive local QPN,PSN and FifoAddr from engine.
     int qidx = 0;
@@ -2460,7 +2460,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         DCHECK(ret == sizeof(struct RDMAExchangeFormatRemote));
     }
 
-    LOG(INFO) << "[Endpoint] Sync QPN and PSN done" << std::endl;
+    VLOG(3) << "[Endpoint] Sync QPN and PSN done" << std::endl;
     
     // Send remote QPN, PSN and FifoAddr to engine.
     poll_ctx = new PollCtx();
@@ -2490,7 +2490,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     }
     delete poll_ctx;
 
-    LOG(INFO) << "[Endpoint] Sync flow done" << std::endl;
+    VLOG(3) << "[Endpoint] Sync flow done" << std::endl;
 
     // sync so to receive flow_id packets.
     net_barrier(bootstrap_fd);
@@ -2539,8 +2539,7 @@ void RDMAEndpoint::stats_thread_fn() {
         for (auto &engine : engine_vec_) {
             s += engine->status_to_string();
         }
-
-        // std::cout << s << std::endl;
+        VLOG(1) << s;
     }
 }
 

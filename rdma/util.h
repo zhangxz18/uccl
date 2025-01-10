@@ -388,7 +388,7 @@ static inline int get_dev_index(const char* dev_name) {
             iap->ifa_addr->sa_family == AF_INET) {
             struct sockaddr_in* sa = (struct sockaddr_in*)iap->ifa_addr;
             if (strcmp(dev_name, iap->ifa_name) == 0) {
-                LOG(INFO) << "found network interface: " << iap->ifa_name;
+                VLOG(3) << "found network interface: " << iap->ifa_name;
                 ret = if_nametoindex(iap->ifa_name);
                 CHECK(ret) << "error: if_nametoindex failed";
                 break;

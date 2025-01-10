@@ -52,7 +52,7 @@ static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
             assert(((uint32_t *)data)[i] == 0x123456);
         }
 
-        // LOG(INFO) << "Iteration " << i << " done";
+        // VLOG(3) << "Iteration " << i << " done";
         std::cout << "Iteration " << i << " done" << std::endl;
     }
 }
@@ -70,7 +70,7 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
 
         ep.uccl_poll(poll_ctx);
 
-        // LOG(INFO) << "Iteration " << i << " done";
+        // VLOG(3) << "Iteration " << i << " done";
         std::cout << "Iteration " << i << " done" << std::endl;
     }
 }
@@ -88,7 +88,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
 
     if (FLAGS_warmup) {
         for (int i = 0; i < 1000; i++) {
-            int len = 100;
+            int len = FLAGS_msize;
             void *recv_data = data;
             auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
             ep.uccl_poll(poll_ctx);
@@ -96,7 +96,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
     }
 
     for (int i = 0; i < FLAGS_iterations; i++) {
-        int len = 100;
+        int len = FLAGS_msize;
         void *recv_data = data;
         auto t1 = rdtsc();
         auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
@@ -117,14 +117,14 @@ static void client_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
     if (FLAGS_warmup) {
         for (int i = 0; i < 1000; i++) {
             void *send_data = data;
-            auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, 100);
+            auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize);
             ep.uccl_poll(poll_ctx);
         }
     }
 
     for (int i = 0; i < FLAGS_iterations; i++) {
         void *send_data = data;
-        auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, 100);
+        auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize);
         ep.uccl_poll(poll_ctx);
     }
 }
@@ -334,8 +334,6 @@ static void client_worker(void)
 
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
-    // google::SetStderrLogging(google::GLOG_INFO);
-    FLAGS_v = 1;
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
     
