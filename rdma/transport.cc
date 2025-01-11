@@ -1985,27 +1985,27 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         ctx_pool_->push(new (ctx_pool_buf_ + i * sizeof(PollCtx)) PollCtx());
     }
 
-    // Create listening socket
-    listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    DCHECK(listen_fd_ >= 0) << "ERROR: opening socket";
+    // Create listening sockets
+    for (int i = 0; i < num_devices; i++) {
+        listen_fds_[i] = socket(AF_INET, SOCK_STREAM, 0);
+        DCHECK(listen_fds_[i] >= 0) << "ERROR: opening socket";
+        int flag = 1;
+        DCHECK(setsockopt(listen_fds_[i], SOL_SOCKET, SO_REUSEADDR, &flag,
+                        sizeof(int)) >= 0)
+            << "ERROR: setsockopt SO_REUSEADDR fails";
+        struct sockaddr_in serv_addr;
+        bzero((char *)&serv_addr, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = INADDR_ANY;
+        serv_addr.sin_port = htons(kBootstrapPort + i);
+        DCHECK(bind(listen_fds_[i], (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >=
+            0)
+            << "ERROR: binding";
 
-    int flag = 1;
-    DCHECK(setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &flag,
-                      sizeof(int)) >= 0)
-        << "ERROR: setsockopt SO_REUSEADDR fails";
-
-    struct sockaddr_in serv_addr;
-    bzero((char *)&serv_addr, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(kBootstrapPort);
-    DCHECK(bind(listen_fd_, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >=
-           0)
-        << "ERROR: binding";
-
-    DCHECK(!listen(listen_fd_, 128)) << "ERROR: listen";
-    VLOG(4) << "[Endpoint] server ready, listening on port "
-              << kBootstrapPort;
+        DCHECK(!listen(listen_fds_[i], 128)) << "ERROR: listen";
+        VLOG(4) << "[Endpoint] server ready, listening on port "
+                << kBootstrapPort + i;
+    }
 }
 
 RDMAEndpoint::~RDMAEndpoint() {
@@ -2016,7 +2016,8 @@ RDMAEndpoint::~RDMAEndpoint() {
     delete ctx_pool_;
     delete[] ctx_pool_buf_;
 
-    close(listen_fd_);
+    for (int i = 0; i < num_devices_; i++)
+        close(listen_fds_[i]);
 
     {
         std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
@@ -2053,7 +2054,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     serv_addr.sin_family = AF_INET;
     bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
           server->h_length);
-    serv_addr.sin_port = htons(kBootstrapPort);
+    serv_addr.sin_port = htons(kBootstrapPort + dev);
 
     // Force the socket to bind to the local IP address.
     sockaddr_in localaddr = {};
@@ -2063,7 +2064,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
     VLOG(4) << "[Endpoint] connecting to " << remote_ip << ":"
-              << kBootstrapPort;
+              << kBootstrapPort + dev;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
@@ -2124,7 +2125,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     serv_addr.sin_family = AF_INET;
     bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
           server->h_length);
-    serv_addr.sin_port = htons(kBootstrapPort);
+    serv_addr.sin_port = htons(kBootstrapPort + dev);
 
     // Force the socket to bind to the local IP address.
     sockaddr_in localaddr = {};
@@ -2134,7 +2135,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
 
     VLOG(4) << "[Endpoint] connecting to " << remote_ip << ":"
-              << kBootstrapPort;
+              << kBootstrapPort + dev;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
@@ -2188,7 +2189,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
     int bootstrap_fd;
 
     // Accept connection and set nonblocking and nodelay
-    bootstrap_fd = accept(listen_fd_, (struct sockaddr *)&cli_addr, &clilen);
+    bootstrap_fd = accept(listen_fds_[dev], (struct sockaddr *)&cli_addr, &clilen);
     DCHECK(bootstrap_fd >= 0);
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 
@@ -2252,7 +2253,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
     int bootstrap_fd;
 
     // Accept connection and set nonblocking and nodelay
-    bootstrap_fd = accept(listen_fd_, (struct sockaddr *)&cli_addr, &clilen);
+    bootstrap_fd = accept(listen_fds_[dev], (struct sockaddr *)&cli_addr, &clilen);
     DCHECK(bootstrap_fd >= 0);
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 

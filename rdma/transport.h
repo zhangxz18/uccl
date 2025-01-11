@@ -683,7 +683,8 @@ class RDMAEndpoint {
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
 
-    int listen_fd_;
+    // int listen_fd_;
+    int listen_fds_[NUM_DEVICES];
 
     std::mutex bootstrap_fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
