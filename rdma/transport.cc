@@ -1405,6 +1405,10 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
         
         // Can't send more than what the receiver can receive.
         if (size > slots[i].size) size = slots[i].size;
+
+        /// FIXME: This is a workaround for the case when the buffer 
+        /// provided by receiver is larger than the message.
+        if (size < slots[i].size) size = slots[i].size;
         
         struct FlowRequest *req = rdma_ctx_->get_request(&send_comm_->base);
         DCHECK(req);
