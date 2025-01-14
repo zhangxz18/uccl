@@ -72,6 +72,8 @@ class Channel {
         };
         Op opcode;
         FlowID flow_id;
+        struct ucclRequest *ureq;
+        
         union {
             // kTx
             struct {
@@ -314,7 +316,9 @@ class UcclFlow {
      * @brief Check if we need to post enough recv WQEs to the Ctrl QP.
      * @param force 
      */
-    void check_ctrl_rq(bool force = false);
+     inline void check_ctrl_rq(bool force = false) { rdma_ctx_->is_send_ ? sender_check_ctrl_rq(force) : receiver_check_ctrl_rq(); }
+     void sender_check_ctrl_rq(bool force = false);
+     void receiver_check_ctrl_rq(void);
 
     /**
      * @brief Rceive an ACK from the Ctrl QP.
@@ -720,6 +724,13 @@ class RDMAEndpoint {
                              const size_t size);
     // Post n buffers to engine for receiving data asynchronously.
     PollCtx *uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);
+
+    // Post a buffer to engine for sending data asynchronously.
+    PollCtx *uccl_send_async(ConnID flow_id, struct Mhandle *mhandle, const void *data,
+                             const size_t size, struct ucclRequest *ureq);
+    // Post n buffers to engine for receiving data asynchronously.
+    PollCtx *uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n, 
+                            struct ucclRequest *ureq);
 
     // Ensure that all received data is visible to GPU.
     PollCtx *uccl_flush(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);

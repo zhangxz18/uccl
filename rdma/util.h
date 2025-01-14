@@ -34,6 +34,9 @@
 
 namespace uccl {
 
+#define POISON_64 UINT64_MAX
+#define POISON_32 UINT32_MAX
+
 struct alignas(64) PollCtx {
     std::mutex mu;
     std::condition_variable cv;

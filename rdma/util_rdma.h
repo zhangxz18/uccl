@@ -323,6 +323,21 @@ struct RemoteRDMAContext {
     uint64_t fifo_addr;
 };
 
+/// plugin-level ///
+enum ReqType {
+    ReqTx,
+    ReqRx,
+    ReqFlush
+};
+
+struct ucclRequest {
+    enum ReqType type;
+    PollCtx *poll_ctx;
+    int n;
+    int data_len[kMaxRecv];
+};
+/// plugin-level ///
+
 /// @ref ncclIbRequest
 struct FlowRequest {
     enum type {
@@ -335,6 +350,7 @@ struct FlowRequest {
     enum type type;
     int nmsgs;
     PollCtx *poll_ctx;
+    struct ucclRequest *ureq;
 
     // Only used for testing RC.
     int events;

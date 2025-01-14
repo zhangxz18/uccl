@@ -133,6 +133,7 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
     auto mr = rx_work.rx.mr;
     auto n = rx_work.rx.n;
     auto poll_ctx = rx_work.poll_ctx;
+    auto ureq = rx_work.ureq;
 
     auto recv_comm_ = &rdma_ctx_->recv_comm_;
 
@@ -150,6 +151,7 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
     req->type = FlowRequest::RECV;
     req->nmsgs = n;
     req->poll_ctx = poll_ctx;
+    req->ureq = ureq;
 
     if constexpr (kTestRC) {
         // Post recv work requests for consuming immediate data.
@@ -180,6 +182,29 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
     auto rkey = slot.rkey;
     auto remote_addr = slot.addr;
     uint64_t wr_addr;
+
+    if (unlikely(req->ureq != nullptr)) {
+        // Use ctrl QP to send actual size, which should happen occasionally.
+        struct ibv_send_wr wr, *bad_wr;
+        wr.wr_id = POISON_64;
+        wr.sg_list = nullptr;
+        wr.num_sge = 0;
+        wr.next = nullptr;
+        wr.opcode = IBV_WR_SEND_WITH_IMM;
+        static int signal_cnt = 0;
+        if (signal_cnt++ % kSignalInterval == 0)
+            wr.send_flags = IBV_SEND_SIGNALED;
+        
+        IMMData imm_data(0);
+        imm_data.SetRID(slot.rid);
+        DCHECK(size <= (1ULL << 20));
+        imm_data.SetCSN(size);
+        imm_data.SetMID(mid);
+
+        wr.imm_data = htonl(imm_data.GetImmData());
+
+        DCHECK(ibv_post_send(rdma_ctx_->ctrl_qp_, &wr, &bad_wr) == 0);
+    }
 
     while (*sent_offset < size) {
         if constexpr (kTestNoTimingWheel) {
@@ -653,16 +678,20 @@ int UcclFlow::sender_poll_ctrl_cq(void)
 
         while (1) {
             if (cq_ex->status == IBV_WC_SUCCESS) {
-                // Completion for receiving ACKs.
-                auto num_ack = ntohl(ibv_wc_read_imm_data(cq_ex));
-                VLOG(4) << "Receive " << num_ack << " ACKs in one CtrlChunk, Chunk addr: " << cq_ex->wr_id;
-                auto chunk_addr = cq_ex->wr_id;
-                for (int i = 0; i < num_ack; i++) {
-                    auto pkt_addr = chunk_addr + i * CtrlChunkBuffPool::kPktSize;
-                    rx_ack(pkt_addr);
+                auto op = ibv_wc_read_opcode(cq_ex);
+                if (op == IBV_WC_RECV) {
+                    // Completion for receiving ACKs.
+                    auto imm_data = ntohl(ibv_wc_read_imm_data(cq_ex));
+                    auto num_ack = imm_data;
+                    VLOG(4) << "Receive " << num_ack << " ACKs in one CtrlChunk, Chunk addr: " << cq_ex->wr_id;
+                    auto chunk_addr = cq_ex->wr_id;
+                    for (int i = 0; i < num_ack; i++) {
+                        auto pkt_addr = chunk_addr + i * CtrlChunkBuffPool::kPktSize;
+                        rx_ack(pkt_addr);
+                    }
+                    post_ctrl_rq_cnt_++;
+                    rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
                 }
-                post_ctrl_rq_cnt_++;
-                rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
             } else {
                 LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
             }
@@ -692,9 +721,41 @@ int UcclFlow::receiver_poll_ctrl_cq(void)
         while (1) {
             
             if (cq_ex->status == IBV_WC_SUCCESS) {
-                // Completion for sending ACKs.
-                auto chunk_addr = cq_ex->wr_id;
-                rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
+                auto op = ibv_wc_read_opcode(cq_ex);
+                if (unlikely(op == IBV_WC_RECV)) {
+                    // Receiving actual size.
+                    auto imm_data = ntohl(ibv_wc_read_imm_data(cq_ex));
+                    auto rid = IMMData(imm_data).GetRID();
+                    auto mid = IMMData(imm_data).GetMID();
+                    auto size = IMMData(imm_data).GetCSN();
+                    auto recv_comm = &rdma_ctx_->recv_comm_;
+                    auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
+                    {
+                        // Adjust expected size.
+                        req->recv.elems[mid].size = size;
+                        req->ureq->data_len[mid] = size;
+                    }
+                    uint32_t *received_bytes = req->recv.received_bytes;
+                    if (received_bytes[mid] == size) req->recv.fin_msg++;
+                    if (req->recv.fin_msg == req->nmsgs) { // This request (may contain multiple messages) is complete.
+                        VLOG(3) << "Request complete (" << req->nmsgs << " messages)";
+                        auto poll_ctx = req->poll_ctx;
+                        // Wakeup app thread.
+                        {
+                            std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                            poll_ctx->done = true;
+                            poll_ctx->cv.notify_one();
+                        }
+                        // Free the request.
+                        rdma_ctx_->free_request(req);
+                    }
+                    post_ctrl_rq_cnt_++;
+
+                } else {
+                    // Completion for sending ACKs.
+                    auto chunk_addr = cq_ex->wr_id;
+                    rdma_ctx_->ctrl_chunk_pool_->free_buff(chunk_addr);
+                }
             } else {
                 LOG(ERROR) << "Ctrl CQ state error: " << cq_ex->status;
             }
@@ -1238,7 +1299,19 @@ int UcclFlow::sender_poll_uc_cq(void)
     return cq_budget;
 }
 
-void UcclFlow::check_ctrl_rq(bool force)
+void UcclFlow::receiver_check_ctrl_rq(void)
+{
+    while (post_ctrl_rq_cnt_) {
+        struct ibv_recv_wr wr, *bad_wr;
+        wr.sg_list = nullptr;
+        wr.num_sge = 0;
+        wr.next = nullptr;
+        DCHECK(ibv_post_recv(rdma_ctx_->ctrl_qp_, &wr, &bad_wr) == 0);
+        post_ctrl_rq_cnt_--;
+    }
+}
+
+void UcclFlow::sender_check_ctrl_rq(bool force)
 {
     // Populate recv work requests for consuming control packets.
     while (post_ctrl_rq_cnt_ >= kPostRQThreshold) {
@@ -1375,6 +1448,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     auto size = tx_work.tx.size;
     auto mr = tx_work.tx.mr;
     auto poll_ctx = tx_work.poll_ctx;
+    auto ureq = tx_work.ureq;
 
     auto send_comm_ = &rdma_ctx_->send_comm_;
 
@@ -1401,15 +1475,19 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
         if (reqs[i] != nullptr) continue;
         DCHECK(!(slots[i].size < 0 || slots[i].addr == 0 || slots[i].rkey == 0));
         
-        // Can't send more than what the receiver can receive.
-        if (size > slots[i].size) size = slots[i].size;
-
-        /// FIXME: This is a workaround for the case when the buffer 
-        /// provided by receiver is larger than the message.
-        if (size < slots[i].size) size = slots[i].size;
-        
         struct FlowRequest *req = rdma_ctx_->get_request(&send_comm_->base);
         DCHECK(req);
+
+        if (size > slots[i].size) {
+            // Can't send more than what the receiver can receive.
+            size = slots[i].size;
+        }
+        
+        if (ureq) {
+            req->ureq = size < slots[i].size ? ureq : nullptr;
+            // Adjust expected size.
+            ureq->data_len[0] = size;
+        }
 
         req->type = FlowRequest::SEND;
         req->nmsgs = nmsgs;
@@ -2327,7 +2405,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
 }
 
 PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const void *data,
-                                   const size_t size) {
+                                   const size_t size, struct ucclRequest *ureq) 
+{
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
@@ -2338,6 +2417,30 @@ PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, 
     msg.tx.data = const_cast<void *>(data);
     msg.tx.size = size;
     msg.tx.mr = mhandle->mr;
+    msg.ureq = ureq;
+    
+    std::atomic_store_explicit(&poll_ctx->fence, true,
+                               std::memory_order_release);
+    while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->tx_cmdq_,
+                                 &msg, 1, nullptr) != 1);
+
+    return poll_ctx;
+}
+
+PollCtx *RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const void *data,
+                                   const size_t size) 
+{
+    auto *poll_ctx = ctx_pool_->pop();
+    Channel::Msg msg = {
+        .opcode = Channel::Msg::Op::kTx,
+        .flow_id = conn_id.flow_id,
+        .poll_ctx = poll_ctx,
+    };
+    
+    msg.tx.data = const_cast<void *>(data);
+    msg.tx.size = size;
+    msg.tx.mr = mhandle->mr;
+    msg.ureq = nullptr;
     
     std::atomic_store_explicit(&poll_ctx->fence, true,
                                std::memory_order_release);
@@ -2368,7 +2471,8 @@ PollCtx *RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, voi
     return poll_ctx;
 }
 
-PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n) {
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq) 
+{
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
@@ -2382,6 +2486,29 @@ PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles
         msg.rx.mr[i] = mhandles[i]->mr;
     }
     msg.rx.n = n;
+    msg.ureq = ureq;
+
+    while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->rx_cmdq_,
+                                 &msg, 1, nullptr) != 1);
+    return poll_ctx;
+}
+
+PollCtx *RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n) 
+{
+    auto *poll_ctx = ctx_pool_->pop();
+    Channel::Msg msg = {
+        .opcode = Channel::Msg::Op::kRx,
+        .flow_id = conn_id.flow_id,
+        .poll_ctx = poll_ctx,
+    };
+
+    for (int i = 0; i < n; i++) {
+        msg.rx.data[i] = data[i];
+        msg.rx.size[i] = size[i];
+        msg.rx.mr[i] = mhandles[i]->mr;
+    }
+    msg.rx.n = n;
+    msg.ureq = nullptr;
 
     while (jring_mp_enqueue_bulk(channel_vec_[conn_id.engine_idx]->rx_cmdq_,
                                  &msg, 1, nullptr) != 1);

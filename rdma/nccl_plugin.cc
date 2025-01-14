@@ -20,19 +20,6 @@ void interrupt_handler(int signal) {
     quit = true;
 }
 
-enum ReqType {
-    ReqTx,
-    ReqRx,
-    ReqFlush
-};
-
-struct ucclRequest {
-    enum ReqType type;
-    PollCtx *poll_ctx;
-    int n;
-    int data_len[kMaxRecv];
-};
-
 class ucclRequestBuffPool : public BuffPool {
     static constexpr size_t num_elements = kMaxReq << 1; // Send and receive.
     static constexpr size_t element_size = sizeof(ucclRequest);
@@ -311,7 +298,7 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
     if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
-    req->poll_ctx = ep->uccl_send_async(conn_id, mh, data, size);
+    req->poll_ctx = ep->uccl_send_async(conn_id, mh, data, size, req);
 
     req->type = ReqTx;
     req->data_len[0] = size;
@@ -332,7 +319,7 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
     if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
-    req->poll_ctx = ep->uccl_recv_async(conn_id, mhs, data, sizes, n);
+    req->poll_ctx = ep->uccl_recv_async(conn_id, mhs, data, sizes, n, req);
 
     req->type = ReqRx;
     for (int i = 0; i < n; i++) req->data_len[i] = sizes[i];

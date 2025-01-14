@@ -348,8 +348,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     }
 
     // Populate recv work requests on Ctrl QP for consuming control packets if we are sender.
-    if (is_send_)
-    {
+    if (is_send_) {
         struct ibv_sge sge;
         for (int i = 0; i < CtrlChunkBuffPool::kNumChunk - 1; i++) {
             uint64_t chunk_addr;
@@ -364,6 +363,14 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
             wr.num_sge = 1;
             struct ibv_recv_wr *bad_wr;
             if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
+                throw std::runtime_error("ibv_post_recv failed");
+        }
+    } else {
+        for (int i = 0; i < CtrlChunkBuffPool::kNumChunk - 1; i++) {
+            wr.sg_list = nullptr;
+            wr.num_sge = 0;
+            wr.next = nullptr;
+            if (ibv_post_recv(ctrl_qp_, &wr, nullptr))
                 throw std::runtime_error("ibv_post_recv failed");
         }
     }
