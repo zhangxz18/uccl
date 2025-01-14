@@ -223,7 +223,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
         IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
     
-    if (kTestNoHWTimestamp)
+    if constexpr (kTestNoHWTimestamp)
         cq_ex_attr.wc_flags &= ~IBV_WC_EX_WITH_COMPLETION_TIMESTAMP;
 
     cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
@@ -340,7 +340,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
     memset(&wr, 0, sizeof(wr));
 
     // Populate recv work requests to SRQ for consuming immediate data.
-    if (!kTestRC) {
+    if constexpr (!kTestRC) {
         for (int i = 0; i < kMaxSRQ; i++) {
             struct ibv_recv_wr *bad_wr;
             DCHECK(ibv_post_srq_recv(srq_, &wr, &bad_wr) == 0);

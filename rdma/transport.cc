@@ -105,7 +105,7 @@ void UcclFlow::flush_rx_buf(Channel::Msg &rx_work)
     req->type = FlowRequest::FLUSH;
     req->nmsgs = n;
     req->poll_ctx = poll_ctx;
-    if (kTestRC)
+    if constexpr (kTestRC)
         req->events = 1;
 
     struct ibv_send_wr wr;
@@ -151,7 +151,7 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
     req->nmsgs = n;
     req->poll_ctx = poll_ctx;
 
-    if (kTestRC) {
+    if constexpr (kTestRC) {
         // Post recv work requests for consuming immediate data.
         struct ibv_recv_wr wr, *bad_wr;
         memset(&wr, 0, sizeof(wr));
@@ -159,14 +159,11 @@ void UcclFlow::app_supply_rx_buf(Channel::Msg &rx_work)
         req->events = kTestRCEntropy;
 
         for (int i = 0; i < kTestRCEntropy; i++) {
-            auto qpidx = i;
-            auto qpw = &rdma_ctx_->uc_qps_[qpidx];
             wr.wr_id = rdma_ctx_->get_request_id(req, &recv_comm_->base);
             wr.sg_list = nullptr;
             wr.num_sge = 0;
             wr.next = nullptr;
-            DCHECK(ibv_post_recv(qpw->qp, &wr, &bad_wr) == 0);
-            VLOG(4) << "Post wr_id: " << wr.wr_id << " to QP#" << qpidx;
+            DCHECK(ibv_post_srq_recv(rdma_ctx_->srq_, &wr, &bad_wr) == 0);
         }
     }
 
@@ -185,7 +182,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
     uint64_t wr_addr;
 
     while (*sent_offset < size) {
-        if (kTestNoTimingWheel) {
+        if constexpr (kTestNoTimingWheel) {
             req->events++;
             DCHECK(rdma_ctx_->wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
@@ -522,7 +519,7 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
         auto t1 = qpw->txtracking.ack_chunks(num_acked_chunks);
         auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
         uint64_t t5;
-        if (kTestNoHWTimestamp)
+        if constexpr (kTestNoHWTimestamp)
             t5 = t6;
         else
             t5 = engine_->convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
@@ -1054,7 +1051,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     qpw->rxtracking.ready_csn_.insert(csn);
 
     // Always use the latest timestamp.
-    if (kTestNoHWTimestamp)
+    if constexpr (kTestNoHWTimestamp)
         qpw->pcb.t_remote_nic_rx = now;
     else
         qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
@@ -1137,7 +1134,7 @@ void UcclFlow::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
 
     auto t4 = rdtsc();
     uint64_t t2;
-    if (kTestNoHWTimestamp)
+    if constexpr (kTestNoHWTimestamp)
         t2 = qpw->pcb.t_remote_nic_rx;
     else
         t2 = engine_->convert_nic_to_host(t4, rdma_ctx_->uc_qps_[qpidx].pcb.t_remote_nic_rx);
@@ -1305,9 +1302,10 @@ int UcclFlow::receiver_poll_uc_cq(void)
         if (cq_ex->status == IBV_WC_SUCCESS) {
             auto opcode = ibv_wc_read_opcode(cq_ex);
             if (likely(opcode == IBV_WC_RECV_RDMA_WITH_IMM)) {
-                if (kTestLossRate == 0)
+                if constexpr (!kTestLoss)
                     rx_chunk(&ack_list);
                 else {
+                    DCHECK(kTestLossRate > 0);
                     auto drop_period = (uint32_t)(1 / kTestLossRate);
                     static uint32_t drop_cnt = 0;
                     if (drop_cnt++ % drop_period == 0) {
@@ -1421,7 +1419,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
         req->send.data = data;
         req->send.lkey = mr->lkey;
 
-        if (kTestRC)
+        if constexpr (kTestRC)
             req->events = kTestRCEntropy;
 
         // Track this request.
@@ -1432,7 +1430,7 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
             if (reqs[i] == nullptr) return true;
         }
 
-        if (kTestRC)
+        if constexpr (kTestRC)
             test_rc_post_multi_messages(slot);
         else
             post_multi_messages(slot);
@@ -1446,7 +1444,10 @@ bool UcclFlow::tx_messages(Channel::Msg &tx_work) {
     return true;
 }
 
-bool UcclFlow::periodic_check() {
+bool UcclFlow::periodic_check() 
+{
+    if constexpr (kTestNoRTO)
+        return true;
     
     for (int i = 0; i < kPortEntropy; i++) {
         auto qpw = &rdma_ctx_->uc_qps_[i];
@@ -1633,7 +1634,7 @@ void UcclRDMAEngine::handle_tx_work(void)
 
 void UcclRDMAEngine::handle_timing_wheel(void)
 {
-    if (kTestNoTimingWheel) return;
+    if constexpr (kTestNoTimingWheel) return;
     for (auto flow: active_flows_map_) {
         flow.second->burst_timing_wheel();
     }
@@ -1660,7 +1661,7 @@ void UcclRDMAEngine::run() {
         
         handle_timing_wheel();
         
-        if (kTestRC)
+        if constexpr (kTestRC)
             test_rc_handle_completion();
         else
             handle_completion();
@@ -1676,7 +1677,7 @@ void UcclRDMAEngine::run() {
 void UcclRDMAEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
-    if (!kTestRC)
+    if constexpr (!kTestRC)
         handle_rto();
     process_ctl_reqs();
 }
