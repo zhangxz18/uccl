@@ -394,11 +394,7 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
 }
 
 RDMAContext::~RDMAContext()
-{
-    if (srq_ != nullptr) {
-        ibv_destroy_srq(srq_);
-    }
-    
+{    
     if (gpu_flush_mr_ != nullptr) {
         munmap(gpu_flush_mr_->addr, gpu_flush_mr_->length);
         ibv_dereg_mr(gpu_flush_mr_);
@@ -444,6 +440,10 @@ RDMAContext::~RDMAContext()
 
     for (int i = 0; i < kPortEntropy; i++) {
         ibv_destroy_qp(uc_qps_[i].qp);
+    }
+
+    if (srq_ != nullptr) {
+        ibv_destroy_srq(srq_);
     }
 
     if (pd_ != nullptr) {

@@ -687,9 +687,13 @@ class RDMAEndpoint {
     // int listen_fd_;
     int listen_fds_[NUM_DEVICES];
 
-    std::mutex bootstrap_fd_map_mu_;
+    std::mutex accept_fd_map_mu_[NUM_DEVICES];
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
-    std::unordered_map<FlowID, int> bootstrap_fd_map_;
+    std::unordered_map<FlowID, int> accept_fd_map_[NUM_DEVICES];
+
+    std::mutex connect_fd_map_mu_[NUM_DEVICES];
+    // Mapping from unique (within this engine) flow_id to the boostrap fd.
+    std::unordered_map<FlowID, int> connect_fd_map_[NUM_DEVICES];
 
    public:
     RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
