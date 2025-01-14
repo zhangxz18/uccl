@@ -78,12 +78,6 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
 static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
     // Latency is measured at server side as it is asynchronous receive
-    // c6525-25g, kPortEntropy = 32/1
-    // Min: 16/15us
-    // P50: 23/23us
-    // P90: 33/32us
-    // P99: 43/41us
-    // Max: 614/635us
     std::vector<uint64_t> lat_vec;
 
     if (FLAGS_warmup) {

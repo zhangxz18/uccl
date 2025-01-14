@@ -66,7 +66,7 @@ static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 
 // For debugging and testing.
 // Use RDMA RC instead of UC.
-static const bool kTestRC = true;
+static const bool kTestRC = false;
 static const uint32_t kTestRCEntropy = 64;
 // Disable hardware timestamp.
 static const bool kTestNoHWTimestamp = false;
