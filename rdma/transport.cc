@@ -2155,7 +2155,6 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
         VLOG(4) << "[Endpoint] connecting... Make sure the server is up.";
-        sleep(1);
     }
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -2226,7 +2225,6 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
         VLOG(4) << "[Endpoint] connecting... Make sure the server is up.";
-        sleep(1);
     }
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -2293,7 +2291,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
     FlowID flow_id;
     while (true) {
         static thread_local std::mt19937 generator(std::random_device{}());
-        std::uniform_int_distribution<FlowID> distribution(0, 65536);
+        std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
         flow_id = distribution(generator);
         bool unique;
         {
@@ -2312,7 +2310,9 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
                   << flow_id;
 
         // Ask client if this is unique
-        int ret = send_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+        // Let client use flow_id + 0xdeadbeef
+        FlowID cid = flow_id + 0xdeadbeef;
+        int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
         bool unique_from_client;
         ret = receive_message(bootstrap_fd, &unique_from_client, sizeof(bool));
@@ -2361,7 +2361,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
     FlowID flow_id;
     while (true) {
         static thread_local std::mt19937 generator(std::random_device{}());
-        std::uniform_int_distribution<FlowID> distribution(0, 65536);
+        std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
         flow_id = distribution(generator);
         bool unique;
         {
@@ -2380,7 +2380,9 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
                   << flow_id;
 
         // Ask client if this is unique
-        int ret = send_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+        // Let client use flow_id + 0xdeadbeef
+        FlowID cid = flow_id + 0xdeadbeef;
+        int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
         bool unique_from_client;
         ret = receive_message(bootstrap_fd, &unique_from_client, sizeof(bool));
