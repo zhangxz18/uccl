@@ -1581,7 +1581,8 @@ void UcclRDMAEngine::handle_completion(void)
 void UcclRDMAEngine::handle_rx_work(void) 
 {
     Channel::Msg rx_work;
-    if (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
+    int budget = 0;
+    while (jring_sc_dequeue_bulk(channel_->rx_cmdq_, &rx_work, 1, nullptr) ==
         1) {
         if (rx_work.opcode == Channel::Msg::kRx) {
             VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kRX";
@@ -1591,6 +1592,7 @@ void UcclRDMAEngine::handle_rx_work(void)
             VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kFlush";
             active_flows_map_[rx_work.flow_id]->flush_rx_buf(rx_work);
         }
+        if (++budget == kMaxRxWork) break;
     }
 }
 
