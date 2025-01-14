@@ -35,7 +35,7 @@ DEFINE_uint32(nmsg, 8, "Number of messages within one request to post.");
 DEFINE_uint32(nreq, 4, "Outstanding requests to post.");
 DEFINE_uint32(msize, 65536, "Size of message.");
 DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
-DEFINE_bool(flush, true, "Whether to flush after receiving.");
+DEFINE_bool(flush, false, "Whether to flush after receiving.");
 
 static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle, void *data)
 {
