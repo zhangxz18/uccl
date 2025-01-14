@@ -1634,7 +1634,7 @@ void UcclRDMAEngine::handle_tx_work(void)
 
 void UcclRDMAEngine::handle_timing_wheel(void)
 {
-    if constexpr (kTestNoTimingWheel) return;
+    if constexpr (kTestNoTimingWheel || kTestRC) return;
     for (auto flow: active_flows_map_) {
         flow.second->burst_timing_wheel();
     }

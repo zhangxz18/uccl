@@ -559,6 +559,7 @@ class UcclRDMAEngine {
     }
 
     inline void handle_clock_synchronization(void) {
+        if constexpr (kTestRC) return;
         auto host_clock = rdtsc();
         if (need_sync(host_clock)) {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
