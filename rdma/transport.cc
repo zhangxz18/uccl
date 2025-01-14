@@ -2102,14 +2102,12 @@ RDMAEndpoint::~RDMAEndpoint() {
     delete[] ctx_pool_buf_;
 
     for (int i = 0; i < num_devices_; i++)
-    {
         close(listen_fds_[i]);
-        std::lock_guard<std::mutex> lock(accept_fd_map_mu_[i]);
-        for (auto &[flow_id, boostrap_id] : accept_fd_map_[i]) {
-            close(boostrap_id);
-        }
-        for (auto &[flow_id, boostrap_id] : connect_fd_map_[i]) {
-            close(boostrap_id);
+    
+    {
+        std::lock_guard<std::mutex> lock(fd_map_mu_);
+        for (auto &[flow_id, boostrap_fd] : fd_map_) {
+            close(boostrap_fd);
         }
     }
 
@@ -2178,10 +2176,10 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
         // Check if the flow ID is unique, and return it to the server.
         bool unique;
         {
-            std::lock_guard<std::mutex> lock(connect_fd_map_mu_[dev]);
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
             unique =
-                (connect_fd_map_[dev].find(flow_id) == connect_fd_map_[dev].end());
-            if (unique) connect_fd_map_[dev][flow_id] = bootstrap_fd;
+                (fd_map_.find(flow_id) == fd_map_.end());
+            if (unique) fd_map_[flow_id] = bootstrap_fd;
         }
 
         ret = send_message(bootstrap_fd, &unique, sizeof(bool));
@@ -2251,10 +2249,10 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
         // Check if the flow ID is unique, and return it to the server.
         bool unique;
         {
-            std::lock_guard<std::mutex> lock(connect_fd_map_mu_[dev]);
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
             unique =
-                (connect_fd_map_[dev].find(flow_id) == connect_fd_map_[dev].end());
-            if (unique) connect_fd_map_[dev][flow_id] = bootstrap_fd;
+                (fd_map_.find(flow_id) == fd_map_.end());
+            if (unique) fd_map_[flow_id] = bootstrap_fd;
         }
 
         ret = send_message(bootstrap_fd, &unique, sizeof(bool));
@@ -2295,16 +2293,16 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
     FlowID flow_id;
     while (true) {
         static thread_local std::mt19937 generator(std::random_device{}());
-        std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
+        std::uniform_int_distribution<FlowID> distribution(0, 65536);
         flow_id = distribution(generator);
         bool unique;
         {
-            std::lock_guard<std::mutex> lock(accept_fd_map_mu_[dev]);
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
             unique =
-                (accept_fd_map_[dev].find(flow_id) == accept_fd_map_[dev].end());
+                (fd_map_.find(flow_id) == fd_map_.end());
             if (unique) {
                 // Speculatively insert the flow ID.
-                accept_fd_map_[dev][flow_id] = bootstrap_fd;
+                fd_map_[flow_id] = bootstrap_fd;
             } else {
                 continue;
             }
@@ -2324,8 +2322,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
             break;
         } else {
             // Remove the speculatively inserted flow ID.
-            std::lock_guard<std::mutex> lock(accept_fd_map_mu_[dev]);
-            DCHECK(1 == accept_fd_map_[dev].erase(flow_id));
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            DCHECK(1 == fd_map_.erase(flow_id));
         }
     }
 
@@ -2363,16 +2361,16 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
     FlowID flow_id;
     while (true) {
         static thread_local std::mt19937 generator(std::random_device{}());
-        std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
+        std::uniform_int_distribution<FlowID> distribution(0, 65536);
         flow_id = distribution(generator);
         bool unique;
         {
-            std::lock_guard<std::mutex> lock(accept_fd_map_mu_[dev]);
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
             unique =
-                (accept_fd_map_[dev].find(flow_id) == accept_fd_map_[dev].end());
+                (fd_map_.find(flow_id) == fd_map_.end());
             if (unique) {
                 // Speculatively insert the flow ID.
-                accept_fd_map_[dev][flow_id] = bootstrap_fd;
+                fd_map_[flow_id] = bootstrap_fd;
             } else {
                 continue;
             }
@@ -2392,8 +2390,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
             break;
         } else {
             // Remove the speculatively inserted flow ID.
-            std::lock_guard<std::mutex> lock(accept_fd_map_mu_[dev]);
-            DCHECK(1 == accept_fd_map_[dev].erase(flow_id));
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            DCHECK(1 == fd_map_.erase(flow_id));
         }
     }
 
