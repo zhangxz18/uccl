@@ -208,7 +208,7 @@ static_assert(hardware_destructive_interference_size == 64);
 
 static inline jring_t* create_ring(size_t element_size, size_t element_count) {
     size_t ring_sz = jring_get_buf_ring_size(element_size, element_count);
-    VLOG(4) << "Ring size: " << ring_sz << " bytes, msg size: " << element_size
+    VLOG(5) << "Ring size: " << ring_sz << " bytes, msg size: " << element_size
             << " bytes, element count: " << element_count;
     jring_t* ring = CHECK_NOTNULL(reinterpret_cast<jring_t*>(
         aligned_alloc(hardware_constructive_interference_size, ring_sz)));
@@ -391,7 +391,7 @@ static inline int get_dev_index(const char* dev_name) {
             iap->ifa_addr->sa_family == AF_INET) {
             struct sockaddr_in* sa = (struct sockaddr_in*)iap->ifa_addr;
             if (strcmp(dev_name, iap->ifa_name) == 0) {
-                VLOG(4) << "found network interface: " << iap->ifa_name;
+                VLOG(5) << "found network interface: " << iap->ifa_name;
                 ret = if_nametoindex(iap->ifa_name);
                 CHECK(ret) << "error: if_nametoindex failed";
                 break;
@@ -422,7 +422,7 @@ static inline std::string get_dev_ip(const char* dev_name) {
             tmpAddrPtr = &((struct sockaddr_in*)ifa->ifa_addr)->sin_addr;
             char addressBuffer[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, tmpAddrPtr, addressBuffer, INET_ADDRSTRLEN);
-            VLOG(4) << Format("%s IP Address %s\n", ifa->ifa_name,
+            VLOG(5) << Format("%s IP Address %s\n", ifa->ifa_name,
                               addressBuffer);
             return std::string(addressBuffer);
         } else if (ifa->ifa_addr->sa_family == AF_INET6) {  // check it is IP6
@@ -430,7 +430,7 @@ static inline std::string get_dev_ip(const char* dev_name) {
             tmpAddrPtr = &((struct sockaddr_in6*)ifa->ifa_addr)->sin6_addr;
             char addressBuffer[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, tmpAddrPtr, addressBuffer, INET6_ADDRSTRLEN);
-            VLOG(4) << Format("%s IP Address %s\n", ifa->ifa_name,
+            VLOG(5) << Format("%s IP Address %s\n", ifa->ifa_name,
                               addressBuffer);
             return std::string(addressBuffer);
         }

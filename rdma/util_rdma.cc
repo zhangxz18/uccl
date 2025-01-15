@@ -115,7 +115,7 @@ void RDMAFactory::init_dev(int gid_idx)
         dev.dma_buf_support = !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
         ibv_dealloc_pd(pd);
 
-        VLOG(4) << "DMA-BUF support: " << dev.dma_buf_support;
+        VLOG(5) << "DMA-BUF support: " << dev.dma_buf_support;
     }
 
     rdma_ctl.gid_2_dev_map.insert({gid_idx, rdma_ctl.devices_.size()});
@@ -365,14 +365,6 @@ RDMAContext::RDMAContext(int dev, struct XchgMeta meta):
             if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
                 throw std::runtime_error("ibv_post_recv failed");
         }
-    } else {
-        for (int i = 0; i < CtrlChunkBuffPool::kNumChunk - 1; i++) {
-            wr.sg_list = nullptr;
-            wr.num_sge = 0;
-            wr.next = nullptr;
-            if (ibv_post_recv(ctrl_qp_, &wr, nullptr))
-                throw std::runtime_error("ibv_post_recv failed");
-        }
     }
 
     // Populate recv work requestrs on Retr QP for consuming retransmission chunks if we are receiver.
@@ -460,7 +452,7 @@ RDMAContext::~RDMAContext()
         ibv_destroy_cq(ibv_cq_ex_to_cq(cq_ex_));
     }
 
-    VLOG(4) << "RDMAContext destroyed";
+    VLOG(5) << "RDMAContext destroyed";
 }
 
 uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)

@@ -173,12 +173,14 @@ class CtrlChunkBuffPool : public BuffPool {
         ~CtrlChunkBuffPool() = default;
 };
 
-class IMMData{
+class IMMData {
     public:
-        // High                              Low
-        //  |  HINT  |  CSN  |  RID  |  MID  |
-        //     1bit    20bit    8bit    3bit
+        // High---------------------------------32bit---------------------------------Low
+        //  |  HINT  |  Last Chunk  |***Reserved***|  NCHUNK  |  CSN  |  RID  |  MID  |
+        //     1bit       1bit            6bit         5bit      8bit    8bit    3bit
         constexpr static int kHint = 31;
+        constexpr static int kLC = 30;
+        constexpr static int kNCHUNK = 19;
         constexpr static int kCSN = 11;
         constexpr static int kRID = 3;
         constexpr static int kMID = 0;
@@ -190,8 +192,16 @@ class IMMData{
             return (imm_data_ >> kHint) & 0x1;
         }
 
+        inline uint32_t GetLC(void) {
+            return (imm_data_ >> kLC) & 0x1;
+        }
+
+        inline uint32_t GetNCHUNK(void) {
+            return (imm_data_ >> kNCHUNK) & 0x1F;
+        }
+
         inline uint32_t GetCSN(void) {
-            return (imm_data_ >> kCSN) & 0xFFFFF;
+            return (imm_data_ >> kCSN) & 0xFF;
         }
 
         inline uint32_t GetRID(void) {
@@ -206,8 +216,16 @@ class IMMData{
             imm_data_ |= (hint & 0x1) << kHint;
         }
 
+        inline void SetLC(uint32_t lc) {
+            imm_data_ |= (lc & 0x1) << kLC;
+        }
+
+        inline void SetNCHUNK(uint32_t nchunk) {
+            imm_data_ |= (nchunk & 0x1F) << kNCHUNK;
+        }
+
         inline void SetCSN(uint32_t psn) {
-            imm_data_ |= (psn & 0xFFFFF) << kCSN;
+            imm_data_ |= (psn & 0xFF) << kCSN;
         }
 
         inline void SetRID(uint32_t rid) {
@@ -300,9 +318,9 @@ struct FifoItem {
     uint32_t size;
     uint32_t rkey;
     uint32_t nmsgs;
-    uint64_t idx;
     uint32_t rid;
-    char padding[28];
+    uint64_t idx;
+    char padding[32];
 };
 static_assert(sizeof(struct FifoItem) == 64, "FifoItem size is not 64 bytes");
 
