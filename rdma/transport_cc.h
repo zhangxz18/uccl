@@ -11,100 +11,12 @@
 #include <vector>
 #include <unordered_map>
 
+#include "util.h"
 #include "timely.h"
 #include "timing_wheel.h"
 
 namespace uccl {
 namespace swift {
-
-constexpr bool seqno_lt(uint32_t a, uint32_t b) {
-    return static_cast<int32_t>(a - b) < 0;
-}
-constexpr bool seqno_le(uint32_t a, uint32_t b) {
-    return static_cast<int32_t>(a - b) <= 0;
-}
-constexpr bool seqno_eq(uint32_t a, uint32_t b) {
-    return static_cast<int32_t>(a - b) == 0;
-}
-constexpr bool seqno_ge(uint32_t a, uint32_t b) {
-    return static_cast<int32_t>(a - b) >= 0;
-}
-constexpr bool seqno_gt(uint32_t a, uint32_t b) {
-    return static_cast<int32_t>(a - b) > 0;
-}
-
-#define UINT_CSN_MASK 0xFF // 8bit
-
-/**
- * @brief An X-bit (x <= 32) unsigned integer used for Chunk Sequence Number (CSN).
- */
-class UINT_CSN {
-    public:
-        UINT_CSN() : value_(0) {}
-        UINT_CSN(uint32_t value) : value_(value & UINT_CSN_MASK) {}
-        UINT_CSN(const UINT_CSN &other) : value_(other.value_) {}
-
-        static inline bool uintcsn_seqno_le(UINT_CSN a, UINT_CSN b) {
-            return seqno_le(a.value_, b.value_);
-        }
-
-        static inline bool uintcsn_seqno_lt(UINT_CSN a, UINT_CSN b) {
-            return seqno_lt(a.value_, b.value_);
-        }
-
-        static inline bool uintcsn_seqno_eq(UINT_CSN a, UINT_CSN b) {
-            return seqno_eq(a.value_, b.value_);
-        }
-
-        static inline bool uintcsn_seqno_ge(UINT_CSN a, UINT_CSN b) {
-            return seqno_ge(a.value_, b.value_);
-        }
-
-        static inline bool uintcsn_seqno_gt(UINT_CSN a, UINT_CSN b) {
-            return seqno_gt(a.value_, b.value_);
-        }
-
-        UINT_CSN &operator=(const UINT_CSN &other) {
-            value_ = other.value_;
-            return *this;
-        }
-        bool operator==(const UINT_CSN &other) const {
-            return value_ == other.value_;
-        }
-        UINT_CSN operator+(const UINT_CSN &other) const {
-            return UINT_CSN(value_ + other.value_);
-        }
-        UINT_CSN operator-(const UINT_CSN &other) const {
-            return UINT_CSN(value_ - other.value_);
-        }
-        UINT_CSN &operator+=(const UINT_CSN &other) {
-            value_ += other.value_;
-            value_ &= UINT_CSN_MASK;
-            return *this;
-        }
-        UINT_CSN &operator-=(const UINT_CSN &other) {
-            value_ -= other.value_;
-            value_ &= UINT_CSN_MASK;
-            return *this;
-        }
-        bool operator<(const UINT_CSN &other) const {
-            return seqno_lt(value_, other.value_);
-        }
-        bool operator<=(const UINT_CSN &other) const {
-            return seqno_le(value_, other.value_);
-        }
-        bool operator>(const UINT_CSN &other) const {
-            return seqno_gt(value_, other.value_);
-        }
-        bool operator>=(const UINT_CSN &other) const {
-            return seqno_ge(value_, other.value_);
-        }
-
-        inline uint32_t to_uint32() const { return value_; }
-
-    private:
-        uint32_t value_;
-};
 
 struct pending_retr_chunk {
     uint64_t remote_addr;

@@ -49,8 +49,6 @@ static const uint8_t IB_PORT_NUM = 1;
 // in one batch to hide latency.
 static const uint32_t kMaxRxWork = 8;
 static const uint32_t kChunkSize = 32 << 10;
-static const uint32_t kWrapAround = (1 << 20) / kChunkSize;
-static_assert(kWrapAround <= 256);
 static const uint32_t kSignalInterval = 256;
 static const uint32_t kSyncClockIntervalNS = 100000;
 static const int kMaxBatchCQ = 32;

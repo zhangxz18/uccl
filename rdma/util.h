@@ -37,6 +37,119 @@ namespace uccl {
 #define POISON_64 UINT64_MAX
 #define POISON_32 UINT32_MAX
 
+#define UINT_CSN_BIT 16
+static_assert(UINT_CSN_BIT == 16 || UINT_CSN_BIT == 8, "UINT_CSN_BIT must be equal to 8 or 16");
+#define UINT_CSN_MASK ((1 << UINT_CSN_BIT) - 1)
+
+#if UINT_CSN_BIT == 16
+constexpr bool seqno_lt(uint16_t a, uint16_t b) {
+    return static_cast<int16_t>(a - b) < 0;
+}
+constexpr bool seqno_le(uint16_t a, uint16_t b) {
+    return static_cast<int16_t>(a - b) <= 0;
+}
+constexpr bool seqno_eq(uint16_t a, uint16_t b) {
+    return static_cast<int16_t>(a - b) == 0;
+}
+constexpr bool seqno_ge(uint16_t a, uint16_t b) {
+    return static_cast<int16_t>(a - b) >= 0;
+}
+constexpr bool seqno_gt(uint16_t a, uint16_t b) {
+    return static_cast<int16_t>(a - b) > 0;
+}
+#else
+constexpr bool seqno_lt(uint8_t a, uint8_t b) {
+    return static_cast<int8_t>(a - b) < 0;
+}
+constexpr bool seqno_le(uint8_t a, uint8_t b) {
+    return static_cast<int8_t>(a - b) <= 0;
+}
+constexpr bool seqno_eq(uint8_t a, uint8_t b) {
+    return static_cast<int8_t>(a - b) == 0;
+}
+constexpr bool seqno_ge(uint8_t a, uint8_t b) {
+    return static_cast<int8_t>(a - b) >= 0;
+}
+constexpr bool seqno_gt(uint8_t a, uint8_t b) {
+    return static_cast<int8_t>(a - b) > 0;
+}
+#endif
+
+/**
+ * @brief An X-bit (8/16) unsigned integer used for Chunk Sequence Number (CSN).
+ */
+class UINT_CSN {
+    public:
+        UINT_CSN() : value_(0) {}
+        UINT_CSN(uint32_t value) : value_(value & UINT_CSN_MASK) {}
+        UINT_CSN(const UINT_CSN &other) : value_(other.value_) {}
+
+        static inline bool uintcsn_seqno_le(UINT_CSN a, UINT_CSN b) {
+            return seqno_le(a.value_, b.value_);
+        }
+
+        static inline bool uintcsn_seqno_lt(UINT_CSN a, UINT_CSN b) {
+            return seqno_lt(a.value_, b.value_);
+        }
+
+        static inline bool uintcsn_seqno_eq(UINT_CSN a, UINT_CSN b) {
+            return seqno_eq(a.value_, b.value_);
+        }
+
+        static inline bool uintcsn_seqno_ge(UINT_CSN a, UINT_CSN b) {
+            return seqno_ge(a.value_, b.value_);
+        }
+
+        static inline bool uintcsn_seqno_gt(UINT_CSN a, UINT_CSN b) {
+            return seqno_gt(a.value_, b.value_);
+        }
+
+        UINT_CSN &operator=(const UINT_CSN &other) {
+            value_ = other.value_;
+            return *this;
+        }
+        bool operator==(const UINT_CSN &other) const {
+            return value_ == other.value_;
+        }
+        UINT_CSN operator+(const UINT_CSN &other) const {
+            return UINT_CSN(value_ + other.value_);
+        }
+        UINT_CSN operator-(const UINT_CSN &other) const {
+            return UINT_CSN(value_ - other.value_);
+        }
+        UINT_CSN &operator+=(const UINT_CSN &other) {
+            value_ += other.value_;
+            value_ &= UINT_CSN_MASK;
+            return *this;
+        }
+        UINT_CSN &operator-=(const UINT_CSN &other) {
+            value_ -= other.value_;
+            value_ &= UINT_CSN_MASK;
+            return *this;
+        }
+        bool operator<(const UINT_CSN &other) const {
+            return seqno_lt(value_, other.value_);
+        }
+        bool operator<=(const UINT_CSN &other) const {
+            return seqno_le(value_, other.value_);
+        }
+        bool operator>(const UINT_CSN &other) const {
+            return seqno_gt(value_, other.value_);
+        }
+        bool operator>=(const UINT_CSN &other) const {
+            return seqno_ge(value_, other.value_);
+        }
+
+        inline uint32_t to_uint32() const { return value_; }
+
+    private:
+    #if UINT_CSN_BIT == 8
+        uint8_t value_;
+    #else
+        uint16_t value_;
+    #endif
+};
+
 struct alignas(64) PollCtx {
     std::mutex mu;
     std::condition_variable cv;

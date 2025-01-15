@@ -175,33 +175,23 @@ class CtrlChunkBuffPool : public BuffPool {
 
 class IMMData {
     public:
-        // High---------------------------------32bit---------------------------------Low
-        //  |  HINT  |  Last Chunk  |***Reserved***|  NCHUNK  |  CSN  |  RID  |  MID  |
-        //     1bit       1bit            6bit         5bit      8bit    8bit    3bit
-        constexpr static int kHint = 31;
-        constexpr static int kLC = 30;
-        constexpr static int kNCHUNK = 19;
-        constexpr static int kCSN = 11;
-        constexpr static int kRID = 3;
+        // High--------------------32bit----------------------Low
+        //  |***Reserved***|  NCHUNK  |  CSN  |  RID  |  MID  |
+        //     (16-X)bit      5bit       Xbit    8bit    3bit
         constexpr static int kMID = 0;
+        constexpr static int kRID = 3;
+        constexpr static int kCSN = 11;
+        constexpr static int kNCHUNK = kCSN + UINT_CSN_BIT;
 
         IMMData(uint32_t imm_data):imm_data_(imm_data) {}
         ~IMMData() = default;
-
-        inline uint32_t GetHint(void) {
-            return (imm_data_ >> kHint) & 0x1;
-        }
-
-        inline uint32_t GetLC(void) {
-            return (imm_data_ >> kLC) & 0x1;
-        }
 
         inline uint32_t GetNCHUNK(void) {
             return (imm_data_ >> kNCHUNK) & 0x1F;
         }
 
         inline uint32_t GetCSN(void) {
-            return (imm_data_ >> kCSN) & 0xFF;
+            return (imm_data_ >> kCSN) & UINT_CSN_MASK;
         }
 
         inline uint32_t GetRID(void) {
@@ -212,20 +202,12 @@ class IMMData {
             return (imm_data_ >> kMID) & 0x7;
         }
 
-        inline void SetHint(uint32_t hint) {
-            imm_data_ |= (hint & 0x1) << kHint;
-        }
-
-        inline void SetLC(uint32_t lc) {
-            imm_data_ |= (lc & 0x1) << kLC;
-        }
-
         inline void SetNCHUNK(uint32_t nchunk) {
             imm_data_ |= (nchunk & 0x1F) << kNCHUNK;
         }
 
         inline void SetCSN(uint32_t psn) {
-            imm_data_ |= (psn & 0xFF) << kCSN;
+            imm_data_ |= (psn & UINT_CSN_MASK) << kCSN;
         }
 
         inline void SetRID(uint32_t rid) {

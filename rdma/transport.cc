@@ -208,9 +208,8 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
             IMMData imm_data(0);
 
-            imm_data.SetHint(0);
+            imm_data.SetNCHUNK(0);
             if (mismatch && chunk_size < kChunkSize) {
-                imm_data.SetLC(1);
                 imm_data.SetNCHUNK(nchunk);
             }
             imm_data.SetRID(slot.rid);
@@ -256,9 +255,8 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
 
         IMMData imm_data(0);
 
-        imm_data.SetHint(0);
+        imm_data.SetNCHUNK(0);
         if (mismatch && chunk_size < kChunkSize) {
-            imm_data.SetLC(1);
             imm_data.SetNCHUNK(nchunk);
         }
         imm_data.SetRID(slot.rid);
@@ -477,21 +475,12 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
 
     bool update_sackbitmap = false;
 
-    auto dis1 = qpw->pcb.snd_una - swift::UINT_CSN(ackno);
-    auto dis2 = qpw->pcb.snd_nxt - swift::UINT_CSN(ackno);
-
-    if (swift::UINT_CSN::uintcsn_seqno_lt(ackno, qpw->pcb.snd_una) && 
-        dis1 <= kWrapAround /* wrap around case */) {
-        // 0 --- (snd_una-kWrapAround) --- ackno --- snd_una --- MAX
+    if (UINT_CSN::uintcsn_seqno_lt(ackno, qpw->pcb.snd_una)) {
         VLOG(5) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
-    } else if (swift::UINT_CSN::uintcsn_seqno_gt(ackno, qpw->pcb.snd_nxt) || 
-        swift::UINT_CSN::uintcsn_seqno_lt(ackno, qpw->pcb.snd_nxt) && dis2 > kWrapAround /* wrap around case */) {
-        // 0 --- snd_nxt --- ackno --- MAX 
-        // or 
-        // 0 --- ackno  --- (snd_next-kWrapAround) --- snd_nxt --- MAX
+    } else if (UINT_CSN::uintcsn_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
         VLOG(5) << "Received ACK for untransmitted data " << "ackno: " << ackno << ", snd_nxt: " 
             << qpw->pcb.snd_nxt.to_uint32() << " from QP#" << qpidx << " by Ctrl QP";
-    } else if (swift::UINT_CSN::uintcsn_seqno_eq(ackno, qpw->pcb.snd_una)) {
+    } else if (UINT_CSN::uintcsn_seqno_eq(ackno, qpw->pcb.snd_una)) {
         VLOG(5) << "Received duplicate ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
         update_sackbitmap = true;
         
@@ -539,7 +528,7 @@ void UcclFlow::rx_ack(uint64_t pkt_addr)
         VLOG(5) << "Received valid ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
 
         update_sackbitmap = true;
-        auto num_acked_chunks = swift::UINT_CSN(ackno) - qpw->pcb.snd_una;
+        auto num_acked_chunks = UINT_CSN(ackno) - qpw->pcb.snd_una;
 
         auto t1 = qpw->txtracking.ack_chunks(num_acked_chunks.to_uint32());
         auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
@@ -795,8 +784,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
     auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
-    auto hint = imm_data.GetHint();
-    auto lc = imm_data.GetLC();
+    auto nchunks = imm_data.GetNCHUNK();
     auto csn = imm_data.GetCSN();
     auto rid = imm_data.GetRID();
     auto mid = imm_data.GetMID();
@@ -804,14 +792,29 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
     VLOG(5) << "Receive barrier: (csn, rid, mid): " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
 
     // Compare CSN with the expected CSN.
-    auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
+    auto ecsn = qpw->pcb.rcv_nxt;
 
-    auto distance = csn - ecsn;
+    auto distance = UINT_CSN(csn) - ecsn;
 
-    if (swift::seqno_lt(csn, ecsn)) {
+    if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
+        VLOG(5) << "Barrier too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
+        // Try to remove the pending retransmission chunk if exists.
+        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance.to_uint32() + qpw->pcb.shift_count);
+        if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
+            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
+            rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
+            qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
+        }
+        return;
+    }
+
+    if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))
+    {
         // Original chunk is already received. This barrier is invalid.
         // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance.to_uint32() + qpw->pcb.shift_count);
         if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
@@ -821,29 +824,15 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
         return;
     }
 
-    if (distance > kReassemblyMaxSeqnoDistance) {
-        VLOG(5) << "Barrier too far ahead. Dropping as we can't handle SACK. "
-                    << "csn: " << csn << ", ecsn: " << ecsn;
-        // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
-        if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
-            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
-            qpw->pcb.pending_retr_chunks.erase(pending_retr_chunk);
-            VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
-        }
-        return;
-    }
-
-    auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
-    auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    auto bitmap_bucket_idx = distance.to_uint32() / swift::Pcb::kSackBitmapBucketSize;
+    auto cursor = distance.to_uint32() % swift::Pcb::kSackBitmapBucketSize;
     auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
     auto barrier_bitmap = &qpw->pcb.barrier_bitmap[bitmap_bucket_idx];
 
     if ((*sack_bitmap & (1ULL << cursor))) {
         // Original chunk is already received. This barrier is invalid.
         // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+        auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance.to_uint32() + qpw->pcb.shift_count);
         if (pending_retr_chunk != qpw->pcb.pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
@@ -860,10 +849,10 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
     }
 
     // This barrier is valid.
-    qpw->pcb.barrier_bitmap_bit_set(distance);
+    qpw->pcb.barrier_bitmap_bit_set(distance.to_uint32());
 
     // Handle pending retransmission chunk waiting for this barrier (if exists).
-    auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance + qpw->pcb.shift_count);
+    auto pending_retr_chunk = qpw->pcb.pending_retr_chunks.find(distance.to_uint32() + qpw->pcb.shift_count);
     if (pending_retr_chunk == qpw->pcb.pending_retr_chunks.end()) {
         // No pending retransmission chunk.
         VLOG(5) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
@@ -885,7 +874,7 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
 
     /// FIXME: Should we update the timestamp here?
 
-    qpw->pcb.sack_bitmap_bit_set(distance);
+    qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
     // Locate request by rid
     auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
@@ -893,10 +882,9 @@ void UcclFlow::rx_barrier(struct list_head *ack_list)
     uint32_t *received_bytes = req->recv.received_bytes;
     received_bytes[mid] += chunk_len;
 
-    if (lc) {
+    if (nchunks) {
         // Tx size < Rx size, adjust the meesage size using the information carried by the last chunk.
-        auto nchunk = imm_data.GetNCHUNK();
-        auto actual_size = kChunkSize * (nchunk - 1) + chunk_len;
+        auto actual_size = kChunkSize * (nchunks - 1) + chunk_len;
         *msg_size = actual_size;
         req->ureq->data_len[mid] = actual_size;
     }
@@ -939,8 +927,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     auto recv_comm = &rdma_ctx_->recv_comm_;
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
 
-    auto hint = imm_data.GetHint();
-    auto lc = imm_data.GetLC();
+    auto nchunks = imm_data.GetNCHUNK();
     auto csn = imm_data.GetCSN();
     auto rid = imm_data.GetRID();
     auto mid = imm_data.GetMID();
@@ -956,26 +943,25 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     auto pcb = &qpw->pcb;
 
     // Compare CSN with the expected CSN.
-    auto ecsn = pcb->rcv_nxt.to_uint32();
+    auto ecsn = pcb->rcv_nxt;
+    auto distance = UINT_CSN(csn) - ecsn;
 
-    if (swift::seqno_lt(csn, ecsn)) {
+    if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
+        VLOG(5) << "Chunk too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
+        rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
+        return;
+    }
+
+    if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
         // Original chunk is already received.
         rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
         VLOG(5) << "Original chunk is already received. Dropping retransmission chunk for QP#" << hdr->qidx;
         return;
     }
-
-    auto distance = csn - ecsn;
-
-    if (distance > kReassemblyMaxSeqnoDistance) {
-        VLOG(5) << "Packet too far ahead. Dropping as we can't handle SACK. "
-                    << "csn: " << csn << ", ecsn: " << ecsn;
-        rdma_ctx_->retr_chunk_pool_->free_buff(chunk_addr);
-        return;
-    }
     
-    auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
-    auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    auto bitmap_bucket_idx = distance.to_uint32() / swift::Pcb::kSackBitmapBucketSize;
+    auto cursor = distance.to_uint32() % swift::Pcb::kSackBitmapBucketSize;
     auto sack_bitmap = &pcb->sack_bitmap[bitmap_bucket_idx];
     
     if ((*sack_bitmap & (1ULL << cursor))) {
@@ -992,7 +978,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
     if ((*barrier_btimap & (1ULL << cursor)) == 0) {
         // The corresponding barrier has not arrived yet.
         // Store this retransmission chunk.
-        pcb->pending_retr_chunks[distance + pcb->shift_count] = 
+        pcb->pending_retr_chunks[distance.to_uint32() + pcb->shift_count] = 
         {hdr->remote_addr, chunk_addr, (uint32_t)chunk_len, imm_data.GetImmData()};
         VLOG(5) << "Wait for the corresponding barrier for QP#" << hdr->qidx;
     } else {
@@ -1004,7 +990,7 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
 
         /// FIXME: Should we update the timestamp here?
 
-        pcb->sack_bitmap_bit_set(distance);
+        pcb->sack_bitmap_bit_set(distance.to_uint32());
 
         // Locate request by rid
         auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
@@ -1012,10 +998,10 @@ void UcclFlow::rx_retr_chunk(struct list_head *ack_list)
         uint32_t *received_bytes = req->recv.received_bytes;
         received_bytes[mid] += chunk_len;
 
-        if (lc) {
+        if (nchunks) {
             // Tx size < Rx size, adjust the meesage size using the information carried by the last chunk.
             auto nchunk = imm_data.GetNCHUNK();
-            auto actual_size = kChunkSize * (nchunk - 1) + chunk_len;
+            auto actual_size = kChunkSize * (nchunks - 1) + chunk_len;
             *msg_size = actual_size;
             req->ureq->data_len[mid] = actual_size;
         }
@@ -1061,8 +1047,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     auto qpidx = rdma_ctx_->qpn2idx_[qp_num];
     auto qpw = &rdma_ctx_->uc_qps_[qpidx];
 
-    auto hint = imm_data.GetHint();
-    auto lc = imm_data.GetLC();
+    auto nchunks = imm_data.GetNCHUNK();
     auto csn = imm_data.GetCSN();
     auto rid = imm_data.GetRID();
     auto mid = imm_data.GetMID();
@@ -1070,17 +1055,25 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     VLOG(5) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << ", " << mid << " from QP#" << qpidx;
 
     // Compare CSN with the expected CSN.
-    auto ecsn = qpw->pcb.rcv_nxt.to_uint32();
+    auto ecsn = qpw->pcb.rcv_nxt;
 
+    auto distance = UINT_CSN(csn) - ecsn;
+    
     // It's impossible to receive a chunk with a CSN less than the expected CSN here.
-    DCHECK(!swift::seqno_lt(csn, ecsn));
+    // That is:
+    // 0 --- csn --- ecsn --- MAX
+    // or
+    // 0 --- ecsn ------ csn --- MAX
 
-    auto distance = csn - ecsn;
-
-    if (distance > kReassemblyMaxSeqnoDistance) {
-        VLOG(5) << "Packet too far ahead. Dropping as we can't handle SACK. "
-                    << "csn: " << csn << ", ecsn: " << ecsn;
+    if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
+        VLOG(4) << "Chunk too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         return;
+    }
+
+    if ((UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))) {
+        VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
     }
 
     /* 
@@ -1101,7 +1094,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     else
         qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
 
-    qpw->pcb.sack_bitmap_bit_set(distance);
+    qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
     // Locate request by rid
     auto req = rdma_ctx_->get_request_by_id(rid, &recv_comm->base);
@@ -1109,10 +1102,9 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
     uint32_t *received_bytes = req->recv.received_bytes;
     received_bytes[mid] += byte_len;
 
-    if (lc) {
+    if (nchunks) {
         // Tx size < Rx size, adjust the meesage size using the information carried by the last chunk.
-        auto nchunk = imm_data.GetNCHUNK();
-        auto actual_size = kChunkSize * (nchunk - 1) + byte_len;
+        auto actual_size = kChunkSize * (nchunks - 1) + byte_len;
         *msg_size = actual_size;
         req->ureq->data_len[mid] = actual_size;
     }
@@ -1133,7 +1125,7 @@ void UcclFlow::rx_chunk(struct list_head *ack_list)
 
     try_update_csn(qpw);
 
-    if (distance)
+    if (distance.to_uint32())
         qpw->rxtracking.encounter_ooo();
     
     qpw->rxtracking.cumulate_wqe();
@@ -1553,7 +1545,7 @@ void UcclFlow::__retransmit(struct UCQPWrapper *qpw, bool rto)
     
     // Case#2: Retransmit the unacked chunks according to the SACK bitmap.
     bool done = false;
-    auto base_csn = swift::UINT_CSN(qpw->pcb.base_csn);
+    auto base_csn = UINT_CSN(qpw->pcb.base_csn);
 
     uint32_t index = 0;
     while (sack_bitmap_count && index < kSackBitmapSize && !qpw->txtracking.empty()) {
@@ -1573,7 +1565,7 @@ void UcclFlow::__retransmit(struct UCQPWrapper *qpw, bool rto)
             } else {
                 // This bit is stale and its corresponding chunk is already acked.
                 // Do nothing.
-                DCHECK(swift::UINT_CSN::uintcsn_seqno_lt(seqno, chunk.csn));
+                DCHECK(UINT_CSN::uintcsn_seqno_lt(seqno, chunk.csn));
             }
         } else {
             sack_bitmap_count--;
