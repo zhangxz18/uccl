@@ -141,10 +141,8 @@ error:
 void RDMAFactory::shutdown(void) 
 {
     std::lock_guard<std::mutex> lock(rdma_ctl.context_q_lock_);
-    for (auto ctx : rdma_ctl.context_q_) {
-        delete ctx;
-    }
     rdma_ctl.context_q_.clear();
+    rdma_ctl.context_q_.shrink_to_fit();
     
     rdma_ctl.devices_.clear();
     rdma_ctl.gid_2_dev_map.clear();
