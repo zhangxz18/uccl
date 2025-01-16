@@ -781,7 +781,7 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, RDMAContext *rdma_ct
         oss << qp->qp_num;
         oss << " RTR(mtu, port_num, sgidx_idx, dest_qp_num, rq_psn):" << (uint32_t)attr.path_mtu << "," << (uint32_t)attr.ah_attr.port_num << ","
         << (uint32_t)attr.ah_attr.grh.sgid_index << "," << attr.dest_qp_num << "," << attr.rq_psn;
-        VLOG(3) << oss.str();
+        VLOG(6) << oss.str();
     }
     
     return ibv_modify_qp(qp, &attr, attr_mask);
@@ -827,7 +827,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
         oss << qp->qp_num;
         oss << " RTR(mtu, port_num, sgidx_idx, dest_qp_num, rq_psn):" << (uint32_t)attr.path_mtu << "," << (uint32_t)attr.ah_attr.port_num << ","
         << (uint32_t)attr.ah_attr.grh.sgid_index << "," << attr.dest_qp_num << "," << attr.rq_psn;
-        VLOG(3) << oss.str();
+        VLOG(6) << oss.str();
     }
     
     return ibv_modify_qp(qp, &attr, attr_mask);
@@ -854,7 +854,7 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
         oss << "QP#";
         oss << qp->qp_num;
         oss << " RTS(sq_psn):" << attr.sq_psn;
-        VLOG(3) << oss.str();
+        VLOG(6) << oss.str();
     }
     
     return ibv_modify_qp(qp, &attr, attr_mask);

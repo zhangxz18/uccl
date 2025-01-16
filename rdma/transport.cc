@@ -1750,23 +1750,23 @@ void UcclRDMAEngine::process_ctl_reqs() {
         1) {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::kInstallFlowRDMA:
-                    VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kInstallFlowRDMA";
+                    VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kInstallFlowRDMA";
                     handle_install_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kSyncFlowRDMA:
-                    VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kSyncFlowRDMA";
+                    VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kSyncFlowRDMA";
                     handle_sync_flow_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kRegMR:
-                    VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kRegMR";
+                    VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kRegMR";
                     handle_regmr_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kRegMRDMABUF:
-                    VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kRegMRDMABUF";
+                    VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kRegMRDMABUF";
                     handle_regmr_dmabuf_on_engine_rdma(ctrl_work);
                 break;
             case Channel::CtrlMsg::kDeregMR:
-                    VLOG(3) << "[Engine#" << engine_idx_ << "] " << "kDeregMR";
+                    VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kDeregMR";
                     handle_deregmr_on_engine_rdma(ctrl_work);
                 break;
             default:
@@ -2551,7 +2551,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         for (int i = 0; i < 16; ++i) {
             oss << ((i == 0)? "" : ":") << static_cast<int>(factory_dev->gid.raw[i]);
         }
-        VLOG(3) << oss.str();
+        VLOG(6) << oss.str();
     }
     
     if (FLAGS_v >= 1) {
@@ -2560,7 +2560,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         for (int i = 0; i < 16; ++i) {
             oss << ((i == 0)? "" : ":") << static_cast<int>(to_engine_meta->remote_gid.raw[i]);
         }
-        VLOG(3) << oss.str();
+        VLOG(6) << oss.str();
     }
 
     VLOG(5) << "[Endpoint] Sync GID done";
