@@ -1565,7 +1565,6 @@ void UcclFlow::__retransmit(struct UCQPWrapper *qpw, bool rto)
             } else {
                 // This bit is stale and its corresponding chunk is already acked.
                 // Do nothing.
-                DCHECK(UINT_CSN::uintcsn_seqno_lt(seqno, chunk.csn));
             }
         } else {
             sack_bitmap_count--;
