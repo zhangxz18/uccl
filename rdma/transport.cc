@@ -2071,7 +2071,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
 RDMAEndpoint::~RDMAEndpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
-    for (int i = 0; i < num_engines_per_dev_; i++) delete channel_vec_[i];
+    for (int i = 0; i < num_devices_ * num_engines_per_dev_; i++) delete channel_vec_[i];
 
     delete ctx_pool_;
     delete[] ctx_pool_buf_;
