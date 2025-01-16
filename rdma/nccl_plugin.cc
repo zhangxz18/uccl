@@ -21,12 +21,14 @@ void interrupt_handler(int signal) {
 }
 
 class ucclRequestBuffPool : public BuffPool {
-    static constexpr size_t num_elements = kMaxReq << 1; // Send and receive.
+    static constexpr size_t num_elements = kMaxReq << 2; // Send and receive.
     static constexpr size_t element_size = sizeof(ucclRequest);
     public:
      ucclRequestBuffPool() : BuffPool(num_elements, element_size, nullptr) {}
      ~ucclRequestBuffPool() = default;
 };
+
+std::mutex ureq_mtx[NUM_DEVICES];
 
 std::optional<RDMAEndpoint> ep;
 std::optional<ucclRequestBuffPool> uccl_req_pool;
@@ -54,6 +56,7 @@ struct ucclListenComm {
 };
 
 struct ucclBaseComm {
+    int dev;
     ConnID conn_id;
 };
 
@@ -199,6 +202,7 @@ ncclResult_t pluginConnect(int dev, void* opaque_handle, void** sendComm,
         auto connect_state = new struct AsyncConnectState();
         connect_state->th = std::thread([dev, connect_state, remote_ip_str] {
             connect_state->base.conn_id = ep->uccl_connect(dev, remote_ip_str);
+            connect_state->base.dev = dev;
             std::atomic_thread_fence(std::memory_order_release);
             std::atomic_store_explicit(&connect_state->done, true, std::memory_order_relaxed);
         });
@@ -254,6 +258,7 @@ ncclResult_t pluginAccept(void* listenComm, void** recvComm,
         accept_state->th = std::thread([lcomm, accept_state] {
             std::string remote_ip_str;
             accept_state->base.conn_id = ep->uccl_accept(lcomm->dev, remote_ip_str);
+            accept_state->base.dev = lcomm->dev;
             std::atomic_thread_fence(std::memory_order_release);
             std::atomic_store_explicit(&accept_state->done, true, std::memory_order_relaxed);
         });
@@ -313,10 +318,18 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
     struct Mhandle *mh = (struct Mhandle *)mhandle;
 
     uint64_t addr;
-    if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
+    auto dev = scomm->base.dev;
+    {
+        std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+        if (uccl_req_pool->alloc_buff(&addr)) {
+            *request = nullptr;
+            return ncclSuccess;
+        }
+    }
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
     req->poll_ctx = ep->uccl_send_async(conn_id, mh, data, size, req);
+    req->dev = dev;
 
     req->type = ReqTx;
     req->data_len[0] = size;
@@ -334,10 +347,18 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
     struct Mhandle **mhs = (struct Mhandle **)mhandles;
 
     uint64_t addr;
-    if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
+    auto dev = rcomm->base.dev;
+    {
+        std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+        if (uccl_req_pool->alloc_buff(&addr)) {
+            *request = nullptr;
+            return ncclSuccess;
+        }
+    }
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
     req->poll_ctx = ep->uccl_recv_async(conn_id, mhs, data, sizes, n, req);
+    req->dev = dev;
 
     req->type = ReqRx;
     for (int i = 0; i < n; i++) req->data_len[i] = sizes[i];
@@ -355,10 +376,18 @@ ncclResult_t pluginIflush(void* recvComm, int n, void** data, int* sizes,
     struct Mhandle **mhs = (struct Mhandle **)mhandles;
 
     uint64_t addr;
-    if (uccl_req_pool->alloc_buff(&addr)) return ncclInternalError;
+    auto dev = rcomm->base.dev;
+    {
+        std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+        if (uccl_req_pool->alloc_buff(&addr)) {
+            *request = nullptr;
+            return ncclSuccess;
+        }
+    }
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
 
     req->poll_ctx = ep->uccl_flush(conn_id, mhs, data, sizes, n);
+    req->dev = dev;
 
     req->type = ReqFlush;
 
@@ -381,7 +410,11 @@ ncclResult_t pluginTest(void* request, int* done, int* size) {
         } else if (req->type == ReqFlush) {
             // Do nothing.
         }
-        uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+        {
+            auto dev = req->dev;
+            std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+            uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+        }
     } else {
         *done = 0;
     }

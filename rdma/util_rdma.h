@@ -333,6 +333,7 @@ enum ReqType {
 struct ucclRequest {
     enum ReqType type;
     PollCtx *poll_ctx;
+    int dev;
     int n;
     int data_len[kMaxRecv];
 };
