@@ -724,17 +724,18 @@ class RDMAFactory {
 
     // int gid_idx --> int dev
     std::unordered_map<int, int> gid_2_dev_map;
-
-    // Track all RDMA contexts created by this factory.
-    std::deque<RDMAContext *> context_q_;
-    std::mutex context_q_lock_;
     
     public:
+
+        ~RDMAFactory() {
+            devices_.clear();
+            gid_2_dev_map.clear();
+        }
+
         static void init_dev(int gid_idx);
         static RDMAContext *CreateContext(int dev, struct XchgMeta meta);
         static struct FactoryDevice *get_factory_dev(int dev);
         static bool need_sync_clock(int dev);
-        static void shutdown(void);
         
         std::string to_string(void) const;
 };

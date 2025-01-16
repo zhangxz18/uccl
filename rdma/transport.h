@@ -591,6 +591,8 @@ class UcclRDMAEngine {
     // the engine thread.
     inline void shutdown() { shutdown_ = true; }
 
+    void release();
+
     std::string status_to_string();
 
    protected:

@@ -2068,9 +2068,17 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     }
 }
 
+void UcclRDMAEngine::release()
+{
+    for (auto flow: active_flows_map_) delete flow.second->rdma_ctx_;
+    active_flows_map_.clear();
+}
+
 RDMAEndpoint::~RDMAEndpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
+    for (auto &engine : engine_vec_) engine->release();
+
     for (int i = 0; i < num_devices_ * num_engines_per_dev_; i++) delete channel_vec_[i];
 
     delete ctx_pool_;
@@ -2078,7 +2086,7 @@ RDMAEndpoint::~RDMAEndpoint() {
 
     for (int i = 0; i < num_devices_; i++)
         close(listen_fds_[i]);
-    
+
     {
         std::lock_guard<std::mutex> lock(fd_map_mu_);
         for (auto &[flow_id, boostrap_fd] : fd_map_) {
@@ -2086,16 +2094,12 @@ RDMAEndpoint::~RDMAEndpoint() {
         }
     }
 
-    static std::once_flag flag_once;
-    std::call_once(flag_once, [&]() { 
-        RDMAFactory::shutdown();
-    });
-
     {
         std::lock_guard<std::mutex> lock(stats_mu_);
         shutdown_ = true;
         stats_cv_.notify_all();
     }
+
     stats_thread_.join();
 }
 
