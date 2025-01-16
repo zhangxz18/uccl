@@ -209,7 +209,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
             IMMData imm_data(0);
 
             imm_data.SetNCHUNK(0);
-            if (mismatch && chunk_size < kChunkSize) {
+            if (mismatch && (*sent_offset + chunk_size == size)) {
                 imm_data.SetNCHUNK(nchunk);
             }
             imm_data.SetRID(slot.rid);
@@ -256,7 +256,7 @@ void UcclFlow::post_single_message(struct FlowRequest *req, struct FifoItem &slo
         IMMData imm_data(0);
 
         imm_data.SetNCHUNK(0);
-        if (mismatch && chunk_size < kChunkSize) {
+        if (mismatch && (*sent_offset + chunk_size == size)) {
             imm_data.SetNCHUNK(nchunk);
         }
         imm_data.SetRID(slot.rid);
