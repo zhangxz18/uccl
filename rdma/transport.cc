@@ -2104,6 +2104,77 @@ RDMAEndpoint::~RDMAEndpoint() {
     stats_thread_.join();
 }
 
+ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, uint16_t listen_port) 
+{
+    struct sockaddr_in serv_addr;
+    struct hostent *server;
+    int bootstrap_fd;
+
+    bootstrap_fd = socket(AF_INET, SOCK_STREAM, 0);
+    DCHECK(bootstrap_fd >= 0);
+
+    server = gethostbyname(remote_ip.c_str());
+    DCHECK(server);
+
+    bzero((char *)&serv_addr, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
+          server->h_length);
+    serv_addr.sin_port = htons(listen_port);
+
+    // Force the socket to bind to the local IP address.
+    sockaddr_in localaddr = {};
+    localaddr.sin_family = AF_INET;
+    auto local_ip_str = rdma_dev_list_[dev].local_ip_str;
+    localaddr.sin_addr.s_addr = str_to_ip(local_ip_str.c_str());
+    bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
+
+    VLOG(5) << "[Endpoint] connecting to " << remote_ip << ":"
+              << kBootstrapPort + dev;
+
+    // Connect and set nonblocking and nodelay
+    while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
+                   sizeof(serv_addr))) {
+        VLOG(5) << "[Endpoint] connecting... Make sure the server is up.";
+    }
+
+    fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
+    int flag = 1;
+    setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
+               sizeof(int));
+
+    auto local_engine_idx = find_least_loaded_engine_idx_and_update();
+    CHECK_GE(local_engine_idx, 0);
+
+    FlowID flow_id;
+    while (true) {
+        int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+        DCHECK(ret == sizeof(FlowID));
+        VLOG(5) << "[Endpoint] connect: receive proposed FlowID: " << std::hex
+                  << "0x" << flow_id;
+
+        // Check if the flow ID is unique, and return it to the server.
+        bool unique;
+        {
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            unique =
+                (fd_map_.find(flow_id) == fd_map_.end());
+            if (unique) fd_map_[flow_id] = bootstrap_fd;
+        }
+
+        ret = send_message(bootstrap_fd, &unique, sizeof(bool));
+        DCHECK(ret == sizeof(bool));
+
+        if (unique) break;
+    }
+    
+    install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, true);
+
+    return ConnID{.flow_id = flow_id,
+                  .engine_idx = (uint32_t)local_engine_idx,
+                  .boostrap_id = bootstrap_fd};
+}
+
 ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip) {
     struct sockaddr_in serv_addr;
     struct hostent *server;
@@ -2240,6 +2311,77 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int engine_id, std::string remote_ip)
     }
     
     install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, true);
+
+    return ConnID{.flow_id = flow_id,
+                  .engine_idx = (uint32_t)local_engine_idx,
+                  .boostrap_id = bootstrap_fd};
+}
+
+ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip, int listen_fd) 
+{
+    struct sockaddr_in cli_addr;
+    socklen_t clilen = sizeof(cli_addr);
+    int bootstrap_fd;
+
+    // Accept connection and set nonblocking and nodelay
+    bootstrap_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clilen);
+    DCHECK(bootstrap_fd >= 0);
+    remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
+
+    VLOG(5) << "[Endpoint] accept from " << remote_ip << ":"
+              << cli_addr.sin_port;
+
+    fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
+    int flag = 1;
+    setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
+               sizeof(int));
+
+    auto local_engine_idx = find_least_loaded_engine_idx_and_update();
+    CHECK_GE(local_engine_idx, 0);
+
+    // Generate unique flow ID for both client and server.
+    FlowID flow_id;
+    while (true) {
+        static thread_local std::mt19937 generator(std::random_device{}());
+        std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
+        flow_id = distribution(generator);
+        // generate flow_id sequentially for better debugging
+        flow_id = fff++;
+        bool unique;
+        {
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            unique =
+                (fd_map_.find(flow_id) == fd_map_.end());
+            if (unique) {
+                // Speculatively insert the flow ID.
+                fd_map_[flow_id] = bootstrap_fd;
+            } else {
+                continue;
+            }
+        }
+
+        VLOG(5) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
+                  << flow_id;
+
+        // Ask client if this is unique
+        // Let client use flow_id + 50000
+        FlowID cid = flow_id + 50000;
+        int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
+        DCHECK(ret == sizeof(FlowID));
+        bool unique_from_client;
+        ret = receive_message(bootstrap_fd, &unique_from_client, sizeof(bool));
+        DCHECK(ret == sizeof(bool));
+
+        if (unique_from_client) {
+            break;
+        } else {
+            // Remove the speculatively inserted flow ID.
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            DCHECK(1 == fd_map_.erase(flow_id));
+        }
+    }
+
+    install_flow_on_engine_rdma(dev, flow_id, local_engine_idx, bootstrap_fd, false);
 
     return ConnID{.flow_id = flow_id,
                   .engine_idx = (uint32_t)local_engine_idx,
@@ -2599,7 +2741,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     }
     delete poll_ctx;
 
-    VLOG(5) << "[Endpoint] Install flow done" << std::endl;
+    VLOG(5) << "[Endpoint] Install flow done";
 
     // Receive local QPN,PSN and FifoAddr from engine.
     int qidx = 0;
@@ -2626,7 +2768,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
         DCHECK(ret == sizeof(struct RDMAExchangeFormatRemote));
     }
 
-    VLOG(5) << "[Endpoint] Sync QPN and PSN done" << std::endl;
+    VLOG(5) << "[Endpoint] Sync QPN and PSN done";
     
     // Send remote QPN, PSN and FifoAddr to engine.
     poll_ctx = new PollCtx();
@@ -2656,7 +2798,7 @@ void RDMAEndpoint::install_flow_on_engine_rdma(int dev, FlowID flow_id,
     }
     delete poll_ctx;
 
-    VLOG(5) << "[Endpoint] Sync flow done" << std::endl;
+    VLOG(5) << "[Endpoint] Sync flow done";
 
     // sync so to receive flow_id packets.
     net_barrier(bootstrap_fd);
@@ -2705,7 +2847,7 @@ void RDMAEndpoint::stats_thread_fn() {
         for (auto &engine : engine_vec_) {
             s += engine->status_to_string();
         }
-        VLOG(4) << s;
+        VLOG(5) << s;
     }
 }
 

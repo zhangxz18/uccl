@@ -701,10 +701,15 @@ class RDMAEndpoint {
     RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
     ~RDMAEndpoint();
 
+    // Connect to a remote address with the given listen_port.
+    ConnID uccl_connect(int dev, std::string remote_ip, uint16_t listen_port);
     // Connect to a remote address; thread-safe
     ConnID uccl_connect(int dev, std::string remote_ip);
     // Explicitly specify the engine_id to install the flow.
     ConnID uccl_connect(int dev, int engine_id, std::string remote_ip);
+    
+    // Accept a connection from a remote address using the give listen_fd.
+    ConnID uccl_accept(int dev, std::string &remote_ip, int listen_fd);
     // Accept a connection from a remote address; thread-safe
     ConnID uccl_accept(int dev, std::string &remote_ip);
     // Explicitly specify the engine_id to install the flow.
