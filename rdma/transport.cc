@@ -16,6 +16,8 @@
 
 namespace uccl {
 
+static uint64_t fff = 0;
+
 void UcclFlow::post_fifo(struct FlowRequest *req, void **data, size_t *size, int n, struct ibv_mr **mr)
 {
     struct ibv_send_wr wr;
@@ -2271,6 +2273,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
         static thread_local std::mt19937 generator(std::random_device{}());
         std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
         flow_id = distribution(generator);
+        // generate flow_id sequentially for better debugging
+        flow_id = fff++;
         bool unique;
         {
             std::lock_guard<std::mutex> lock(fd_map_mu_);
@@ -2288,8 +2292,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, std::string &remote_ip) {
                   << flow_id;
 
         // Ask client if this is unique
-        // Let client use flow_id + 0xdeadbeef
-        FlowID cid = flow_id + 0xdeadbeef;
+        // Let client use flow_id + 50000
+        FlowID cid = flow_id + 50000;
         int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
         bool unique_from_client;
@@ -2341,6 +2345,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
         static thread_local std::mt19937 generator(std::random_device{}());
         std::uniform_int_distribution<FlowID> distribution(0, std::numeric_limits<FlowID>::max());
         flow_id = distribution(generator);
+        // generate flow_id sequentially for better debugging
+        flow_id = fff++;
         bool unique;
         {
             std::lock_guard<std::mutex> lock(fd_map_mu_);
@@ -2358,8 +2364,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int engine_id, std::string &remote_ip)
                   << flow_id;
 
         // Ask client if this is unique
-        // Let client use flow_id + 0xdeadbeef
-        FlowID cid = flow_id + 0xdeadbeef;
+        // Let client use flow_id + 50000
+        FlowID cid = flow_id + 50000;
         int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
         bool unique_from_client;
