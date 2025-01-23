@@ -78,6 +78,8 @@ static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
 static const bool kTestNoRTO = false;
+// Always use the same engine for each flow.
+static const bool kBindEngine = false;
 
 // 400Gbps link.
 static const double kLinkBandwidth = 400.0 * 1e9 / 8;

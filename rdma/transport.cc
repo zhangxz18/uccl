@@ -570,8 +570,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
     }
 
     // Install flow on Endpoint.
-    auto *engine = engine_vec_[engine_idx].get();
-    auto *flow = new UcclFlow(this, bootstrap_fd, engine, dev, peer_id, flow_id, remote_ctx, remote_ip, remote_dev, true);
+    auto *flow = new UcclFlow(this, bootstrap_fd, dev, peer_id, flow_id, remote_ctx, remote_ip, remote_dev, true);
     DCHECK(flow);
     {
         active_flows_spin_[dev].Lock();
@@ -667,8 +666,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
     }
 
     // Install flow on Endpoint.
-    auto *engine = engine_vec_[engine_idx].get();
-    auto *flow = new UcclFlow(this, bootstrap_fd, engine, dev, peer_id, flow_id, remote_ctx, remote_ip, *remote_dev, false);
+    auto *flow = new UcclFlow(this, bootstrap_fd, dev, peer_id, flow_id, remote_ctx, remote_ip, *remote_dev, false);
     DCHECK(flow);
     {
         active_flows_spin_[dev].Lock();
@@ -842,7 +840,8 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
     flow->poll_flow_cq();
 
     uint32_t candidate = find_first_engine_idx(dev) + flow->next_engine_offset_;
-    flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
+    if constexpr (!kBindEngine) 
+        flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     
     ureq->type = ReqRx;
     ureq->dev = dev;

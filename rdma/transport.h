@@ -478,10 +478,10 @@ class UcclFlow {
    
    public:
 
-    UcclFlow(RDMAEndpoint *ep, int bootstrap_fd, UcclRDMAEngine *engine, int dev, 
+    UcclFlow(RDMAEndpoint *ep, int bootstrap_fd, int dev, 
         PeerID peer_id, FlowID flow_id, struct RemoteRDMAContext remote_ctx, std::string remote_ip, int remote_dev, bool is_send) : 
         ep_(ep), bootstrap_fd_(bootstrap_fd), dev_(dev), 
-            engine_(engine), peer_id_(peer_id), flow_id_(flow_id), remote_ctx_(remote_ctx), remote_ip_(remote_ip), remote_dev_(remote_dev), is_send_(is_send) {
+            peer_id_(peer_id), flow_id_(flow_id), remote_ctx_(remote_ctx), remote_ip_(remote_ip), remote_dev_(remote_dev), is_send_(is_send) {
         
         memset(&send_comm_, 0, sizeof(send_comm_));
         memset(&recv_comm_, 0, sizeof(recv_comm_));
@@ -547,6 +547,9 @@ class UcclFlow {
             UCCL_INIT_CHECK(modify_qp_rtr_gpuflush(recv_comm_.gpu_flush_qp, dev) == 0, "Failed to modify GPU flush QP to RTR");
             UCCL_INIT_CHECK(modify_qp_rts(recv_comm_.gpu_flush_qp, 0, true) == 0, "Failed to modify GPU flush QP to RTS");
         }
+        // Avoid all flows using the same initial engine offset.
+        static uint32_t off[NUM_DEVICES] = {};
+        next_engine_offset_ = off[dev]++;
     }
 
     ~UcclFlow() {
@@ -600,8 +603,6 @@ class UcclFlow {
 
     RDMAEndpoint *ep_;
     int bootstrap_fd_;
-    // Which Engine this flow belongs to.
-    UcclRDMAEngine *engine_;
     // PeerID  of this flow.
     PeerID peer_id_;
     // FlowID of this flow.
