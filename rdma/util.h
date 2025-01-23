@@ -37,7 +37,54 @@ namespace uccl {
 #define POISON_64 UINT64_MAX
 #define POISON_32 UINT32_MAX
 
-#define UINT_CSN_BIT 16
+#define UCCL_INIT_CHECK(x, msg) \
+    do {             \
+        if (!(x)) {  \
+            throw std::runtime_error(msg); \
+        }            \
+    } while (0)
+
+inline int receive_message(int sockfd, void *buffer, size_t n_bytes) {
+    int bytes_read = 0;
+    int r;
+    while (bytes_read < n_bytes) {
+        // Make sure we read exactly n_bytes
+        r = read(sockfd, buffer + bytes_read, n_bytes - bytes_read);
+        if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
+            CHECK(false) << "ERROR reading from socket";
+        }
+        if (r > 0) {
+            bytes_read += r;
+        }
+    }
+    return bytes_read;
+}
+
+inline int send_message(int sockfd, const void *buffer, size_t n_bytes) {
+    int bytes_sent = 0;
+    int r;
+    while (bytes_sent < n_bytes) {
+        // Make sure we write exactly n_bytes
+        r = write(sockfd, buffer + bytes_sent, n_bytes - bytes_sent);
+        if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
+            CHECK(false) << "ERROR writing to socket";
+        }
+        if (r > 0) {
+            bytes_sent += r;
+        }
+    }
+    return bytes_sent;
+}
+
+inline void net_barrier(int bootstrap_fd) {
+    bool sync = true;
+    int ret = send_message(bootstrap_fd, &sync, sizeof(bool));
+    ret = receive_message(bootstrap_fd, &sync, sizeof(bool));
+    DCHECK(ret == sizeof(bool) && sync);
+}
+
+
+#define UINT_CSN_BIT 8
 static_assert(UINT_CSN_BIT == 16 || UINT_CSN_BIT == 8, "UINT_CSN_BIT must be equal to 8 or 16");
 #define UINT_CSN_MASK ((1 << UINT_CSN_BIT) - 1)
 
@@ -166,6 +213,12 @@ struct alignas(64) PollCtx {
         timestamp = 0;
     }
 };
+
+inline void uccl_wakeup(PollCtx *ctx) {
+    std::lock_guard<std::mutex> lock(ctx->mu);
+    ctx->done = true;
+    ctx->cv.notify_one();
+}
 
 template <class T>
 static inline T Percentile(std::vector<T>& vectorIn, double percent) {

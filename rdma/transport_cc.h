@@ -31,7 +31,7 @@ struct pending_retr_chunk {
 struct Pcb {
     static constexpr std::size_t kInitialCwnd = 256;
     static constexpr std::size_t kSackBitmapBucketSize = sizeof(uint64_t) * 8;
-    static constexpr std::size_t kRtoMaxRexmitConsectutiveAllowed = 102400;
+    static constexpr std::size_t kRtoMaxRexmitConsectutiveAllowed = 32;
     static constexpr int kRtoExpireThresInTicks = 3;  // in slow timer ticks.
     static constexpr int kRtoDisabled = -1;
     Pcb()

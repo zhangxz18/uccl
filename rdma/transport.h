@@ -34,7 +34,6 @@
 #include "transport_config.h"
 #include "util.h"
 #include "util_shared_pool.h"
-#include "util_endian.h"
 #include "util_latency.h"
 #include "util_rss.h"
 #include "util_timer.h"
@@ -42,12 +41,11 @@
 
 namespace uccl {
 
-typedef uint64_t FlowID;
-
 struct ConnID {
     FlowID flow_id;       // Used for UcclRDMAEngine to look up UcclFlow.
-    uint32_t engine_idx;  // Used for RDMAEndpoint to locate the right engine.
+    PeerID peer_id;
     int boostrap_id;      // Used for bootstrap connection with the peer.
+    int dev;
 };
 
 struct Mhandle {
@@ -67,36 +65,11 @@ class Channel {
     struct Msg {
         enum Op : uint8_t {
             kTx,
-            kRx,
-            kFlush,
+            kRx
         };
         Op opcode;
-        FlowID flow_id;
+        PeerID peer_id;
         struct ucclRequest *ureq;
-        
-        union {
-            // kTx
-            struct {
-                void *data;
-                size_t size;
-                struct ibv_mr *mr;
-            } tx;
-            // kRx
-            struct {
-                void *data[kMaxRecv];
-                size_t size[kMaxRecv];
-                struct ibv_mr *mr[kMaxRecv];
-                int n;
-            } rx;
-            // kFlush
-            struct {
-                void *data[kMaxRecv];
-                size_t size[kMaxRecv];
-                struct ibv_mr *mr[kMaxRecv];
-                int n;
-            } flush;
-        };
-        // Wakeup handler
         PollCtx *poll_ctx;
     };
     static_assert(sizeof(Msg) % 4 == 0, "channelMsg must be 32-bit aligned");
@@ -104,19 +77,12 @@ class Channel {
     struct CtrlMsg {
         enum Op : uint8_t {
             // Endpoint --> Engine
-            kInstallFlowRDMA = 0,
-            kSyncFlowRDMA,
-            kRegMR,
-            kRegMRDMABUF,
-            kDeregMR,
-            // Engine --> Endpoint
-            kCompleteFlowRDMA,
-            kCompleteRegMR,
+            kInstallCtx = 0,
         };
         Op opcode;
-        FlowID flow_id;
+        PeerID peer_id;
         
-        struct XchgMeta meta;
+        union CtrlMeta meta;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -127,320 +93,22 @@ class Channel {
         tx_cmdq_ = create_ring(sizeof(Msg), kChannelSize);
         rx_cmdq_ = create_ring(sizeof(Msg), kChannelSize);
         ctrl_cmdq_ = create_ring(sizeof(CtrlMsg), kChannelSize);
-        ctrl_rspq_ = create_ring(sizeof(CtrlMsg), kChannelSize);
     }
 
     ~Channel() {
         free(tx_cmdq_);
         free(rx_cmdq_);
         free(ctrl_cmdq_);
-        free(ctrl_rspq_);
     }
 
     jring_t *tx_cmdq_;
     jring_t *rx_cmdq_;
-    // Endpoint --> Engine
     jring_t *ctrl_cmdq_;
-    // Engine --> Endpoint
-    jring_t *ctrl_rspq_;
 };
-
-/**
- * Uccl SACK Packet Header.
- */
-struct __attribute__((packed)) UcclSackHdr {
-    be16_t qpidx;  // QP index.
-    be32_t ackno;  // Sequence number to denote the packet counter in the flow.
-    be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
-    be64_t sack_bitmap[kSackBitmapSize /
-                       swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
-                                                            // SACKs received.
-    be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
-};
-static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
-static_assert(kUcclSackHdrLen == 32, "UcclSackHdr size mismatch");
-static_assert(CtrlChunkBuffPool::kPktSize >= kUcclSackHdrLen, "CtrlChunkBuffPool::PktSize must be larger than UcclSackHdr");
 
 class UcclFlow;
 class UcclRDMAEngine;
 class RDMAEndpoint;
-
-/**
- * @class UcclFlow, a connection between a local and a remote endpoint.
- * @brief Class to abstract the components and functionality of a single flow.
- * A flow is a bidirectional connection between two hosts, uniquely identified
- * by a TCP-negotiated `FlowID'.
- *
- * A flow is always associated with a single `Channel' object which serves as
- * the communication interface with the application to which the flow belongs.
- *
- * On normal operation, a flow is:
- *    - Receiving network packets from the NIC, which then converts to messages
- *      and enqueues to the `Channel', so that they reach the application.
- *    - Receiving messages from the application (via the `Channel'), which then
- *      converts to network packets and sends them out to the remote recipient.
- */
-class UcclFlow {
-    const static uint32_t kMaxReadyMsgbufs = MAX_UNACKED_PKTS;
-    constexpr static int kMaxBatchCQ = 32;
-    // 256-bit SACK bitmask => we can track up to 256 packets
-    static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
-   public:
-    /**
-     * @brief Construct a new Uccl Flow on RDMA
-     * 
-     * @param engine 
-     * @param channel 
-     * @param flow_id 
-     * @param rdma_ctx 
-     */
-    UcclFlow(UcclRDMAEngine *engine, Channel *channel, FlowID flow_id, struct RDMAContext *rdma_ctx): 
-        engine_(engine), channel_(channel), flow_id_(flow_id), rdma_ctx_(rdma_ctx) {
-            for (int i = 0; i < kMaxBatchCQ; i++) {
-                retr_wrs_[i].num_sge = 1;
-                retr_wrs_[i].sg_list = nullptr;
-                retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
-            }
-
-            for (int i = 0; i < kPostRQThreshold; i++) {
-                imm_wrs_[i].num_sge = 0;
-                imm_wrs_[i].sg_list = nullptr;
-                imm_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &imm_wrs_[i + 1];
-
-                rx_ack_sges_[i].lkey = rdma_ctx_->ctrl_chunk_pool_->get_lkey();
-                rx_ack_sges_[i].length = CtrlChunkBuffPool::kChunkSize;
-                rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
-                rx_ack_wrs_[i].num_sge = 1;
-                rx_ack_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &rx_ack_wrs_[i + 1];
-            }
-
-            tx_ack_wr_.num_sge = 1;
-            tx_ack_wr_.next = nullptr;
-            tx_ack_wr_.opcode = IBV_WR_SEND_WITH_IMM;
-            tx_ack_wr_.send_flags = IBV_SEND_SIGNALED;
-        };
-
-    ~UcclFlow() {}
-
-    friend class UcclRDMAEngine;
-
-    inline void shutdown() { 
-        for (int i = 0; i < kPortEntropy; i++) {
-            rdma_ctx_->uc_qps_[i].pcb.rto_disable(); 
-        }
-    }
-
-    /**
-     * @brief Supply a buffer for the flow to receive data into.
-     * @param rx_work 
-     */
-    void app_supply_rx_buf(Channel::Msg &rx_work);
-
-    /**
-     * @brief Flush the receive buffer.
-     * @param rx_work 
-     */
-    void flush_rx_buf(Channel::Msg &rx_work);
-
-    /**
-     * @brief Transmit a message described by the tx_work.
-     * @param tx_work 
-     * @return Return true if this tx_work has been successfully transmitted.
-     */
-    bool tx_messages(Channel::Msg &tx_work);
-
-    /**
-     * @brief Receive a chunk from the flow.
-     * @param ack_list 
-     */
-    void rx_chunk(struct list_head *ack_list);
-
-    /**
-     * @brief Receive a retransmitted chunk from the flow.
-     * 
-     * @param ack_list 
-     */
-    void rx_retr_chunk(struct list_head *ack_list);
-
-    /**
-     * @brief Receive a barrier from the flow.
-     * @param ack_list
-     */
-    void rx_barrier(struct list_head *ack_list);
-
-    /**
-     * @brief Poll the completion queue for the FIFO QP.
-     * @return Return true if polling is done for this flow, Engine should remove it from the polling list.
-     */
-    bool poll_fifo_cq(void);
-
-    /**
-     * @brief Poll the completion queues for all UC QPs.
-     */
-    inline int poll_uc_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_uc_cq() : receiver_poll_uc_cq(); }
-    int sender_poll_uc_cq(void);
-    int receiver_poll_uc_cq(void);
-
-    /**
-     * @brief Poll the completion queue for the Ctrl QP.
-     */
-    inline int poll_ctrl_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_ctrl_cq() : receiver_poll_ctrl_cq(); }
-    int sender_poll_ctrl_cq(void);
-    int receiver_poll_ctrl_cq(void);
-
-    /**
-     * @brief Poll the completion queue for the Retr QP.
-     */
-    inline int poll_retr_cq(void) { return rdma_ctx_->is_send_ ? sender_poll_retr_cq() : receiver_poll_retr_cq(); }
-    int sender_poll_retr_cq(void);
-    int receiver_poll_retr_cq(void);
-
-    /**
-     * @brief Only used for testing RC.
-     */
-    void test_rc_poll_cq(void);
-
-    /**
-     * @brief Retransmit a chunk for the given UC QP.
-     * @param qpw 
-     * @param wr_ex 
-     */
-    void retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex);
-
-    /**
-     * @brief Check if we need to post enough recv WQEs to the SRQ.
-     */
-    void check_srq(bool force = false);
-
-    /**
-     * @brief Check if we need to post enough recv WQEs to the Ctrl QP.
-     * @param force 
-     */
-     inline void check_ctrl_rq(bool force = false) { rdma_ctx_->is_send_ ? sender_check_ctrl_rq(force) : receiver_check_ctrl_rq(); }
-     void sender_check_ctrl_rq(bool force = false);
-     void receiver_check_ctrl_rq(void);
-
-    /**
-     * @brief Rceive an ACK from the Ctrl QP.
-     * 
-     * @param pkt_addr
-     */
-    void rx_ack(uint64_t pkt_addr);
-
-    /**
-     * @brief Craft an ACK for a UC QP using the given WR index.
-     * 
-     * @param qpidx 
-     * @param chunk_addr
-     * @param num_sge
-     */
-    void craft_ack(int qpidx, uint64_t chunk_addr, int num_sge);
-
-    /**
-     * @brief Flush all ACKs in the batch.
-     * 
-     * @param num_ack 
-     * @param chunk_addr
-     */
-    void flush_acks(int num_ack, uint64_t chunk_addr);
-
-    void burst_timing_wheel(void);
-
-    /**
-     * @brief Try to update the CSN for the given UC QP.
-     * @param qpw 
-     */
-    void try_update_csn(struct UCQPWrapper *qpw);
-
-    /**
-     * @brief The receiver is ready, post multiple messages to NIC.
-     * @param slot Slot in FIFO.
-     */
-    void post_multi_messages(int slot);
-    
-    /**
-     * @brief Post a single message to NIC. If needed, it will be queued in the timing wheel.
-     * @param req 
-     * @param slot 
-     * @param mid 
-     */
-    void post_single_message(struct FlowRequest *req, struct FifoItem &slot, uint32_t mid);
-
-    /**
-     * @brief Only used for testing RC.
-     */
-    void test_rc_post_multi_messages(int slot);
-
-    /**
-     * @brief Periodically checks the state of the flow and performs
-     * necessary actions.
-     *
-     * This method is called periodically to check the state of the flow,
-     * update the RTO timer, retransmit unacknowledged messages, and
-     * potentially remove the flow or notify the application about the
-     * connection state.
-     *
-     * @return Returns true if the flow should continue to be checked
-     * periodically, false if the flow should be removed or closed.
-     */
-    bool periodic_check();
-
-    std::string to_string();
-
-   private:
-
-    void __retransmit(struct UCQPWrapper *qpw, bool rto);
-    inline void fast_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, false); }
-    inline void rto_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, true); }
-
-    // <Slot, i>
-    std::deque<std::pair<int, int> > pending_tx_msgs_;
-
-    // Pre-allocated WQEs for consuming retransmission chunks.
-    struct ibv_recv_wr retr_wrs_[kMaxBatchCQ];
-
-    // WQE for sending ACKs.
-    struct ibv_send_wr tx_ack_wr_;
-    
-    // Pre-allocated WQEs for receiving ACKs.
-    struct ibv_recv_wr rx_ack_wrs_[kPostRQThreshold];
-    // Pre-allocted SGEs for receiving ACKs.
-    struct ibv_sge rx_ack_sges_[kPostRQThreshold];
-    uint32_t post_ctrl_rq_cnt_ = 0;
-
-    // Pre-allocated WQEs for consuming immediate data.
-    struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
-    uint32_t post_srq_cnt_ = 0;
-
-    /**
-     * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.
-     * These requests are transmitted through the underlyding fifo QP (RC).
-     * @param req Pointer to the FlowRequest structure.
-     * @param data Array of data buffers.
-     * @param size Array of buffer sizes.
-     * @param n Number of buffers.
-     * @param mr Memory region for the buffers.
-     */
-    void post_fifo(struct FlowRequest *req, void **data, size_t *size, int n, struct ibv_mr **mr);
-
-    // Which Engine this flow belongs to.
-    UcclRDMAEngine *engine_;
-
-    // Context for RDMA resources.
-    RDMAContext *rdma_ctx_;
-
-    // The channel this flow belongs to.
-    Channel *channel_;
-    // FlowID of this flow.
-    FlowID flow_id_;
-
-    // Measure the distribution of probed RTT.
-    Latency rtt_stats_;
-    uint64_t rtt_probe_count_ = 0;
-
-    friend class UcclRDMAEngine;
-    friend class RDMAEndpoint;
-};
 
 /**
  * @brief Class `UcclRDMAEngine' abstracts the main Uccl engine which supports RDMA. This engine
@@ -480,14 +148,14 @@ class UcclRDMAEngine {
     }
 
     /**
-     * @brief Handling async recv requests from Endpoint for all flows.
-     */
-    void handle_rx_work(void);
-
-    /**
      * @brief Handling aysnc send requests from Endpoint for all flows.
      */
     void handle_tx_work(void);
+
+    /**
+     * @brief Handling aysnc recv requests from Endpoint for all flows.
+     */
+    void handle_rx_work(void);
 
     /**
      * @brief Handling all completion events for all flows, including:
@@ -497,20 +165,7 @@ class UcclRDMAEngine {
      */
     void handle_completion(void);
 
-    /**
-     * @brief Only used for testing RC.
-     */
-    void test_rc_handle_completion(void);
-
     void handle_timing_wheel(void);
-
-    /**
-     * @brief Add a flow to the list for polling FIFO CQs in future.
-     * @param flow 
-     */
-    inline void add_fifo_cq_polling(UcclFlow *flow) {
-        fifo_cq_list_.push_back(flow);
-    }
 
     /**
      * @brief This is the main event cycle of the Uccl engine.
@@ -527,18 +182,7 @@ class UcclRDMAEngine {
      */
     void periodic_process();
 
-    /**
-     * @brief Creating underlying QPs, MRs, PDs, and CQs for the flow and set 
-     * QP state to INIT.
-     * @param ctrl_work 
-     */
-    void handle_install_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
-    
-    /**
-     * @brief Modifying QP state to RTR and RTS. 
-     * @param ctrl_work 
-     */
-    void handle_sync_flow_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
+    void handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work);
 
     /**
      * @brief Registering a memory region.
@@ -563,7 +207,6 @@ class UcclRDMAEngine {
     }
 
     inline void handle_clock_synchronization(void) {
-        if constexpr (kTestRC) return;
         auto host_clock = rdtsc();
         if (need_sync(host_clock)) {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
@@ -579,12 +222,6 @@ class UcclRDMAEngine {
             
             last_sync_clock_tsc_ = host_clock;
         }
-    }
-
-    // Convert NIC clock to host clock (TSC).
-    inline uint64_t convert_nic_to_host(uint64_t host_clock, uint64_t nic_clock) {
-        if (need_sync(host_clock)) handle_clock_synchronization();
-        return ratio_ * nic_clock + offset_;
     }
 
     // Called by application to shutdown the engine. App will need to join
@@ -613,14 +250,12 @@ class UcclRDMAEngine {
     int dev_;
     // Engine index
     uint32_t engine_idx_;
-    // UcclFlow map
-    std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
+    // RDMAContext map
+    std::unordered_map<PeerID, RDMAContext *> rdma_ctx_map_;
     // Control plane channel with RDMAEndpoint.
     Channel *channel_;
-    // FIFO CQs that need to be polled.
-    std::list<UcclFlow *> fifo_cq_list_;
-    // Pending tx work due to receiver not ready.
-    std::deque<Channel::Msg> pending_tx_work_;
+    // Pending rx work due to no available request.
+    std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_rx_works_;
     // Timestamp of last periodic process execution.
     uint64_t last_periodic_tsc_;
     // Clock ticks for the slow timer.
@@ -637,6 +272,8 @@ class UcclRDMAEngine {
 
     // Whether shutdown is requested.
     std::atomic<bool> shutdown_{false};
+
+    friend class UcclFlow;
 };
 
 // We only support RoCEv2 for now. Lid is not used.
@@ -652,6 +289,28 @@ struct RDMADevice {
     union ibv_gid gid;
     // Local IP address.
     std::string local_ip_str;
+};
+
+struct UcclPeer {
+    std::string remote_ip;
+    int remote_dev;
+};
+
+static bool operator==(const UcclPeer &lhs, const UcclPeer &rhs) {
+    return lhs.remote_ip == rhs.remote_ip && lhs.remote_dev == rhs.remote_dev;
+}
+
+struct UcclPeerHash {
+    std::size_t operator()(const UcclPeer &peer) const {
+        return std::hash<std::string>()(peer.remote_ip) ^ std::hash<int>()(peer.remote_dev);
+    }
+};
+
+struct PeerInfo {
+    PeerID peer_id;
+    ibv_gid remote_gid;
+    struct ibv_port_attr remote_port_attr;
+    uint32_t flow_cnt;
 };
 
 /**
@@ -675,45 +334,56 @@ class RDMAEndpoint {
 
     // RDMA devices.
     int num_devices_;
-    struct RDMADevice rdma_dev_list_[MAX_IB_DEVICES];
 
     int num_engines_per_dev_;
     // Per-engine communication channel
-    Channel *channel_vec_[NUM_ENGINES * MAX_IB_DEVICES];
+    Channel *channel_vec_[NUM_ENGINES * NUM_DEVICES];
     std::vector<std::unique_ptr<UcclRDMAEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
-    std::array<int, NUM_ENGINES> engine_load_vec_ = {0};
+    std::array<int, NUM_ENGINES * NUM_DEVICES> engine_load_vec_ = {};
 
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
 
-    // int listen_fd_;
     int listen_fds_[NUM_DEVICES];
 
     std::mutex fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
     std::unordered_map<FlowID, int> fd_map_;
 
+    // Peer map for connecting/accepting
+    std::unordered_map<UcclPeer, PeerInfo, UcclPeerHash> peer_map_[NUM_DEVICES];
+    std::mutex peer_map_mu_[NUM_DEVICES];
+
+    PeerID next_peer_id_ = 0;
+
+    // UcclFlow map
+    std::unordered_map<FlowID, UcclFlow *> active_flows_map_[NUM_DEVICES];
+    Spin active_flows_spin_[NUM_DEVICES];
+
    public:
     RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
     ~RDMAEndpoint();
 
-    // Connect to a remote address with the given listen_port.
-    ConnID uccl_connect(int dev, std::string remote_ip, uint16_t listen_port);
-    // Connect to a remote address; thread-safe
-    ConnID uccl_connect(int dev, std::string remote_ip);
-    // Explicitly specify the engine_id to install the flow.
-    ConnID uccl_connect(int dev, int engine_id, std::string remote_ip);
+    /// For testing easily.
+    ConnID test_uccl_connect(int dev, std::string remote_ip, int remote_dev) {
+        return uccl_connect(dev, remote_ip, remote_dev, kBootstrapPort + remote_dev);
+    }
+    ConnID test_uccl_accept(int dev, std::string &remote_ip, int *remote_dev) {
+        return uccl_accept(dev, listen_fds_[dev], remote_ip, remote_dev);
+    }
+    /// For testing easily.
+
+    // Connect to a remote peer <remote_ip, remote_dev> with the given dev, who is listening on the given listen_port.
+    // This function is thread-safe.
+    ConnID uccl_connect(int dev, std::string remote_ip, int remote_dev, uint16_t listen_port);
     
-    // Accept a connection from a remote address using the give listen_fd.
-    ConnID uccl_accept(int dev, std::string &remote_ip, int listen_fd);
-    // Accept a connection from a remote address; thread-safe
-    ConnID uccl_accept(int dev, std::string &remote_ip);
-    // Explicitly specify the engine_id to install the flow.
-    ConnID uccl_accept(int dev, int engine_id, std::string &remote_ip);
+    // Accept a connection using the given listen_fd. <remote_ip, remote_dev> is returned.
+    // This function is thread-safe.
+    ConnID uccl_accept(int dev, int listen_fd, std::string &remote_ip, int *remote_dev);
     
     // Register a memory region.
     int uccl_regmr(ConnID flow_id, void *data, size_t len, int type, struct Mhandle **mhandle);
@@ -723,70 +393,57 @@ class RDMAEndpoint {
     void uccl_deregmr(ConnID flow_id, struct Mhandle *mhandle);
 
     // Post a buffer to engine for sending data asynchronously.
-    PollCtx *uccl_send_async(ConnID flow_id, struct Mhandle *mhandle, const void *data,
-                             const size_t size);
-    // Post n buffers to engine for receiving data asynchronously.
-    PollCtx *uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);
-
-    // Post a buffer to engine for sending data asynchronously.
-    PollCtx *uccl_send_async(ConnID flow_id, struct Mhandle *mhandle, const void *data,
+    int uccl_send_async(ConnID flow_id, struct Mhandle *mhandle, const void *data,
                              const size_t size, struct ucclRequest *ureq);
     // Post n buffers to engine for receiving data asynchronously.
-    PollCtx *uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n, 
+    int uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n, 
                             struct ucclRequest *ureq);
 
     // Ensure that all received data is visible to GPU.
-    PollCtx *uccl_flush(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n);
+    int uccl_flush(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n,
+                            struct ucclRequest *ureq);
 
-    bool uccl_wait(PollCtx *ctx);
-    bool uccl_poll(PollCtx *ctx);
-    bool uccl_poll_once(PollCtx *ctx);
+    inline bool uccl_wait(PollCtx *ctx) {
+        std::unique_lock<std::mutex> lock(ctx->mu);
+        ctx->cv.wait(lock, [&ctx] { return ctx->done.load(); });
+        fence_and_clean_ctx(ctx);
+        return true;
+    }
+    
+    inline bool uccl_poll_once(PollCtx *ctx) {
+        if (!ctx->done.load()) return false;
+        fence_and_clean_ctx(ctx);
+        return true;
+    }
+
+    inline bool uccl_poll(PollCtx *ctx) {
+        while (!uccl_poll_once(ctx)) {}
+        return true;
+    }
 
    private:
 
-    void install_flow_on_engine_rdma(int dev, FlowID flow_id,
-                                     uint32_t local_engine_idx, int bootstrap_fd, bool is_send);
+    void install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta);
+
+    void install_ctx_on_engines(int fd, int dev, PeerID peer_id, struct RemoteRDMAContext *remote_ctx);
+    
     inline void put_load_on_engine(int engine_id);
-    inline int find_least_loaded_engine_idx_and_update();
-    inline void fence_and_clean_ctx(PollCtx *ctx);
+    
+    // Find a least loaded engine and update the load for the given device.
+    inline int find_least_loaded_engine_idx_and_update(int dev);
 
-    inline int receive_message(int sockfd, void *buffer, size_t n_bytes) {
-        int bytes_read = 0;
-        int r;
-        while (bytes_read < n_bytes) {
-            // Make sure we read exactly n_bytes
-            r = read(sockfd, buffer + bytes_read, n_bytes - bytes_read);
-            if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                CHECK(false) << "ERROR reading from socket";
-            }
-            if (r > 0) {
-                bytes_read += r;
-            }
-        }
-        return bytes_read;
+    inline int find_first_engine_idx(int dev) {
+        return dev * num_engines_per_dev_;
     }
 
-    inline int send_message(int sockfd, const void *buffer, size_t n_bytes) {
-        int bytes_sent = 0;
-        int r;
-        while (bytes_sent < n_bytes) {
-            // Make sure we write exactly n_bytes
-            r = write(sockfd, buffer + bytes_sent, n_bytes - bytes_sent);
-            if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                CHECK(false) << "ERROR writing to socket";
-            }
-            if (r > 0) {
-                bytes_sent += r;
-            }
-        }
-        return bytes_sent;
-    }
+    inline void fence_and_clean_ctx(PollCtx *ctx) {
+        // Make the data written by the engine thread visible to the app thread.
+        std::ignore =
+            std::atomic_load_explicit(&ctx->fence, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
 
-    inline void net_barrier(int bootstrap_fd) {
-        bool sync = true;
-        int ret = send_message(bootstrap_fd, &sync, sizeof(bool));
-        ret = receive_message(bootstrap_fd, &sync, sizeof(bool));
-        DCHECK(ret == sizeof(bool) && sync);
+        ctx->clear();
+        ctx_pool_->push(ctx);
     }
 
     std::thread stats_thread_;
@@ -796,6 +453,188 @@ class RDMAEndpoint {
     std::atomic<bool> shutdown_{false};
 
     friend class UcclFlow;
+};
+
+/**
+ * @class UcclFlow, a connection between a local and a remote endpoint.
+ * @brief Class to abstract the components and functionality of a single flow.
+ * A flow is a bidirectional connection between two hosts, uniquely identified
+ * by a TCP-negotiated `FlowID'.
+ *
+ * A flow is always associated with a single `Channel' object which serves as
+ * the communication interface with the application to which the flow belongs.
+ *
+ * On normal operation, a flow is:
+ *    - Receiving network packets from the NIC, which then converts to messages
+ *      and enqueues to the `Channel', so that they reach the application.
+ *    - Receiving messages from the application (via the `Channel'), which then
+ *      converts to network packets and sends them out to the remote recipient.
+ */
+class UcclFlow {
+    const static uint32_t kMaxReadyMsgbufs = MAX_UNACKED_PKTS;
+    constexpr static int kMaxBatchCQ = 32;
+    static constexpr int kFifoMRSize = sizeof(struct RemFifo);
+    static constexpr int kFifoCQSize = 4096;
+   
+   public:
+
+    UcclFlow(RDMAEndpoint *ep, int bootstrap_fd, UcclRDMAEngine *engine, int dev, 
+        PeerID peer_id, FlowID flow_id, struct RemoteRDMAContext remote_ctx, std::string remote_ip, int remote_dev, bool is_send) : 
+        ep_(ep), bootstrap_fd_(bootstrap_fd), dev_(dev), 
+            engine_(engine), peer_id_(peer_id), flow_id_(flow_id), remote_ctx_(remote_ctx), remote_ip_(remote_ip), remote_dev_(remote_dev), is_send_(is_send) {
+        
+        memset(&send_comm_, 0, sizeof(send_comm_));
+        memset(&recv_comm_, 0, sizeof(recv_comm_));
+
+        auto comm_base = is_send_ ? &send_comm_.base : &recv_comm_.base;
+
+        auto factory_dev = RDMAFactory::get_factory_dev(dev);
+
+        // Fifo QP.
+        comm_base->fifo_local_psn = BASE_PSN;
+        util_rdma_create_qp(factory_dev->context, &comm_base->fifo_qp, IBV_QPT_RC, false, false,
+        &comm_base->flow_cq, false, kFifoCQSize, factory_dev->pd, &comm_base->fifo_mr, nullptr, kFifoMRSize, 
+            kMaxReq * kMaxRecv, kMaxReq * kMaxRecv, 1, 1);
+        comm_base->fifo = reinterpret_cast<struct RemFifo *>(comm_base->fifo_mr->addr);
+
+        // Exchange local PSN, QPN for Fifo QP with remote peer.
+        char buf[2 * sizeof(uint32_t)];
+        auto fifo_lpsn = comm_base->fifo_local_psn;
+        auto fifo_lqpn = comm_base->fifo_qp->qp_num;
+        memcpy(buf, &fifo_lpsn, sizeof(uint32_t));
+        memcpy(buf + sizeof(uint32_t), &fifo_lqpn, sizeof(uint32_t));
+
+        UCCL_INIT_CHECK(send_message(bootstrap_fd, buf, 2 * sizeof(uint32_t)) == 2 * sizeof(uint32_t), 
+            "uccl_connect: send_message()");
+
+        UCCL_INIT_CHECK(receive_message(bootstrap_fd, buf, 2 * sizeof(uint32_t)) == 2 * sizeof(uint32_t), 
+            "uccl_connect: receive_message()");
+
+        auto fifo_rpsn = *reinterpret_cast<uint32_t *>(buf);
+        auto fifo_rqpn = *reinterpret_cast<uint32_t *>(buf + sizeof(uint32_t));
+        
+        UCCL_INIT_CHECK(modify_qp_rtr(comm_base->fifo_qp, dev, &remote_ctx_, fifo_rqpn, fifo_rpsn) == 0,
+            "Failed to modify Fifo QP to RTR");
+        UCCL_INIT_CHECK(modify_qp_rts(comm_base->fifo_qp, fifo_lpsn, true) == 0,
+            "Failed to modify Fifo QP to RTS");
+        
+        // Exchange addr and rkey for Fifo MR with remote peer.
+        char buf2[sizeof(uint64_t) + sizeof(uint32_t)];
+        auto fifo_laddr = reinterpret_cast<uint64_t>(comm_base->fifo_mr->addr);
+        auto fifo_lrkey = comm_base->fifo_mr->rkey;
+        memcpy(buf2, &fifo_laddr, sizeof(uint64_t));
+        memcpy(buf2 + sizeof(uint64_t), &fifo_lrkey, sizeof(uint32_t));
+
+        UCCL_INIT_CHECK(send_message(bootstrap_fd, buf2, sizeof(uint64_t) + sizeof(uint32_t)) == sizeof(uint64_t) + sizeof(uint32_t),
+            "uccl_connect: send_message()");
+        
+        UCCL_INIT_CHECK(receive_message(bootstrap_fd, buf2, sizeof(uint64_t) + sizeof(uint32_t)) == sizeof(uint64_t) + sizeof(uint32_t),
+            "uccl_connect: receive_message()");
+        
+        comm_base->remote_fifo_addr = *reinterpret_cast<uint64_t *>(buf2);
+        comm_base->remote_fifo_rkey = *reinterpret_cast<uint32_t *>(buf2 + sizeof(uint64_t));
+
+        // GPU flush QP for receiver.
+        if (!is_send_) {
+            util_rdma_create_qp(factory_dev->context, &recv_comm_.gpu_flush_qp, IBV_QPT_RC, false, false,
+                &comm_base->flow_cq, true, 0, factory_dev->pd, &recv_comm_.gpu_flush_mr, &recv_comm_.gpu_flush, 
+                    sizeof(int), kMaxReq * kMaxRecv, kMaxReq * kMaxRecv, kMaxSge, kMaxSge);
+
+            recv_comm_.gpu_flush_sge.addr = (uint64_t)&recv_comm_.gpu_flush;
+            recv_comm_.gpu_flush_sge.length = 1;
+            recv_comm_.gpu_flush_sge.lkey = recv_comm_.gpu_flush_mr->lkey;
+
+            UCCL_INIT_CHECK(modify_qp_rtr_gpuflush(recv_comm_.gpu_flush_qp, dev) == 0, "Failed to modify GPU flush QP to RTR");
+            UCCL_INIT_CHECK(modify_qp_rts(recv_comm_.gpu_flush_qp, 0, true) == 0, "Failed to modify GPU flush QP to RTS");
+        }
+    }
+
+    ~UcclFlow() {
+        auto comm_base = is_send_ ? &send_comm_.base : &recv_comm_.base;
+        
+        munmap(comm_base->fifo_mr->addr, comm_base->fifo_mr->length);
+        ibv_dereg_mr(comm_base->fifo_mr);
+        ibv_destroy_qp(comm_base->fifo_qp);
+        
+        ibv_destroy_cq(comm_base->flow_cq);
+        
+        if (!is_send_) {
+            munmap(recv_comm_.gpu_flush_mr->addr, recv_comm_.gpu_flush_mr->length);
+            ibv_dereg_mr(recv_comm_.gpu_flush_mr);
+            ibv_destroy_qp(recv_comm_.gpu_flush_qp);
+        }
+    }
+
+    friend class UcclRDMAEngine;
+
+    void release() {}
+
+   private:
+
+    inline int check_need_flush(int *size, int n) {
+        // Only flush once using the last non-zero receive
+        int last = -1;
+        for (int i = 0; i < n; i++) if (size[i]) last = i;
+        return last;
+    }
+    void post_flush(struct Mhandle **mhandles, void **data, int *size, int n, PollCtx *poll_ctx, int last);
+
+    /**
+     * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.
+     * These requests are transmitted through the underlyding fifo QP (RC).
+     * @param data Array of data buffers.
+     * @param size Array of buffer sizes.
+     * @param n Number of buffers.
+     */
+    struct FifoItem *post_fifo(uint32_t engine_idx, void **data, int *size, int n, struct Mhandle **mhandle, 
+        struct ibv_send_wr *wr, struct ibv_sge *sge);
+
+    /**
+     * @brief Poll the completion queue for the FIFO/GPU flush QP.
+     */
+    void poll_flow_cq(void);
+
+    bool check_fifo_ready(int *ret_slot, int *ret_nmsgs);
+
+    void post_multi_send(struct ucclRequest **ureqs, uint32_t engine_idx);
+
+    RDMAEndpoint *ep_;
+    int bootstrap_fd_;
+    // Which Engine this flow belongs to.
+    UcclRDMAEngine *engine_;
+    // PeerID  of this flow.
+    PeerID peer_id_;
+    // FlowID of this flow.
+    FlowID flow_id_;
+    int dev_;
+    struct RemoteRDMAContext remote_ctx_;
+    std::string remote_ip_;
+    int remote_dev_;
+
+    uint32_t next_engine_offset_ = 0;
+
+    uint32_t flow_cq_cnt_ = 0;
+
+    /**
+     * @brief Communication abstraction for sending and receiving.
+     * Since data flow is unidirectional in NCCL, we use two different structures.
+     */
+    union {
+        // For connection setup by connect().
+        struct SendComm send_comm_;
+        // For connection setup by accept().
+        struct RecvComm recv_comm_;
+    };
+
+    // Whether this context is for sending or receiving.
+    bool is_send_;
+
+    // Measure the distribution of probed RTT.
+    Latency rtt_stats_;
+    uint64_t rtt_probe_count_ = 0;
+
+    friend class UcclRDMAEngine;
+    friend class RDMAEndpoint;
 };
 
 }  // namespace uccl

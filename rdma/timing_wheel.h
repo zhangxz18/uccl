@@ -27,7 +27,7 @@ struct alignas(64) wr_ex {
     struct ibv_send_wr wr;
     struct ibv_sge sge;
 
-    struct FlowRequest *req;
+    struct ucclRequest *ureq;
     uint32_t qpidx;
 };
 static_assert(sizeof(wr_ex) == 192, "wr_ex size mismatch");

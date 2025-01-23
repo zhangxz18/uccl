@@ -27,7 +27,7 @@ void interrupt_handler(int signal) {
 }
 
 DEFINE_bool(server, false, "Whether this is a server receiving traffic.");
-DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
+DEFINE_string(serverip, "192.168.25.2", "Server IP address the client tries to connect.");
 DEFINE_string(perftype, "basic", "Performance type: basic/lat/tpt.");
 DEFINE_bool(warmup, false, "Whether to run warmup.");
 DEFINE_uint32(nflow, 1, "Number of flows.");
@@ -43,9 +43,10 @@ static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
         int len = 65536;
         void *recv_data = data;
 
-        auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
+        struct ucclRequest ureq;
+        DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
 
-        ep.uccl_poll(poll_ctx);
+        ep.uccl_poll(ureq.poll_ctx);
 
         // verify data
         for (int i = 0; i < 65536 / 4; i++) {
@@ -66,9 +67,10 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
 
     for (int i = 0; i < FLAGS_iterations; i++) {
         void *send_data = data;
-        auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, 65536);
+        struct ucclRequest ureq;
+        while (ep.uccl_send_async(conn_id, mhandle, send_data, 65536, &ureq)) {}
 
-        ep.uccl_poll(poll_ctx);
+        ep.uccl_poll(ureq.poll_ctx);
 
         // VLOG(5) << "Iteration " << i << " done";
         std::cout << "Iteration " << i << " done" << std::endl;
@@ -84,8 +86,9 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
         for (int i = 0; i < 1000; i++) {
             int len = FLAGS_msize;
             void *recv_data = data;
-            auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
-            ep.uccl_poll(poll_ctx);
+            struct ucclRequest ureq;
+            DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
+            ep.uccl_poll(ureq.poll_ctx);
         }
     }
 
@@ -93,8 +96,9 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
         int len = FLAGS_msize;
         void *recv_data = data;
         auto t1 = rdtsc();
-        auto *poll_ctx = ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1);
-        ep.uccl_poll(poll_ctx);
+        struct ucclRequest ureq;
+        DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
+        ep.uccl_poll(ureq.poll_ctx);
         auto t2 = rdtsc();
         lat_vec.push_back(to_usec(t2 - t1, freq_ghz));
     }
@@ -111,15 +115,17 @@ static void client_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
     if (FLAGS_warmup) {
         for (int i = 0; i < 1000; i++) {
             void *send_data = data;
-            auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize);
-            ep.uccl_poll(poll_ctx);
+            struct ucclRequest ureq;
+            while (ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize, &ureq)) {}
+            ep.uccl_poll(ureq.poll_ctx);
         }
     }
 
     for (int i = 0; i < FLAGS_iterations; i++) {
         void *send_data = data;
-        auto *poll_ctx = ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize);
-        ep.uccl_poll(poll_ctx);
+        struct ucclRequest ureq;
+        while (ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize, &ureq)) {}
+        ep.uccl_poll(ureq.poll_ctx);
     }
 }
 
@@ -134,9 +140,9 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     int flag[FLAGS_nflow][FLAGS_nreq];
     memset(flag, 0, sizeof(int) * FLAGS_nflow * FLAGS_nreq);
     
-    std::vector<std::vector<PollCtx *>> poll_ctx_vec(FLAGS_nflow);
+    std::vector<std::vector<ucclRequest>> ureq_vec(FLAGS_nflow);
     for (int i = 0; i < FLAGS_nflow; i++) {
-        poll_ctx_vec[i].resize(FLAGS_nreq);
+        ureq_vec[i].resize(FLAGS_nreq);
     }
     
     for (int f = 0; f < FLAGS_nflow; f++) {
@@ -150,7 +156,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
 
     for (int f = 0; f < FLAGS_nflow; f++) {
         for (int r = 0; r < FLAGS_nreq; r++) {
-            poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
+            DCHECK(ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
             FLAGS_iterations--;
         }
     }
@@ -158,21 +164,23 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     while (FLAGS_iterations) {
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
-                if (!ep.uccl_poll_once(poll_ctx_vec[f][r])) continue;
+                if (!ep.uccl_poll_once(ureq_vec[f][r].poll_ctx)) continue;
 
                 if (!FLAGS_flush) {
-                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
                     FLAGS_iterations--;
+                    if (FLAGS_iterations == 0) break;
+                    DCHECK(ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
                     continue;
                 }
                 
                 if (flag[f][r] == 0) {
-                    poll_ctx_vec[f][r] = ep.uccl_flush(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
+                    DCHECK(ep.uccl_flush(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
                     flag[f][r] = 1;
                 }
                 else if (flag[f][r] == 1) {
-                    poll_ctx_vec[f][r] = ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg);
                     FLAGS_iterations--;
+                    if (FLAGS_iterations == 0) break;
+                    DCHECK(ep.uccl_recv_async(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
                     flag[f][r] = 0;
                 }
             }
@@ -197,18 +205,18 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         }
     });
     
-    std::vector<std::vector<std::vector<PollCtx *>>> poll_ctx_vec(FLAGS_nflow);
+    std::vector<std::vector<std::vector<struct ucclRequest>>> ureq_vec(FLAGS_nflow);
     for (int f = 0; f < FLAGS_nflow; f++) {
-        poll_ctx_vec[f].resize(FLAGS_nreq);
+        ureq_vec[f].resize(FLAGS_nreq);
         for (int r = 0; r < FLAGS_nreq; r++) {
-            poll_ctx_vec[f][r].resize(FLAGS_nmsg);
+            ureq_vec[f][r].resize(FLAGS_nmsg);
         }
     }
     for (int f = 0; f < FLAGS_nflow; f++) {
         for (int r = 0; r < FLAGS_nreq; r++) {
             for (int n = 0; n < FLAGS_nmsg; n++) {
                 void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
-                poll_ctx_vec[f][r][n] = ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize);
+                while (ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                 cur_sec_bytes += FLAGS_msize;
             }
             FLAGS_iterations--;
@@ -221,9 +229,9 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 for (int n = 0; n < FLAGS_nmsg; n++) {
-                    if (ep.uccl_poll_once(poll_ctx_vec[f][r][n])) {
+                    if (ep.uccl_poll_once(ureq_vec[f][r][n].poll_ctx)) {
                         void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
-                        poll_ctx_vec[f][r][n] = ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize);
+                        while (ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                         cur_sec_bytes += FLAGS_msize;
                         if (++fin_msg == FLAGS_nreq) {
                             FLAGS_iterations--;
@@ -251,7 +259,8 @@ static void server_worker(void)
     mhandles.resize(FLAGS_nflow);
 
     for (int i = 0; i < FLAGS_nflow; i++) {
-        auto conn_id = ep.uccl_accept(0, i % NUM_ENGINES, remote_ip);
+        int remote_dev;
+        auto conn_id = ep.test_uccl_accept(0, remote_ip, &remote_dev);
         printf("Server accepted connection from %s (flow#%d)\n", remote_ip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);
@@ -293,7 +302,7 @@ static void client_worker(void)
     mhandles.resize(FLAGS_nflow);
 
     for (int i = 0; i < FLAGS_nflow; i++) {
-        auto conn_id = ep.uccl_connect(0, i % NUM_ENGINES, FLAGS_serverip);
+        auto conn_id = ep.test_uccl_connect(0, FLAGS_serverip, 0);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);

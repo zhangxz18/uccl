@@ -24,9 +24,6 @@ build: $(test_bin) $(lib_obj) $(PLUGIN_SO)
 rdma_test: rdma_test.cc $(DEPS) $(lib_obj)
 	g++ rdma_test.cc -o rdma_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
-intra_test: intra_test.cc $(DEPS) $(lib_obj)
-	g++ intra_test.cc -o intra_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
-
 plugin_test: plugin_test.cc $(DEPS) $(lib_obj)
 	g++ plugin_test.cc -o plugin_test $(lib_obj) $(NCCL_INC) $(INC) $(LIBS) $(CXXFLAGS) -ldl
 

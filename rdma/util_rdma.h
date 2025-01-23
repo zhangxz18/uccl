@@ -18,9 +18,13 @@
 #include "transport_cc.h"
 
 #include "util.h"
+#include "util_endian.h"
 #include "util_list.h"
 
 namespace uccl {
+
+typedef uint64_t FlowID;
+typedef uint64_t PeerID;
 
 class RDMAContext;
 class RDMAFactory;
@@ -32,6 +36,8 @@ static constexpr uint32_t IB_HDR_OVERHEAD = (8 + 40 + 12);
 static constexpr uint32_t ROCE_IPV4_HDR_OVERHEAD = (14 + 20 + 8 + 12);
 // Ethernet + IPv6 + UDP + BTH
 static constexpr uint32_t ROCE_IPV6_HDR_OVERHEAD = (14 + 40 + 8 + 12);
+
+static constexpr uint32_t BASE_PSN = 0;
 
 // For quick computation at MTU 4096
 static constexpr uint32_t MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV4_HDR_OVERHEAD;
@@ -225,62 +231,15 @@ class IMMData {
     private:
         uint32_t imm_data_;    
 };
-struct XchgMeta {
-    union {
-        // Endpoint --> Engine
-        struct {
-            union {
-                // kInstallFlowRDMA
-                struct {
-                    union ibv_gid remote_gid;
-                    struct ibv_port_attr remote_port_attr;
-                    ibv_mtu mtu;
-                    int dev;
-                    bool is_send;
-                };
-
-                // kRegMR/kRegMRDMABUF
-                struct {
-                    void *addr;
-                    size_t len;
-                    int type;
-                    int offset;
-                    int fd;
-                };
-
-                // kDeregMR
-                struct {
-                    struct ibv_mr *mr;
-                };
-
-                // kSyncFlowRDMA
-                struct {
-                    uint32_t remote_qpn;
-                    uint32_t remote_psn;
-                    bool fifo;
-                    uint32_t fifo_key; // Only valid when fifo is true
-                    uint64_t fifo_addr; // Only valid when fifo is true
-                };
-            };
-        } ToEngine;
-        // Engine --> Endpoint
-        struct {
-            union {
-                // kCompleteFlowRDMA
-                struct {
-                    uint32_t local_qpn;
-                    uint32_t local_psn;
-                    bool fifo;
-                    uint32_t fifo_key; // Only valid when fifo is true
-                    uint64_t fifo_addr; // Only valid when fifo is true
-                };
-                // kCompleteRegMR
-                struct {
-                    struct ibv_mr *mr;
-                };
-            };
-        } ToEndPoint;
-    };
+union CtrlMeta {
+    // kInstallCtx
+    struct {
+        union ibv_gid remote_gid;
+        struct ibv_port_attr remote_port_attr;
+        bool is_send;
+        PeerID peer_id;
+        int bootstrap_fd;
+    } install_ctx;
 };
 
 /**
@@ -302,14 +261,14 @@ struct FifoItem {
     uint32_t nmsgs;
     uint32_t rid;
     uint64_t idx;
-    char padding[32];
+    uint32_t engine_idx;
+    char padding[28];
 };
 static_assert(sizeof(struct FifoItem) == 64, "FifoItem size is not 64 bytes");
 
 struct RemFifo {
     // FIFO elements prepared for sending to remote peer.
     struct FifoItem elems[kMaxReq][kMaxRecv];
-    uint32_t received_bytes[kMaxReq][kMaxRecv];
     // Tail pointer of the FIFO.
     uint64_t fifo_tail;
     // Only used for testing RC.
@@ -319,8 +278,6 @@ struct RemFifo {
 struct RemoteRDMAContext {
     union ibv_gid remote_gid;
     struct ibv_port_attr remote_port_attr;
-    uint32_t fifo_key;
-    uint64_t fifo_addr;
 };
 
 /// plugin-level ///
@@ -335,7 +292,25 @@ struct ucclRequest {
     PollCtx *poll_ctx;
     int dev;
     int n;
-    int data_len[kMaxRecv];
+    union {
+        struct {
+            int data_len[kMaxRecv];
+            uint64_t data[kMaxRecv];
+            struct FifoItem *elems;
+            struct ibv_send_wr wr;
+            struct ibv_sge sge;
+            struct ibv_qp *qp;
+        } recv;
+        struct {
+            int data_len;
+            uint64_t laddr;
+            uint64_t raddr;
+            uint32_t lkey;
+            uint32_t rkey;
+            uint32_t rid;
+            int tx_events;
+        } send;
+    };
 };
 /// plugin-level ///
 
@@ -343,59 +318,52 @@ struct ucclRequest {
 struct FlowRequest {
     enum type {
         UNUSED = 0,
-        SEND,
         RECV,
-        FLUSH,
     };
-
     enum type type;
-    int nmsgs;
-    PollCtx *poll_ctx;
     struct ucclRequest *ureq;
-
-    // Only used for testing RC.
-    int events;
-
-    union {
-        struct {
-            int size;
-            void *data;
-            uint32_t lkey;
-            int sent_offset;
-        } send;
-
-        struct {
-            uint32_t *received_bytes;
-            struct FifoItem *elems;
-            uint32_t fin_msg;
-        } recv;
-    };
+    uint32_t received_bytes[kMaxRecv];
+    uint32_t fin_msg;
 };
 
 /// @ref ncclIbNetCommBase
 struct alignas(32) NetCommBase {
-    // Is this a send or receive flow?
-    bool is_send;
-    // Track outstanding SEND/RECV requests.
-    struct FlowRequest reqs[kMaxReq];
-    // Remote RDMA context.
-    struct RemoteRDMAContext remote_ctx;
     // Pointing to rdma_ctx_->fifo_mr_->addr.
     struct RemFifo *fifo;
+
+    // CQ for Fifo QP and GPU flush QP
+    struct ibv_cq *flow_cq;
+
+    // Fifo QP based on Reliable Connection (RC).
+    struct ibv_qp *fifo_qp;
+    // Local PSN for Fifo.
+    uint32_t fifo_local_psn;
+    // Memory region for Fifo.
+    struct ibv_mr *fifo_mr;
+
+    uint64_t remote_fifo_addr;
+    uint32_t remote_fifo_rkey;
 };
 
 /// @ref ncclIbSendComm
 struct SendComm {
     struct NetCommBase base;
-
     // Track outstanding FIFO requests.
-    struct FlowRequest *fifo_reqs[kMaxReq][kMaxRecv];
+    struct ucclRequest *fifo_ureqs[kMaxReq][kMaxRecv];
     uint64_t fifo_head;
 };
 
 /// @ref ncclIbRecvComm
 struct RecvComm {
     struct NetCommBase base;
+
+    // QP for GPU flush.
+    struct ibv_qp *gpu_flush_qp;
+    // Memory region for GPU flush.
+    struct ibv_mr *gpu_flush_mr;
+    struct ibv_sge gpu_flush_sge;
+    // GPU flush buffer
+    int gpu_flush;
 };
 
 class RXTracking {
@@ -404,7 +372,7 @@ class RXTracking {
         static constexpr uint32_t kMAXBytes = kMAXWQE * kChunkSize;
     public:
 
-        std::set<int> ready_csn_;
+        std::set<UINT_CSN> ready_csn_;
         
         RXTracking() = default;
         ~RXTracking() = default;
@@ -430,7 +398,7 @@ class RXTracking {
 class TXTracking {
     public:
         struct ChunkTrack {
-            struct FlowRequest *req;
+            struct ucclRequest *ureq;
             uint32_t csn;
             struct wr_ex *wr_ex;
             uint64_t timestamp;
@@ -453,8 +421,8 @@ class TXTracking {
 
         uint64_t ack_chunks(uint32_t num_acked_chunks);
 
-        inline void track_chunk(struct FlowRequest *req, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
-            unacked_chunks_.push_back({req, csn, wr_ex, timestamp});
+        inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
+            unacked_chunks_.push_back({ureq, csn, wr_ex, timestamp});
         }
 
         inline size_t track_size(void) {
@@ -492,6 +460,24 @@ struct UCQPWrapper {
 };
 
 /**
+ * Uccl SACK Packet Header.
+ */
+struct __attribute__((packed)) UcclSackHdr {
+    be16_t qpidx;  // QP index.
+    be32_t ackno;  // Sequence number to denote the packet counter in the flow.
+    be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
+    be64_t sack_bitmap[kSackBitmapSize /
+                       swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
+                                                            // SACKs received.
+    be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
+};
+static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
+static_assert(kUcclSackHdrLen == 32, "UcclSackHdr size mismatch");
+static_assert(CtrlChunkBuffPool::kPktSize >= kUcclSackHdrLen, "CtrlChunkBuffPool::PktSize must be larger than UcclSackHdr");
+
+class UcclEngine;
+
+/**
  * @brief  RDMA context for each UcclFlow, which is produced by RDMAFactory. It contains:
  *   - Multiple Unreliable Connection (UC) QPs and a shared CQ.
  *   - A high-priority QP for control messages and a dedicated CQ, PD, and MR.
@@ -501,13 +487,59 @@ struct UCQPWrapper {
  */
 class RDMAContext {
     public:
-        constexpr static int kTotalQP = kPortEntropy + 3;
-        constexpr static int kFifoIndex = kPortEntropy + 1;
-        constexpr static int kFifoMRSize = sizeof(struct RemFifo);
+        constexpr static int kTotalQP = kPortEntropy + 2;
         constexpr static int kCtrlMRSize = CtrlChunkBuffPool::kChunkSize * CtrlChunkBuffPool::kNumChunk;
         /// TODO: How to determine the size of retransmission MR?
         constexpr static int kRetrMRSize = RetrChunkBuffPool::kRetrChunkSize * RetrChunkBuffPool::kNumChunk;
         constexpr static int kCQSize = 4096;
+        // 256-bit SACK bitmask => we can track up to 256 packets
+        static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
+
+        // Track outstanding SEND/RECV requests.
+        struct FlowRequest reqs_[kMaxReq];
+
+        /**
+         * @brief Figure out the request id.
+         * @param req 
+         * @param comm_base 
+         * @return uint64_t 
+         */
+        inline uint64_t get_request_id(struct FlowRequest *req) {
+            return req - reqs_;
+        }
+
+        /**
+         * @brief Get the request by id.
+         * @param id 
+         * @return struct FlowRequest* 
+         */
+        inline struct FlowRequest *get_request_by_id(int id) {
+            return &reqs_[id];
+        }
+
+        inline void free_request(struct FlowRequest *req) {
+            VLOG(3) << "free_request: " << req;
+            memset(req, 0, sizeof(struct FlowRequest));
+        }
+
+        /**
+         * @brief Get an unused request, if no request is available, return nullptr.
+         * @return struct FlowRequest* 
+         */
+        inline struct FlowRequest *get_request(void) {
+            for (int i = 0; i < kMaxReq; i++) {
+                auto *req = &reqs_[i];
+                if (req->type == FlowRequest::UNUSED) {
+                    VLOG(3) << "get_request: " << req;
+                    return req;
+                }
+            }
+            VLOG(3) << "get_request: nullptr";
+            return nullptr;
+        }
+
+        // Remote RDMA context.
+        struct RemoteRDMAContext remote_ctx_;
 
         // Protection domain for all RDMA resources.
         struct ibv_pd *pd_ = nullptr;
@@ -516,31 +548,11 @@ class RDMAContext {
         struct UCQPWrapper uc_qps_[kPortEntropy];
         // UC QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;
+        
         // Shared CQ for all UC QPs.
-        struct ibv_cq_ex *cq_ex_;
+        struct ibv_cq_ex *send_cq_ex_;
+        struct ibv_cq_ex *recv_cq_ex_;
         struct ibv_srq *srq_;
-
-        // Fifo QP based on Reliable Connection (RC).
-        struct ibv_qp *fifo_qp_;
-        // Local PSN for Fifo.
-        uint32_t fifo_local_psn_;
-        // Remote PSN for Fifo.
-        uint32_t fifo_remote_psn_;
-        // Dedicated CQ for Fifo.
-        struct ibv_cq *fifo_cq_;
-        // Memory region for Fifo.
-        struct ibv_mr *fifo_mr_;
-
-        // Whether its FIFO CQ is under polling.
-        bool fifo_cq_polling_;
-
-        // QP for GPU flush.
-        struct ibv_qp *gpu_flush_qp_;
-        // Memory region for GPU flush.
-        struct ibv_mr *gpu_flush_mr_;
-        struct ibv_sge gpu_flush_sge_;
-        // GPU flush buffer
-        int gpu_flush_;
         
         // (high-priority) QP for control messages (e.g., ACK).
         struct ibv_qp *ctrl_qp_;
@@ -574,31 +586,11 @@ class RDMAContext {
 
         // RDMA device context per device.
         struct ibv_context *context_;
-        // Local GID of this device.
-        union ibv_gid local_gid_;
-        // Port attributes of this device.
-        struct ibv_port_attr port_attr_;
         // MTU of this device.
         ibv_mtu mtu_;
         uint32_t mtu_bytes_;
-        // IB port number of this device.
-        uint8_t ib_port_num_;
         // GID index of this device.
         uint8_t sgid_index_;
-        
-        /**
-         * @brief Communication abstraction for sending and receiving.
-         * Since data flow is unidirectional in NCCL, we use two different structures.
-         */
-        union {
-            // For connection setup by connect().
-            struct SendComm send_comm_;
-            // For connection setup by accept().
-            struct RecvComm recv_comm_;
-        };
-
-        // Whether this context is for sending or receiving.
-        bool is_send_;
 
         // Buffer pool for control chunks.
         std::optional<CtrlChunkBuffPool> ctrl_chunk_pool_;
@@ -612,56 +604,33 @@ class RDMAContext {
         // Buffer pool for work request extension items.
         std::optional<WrExBuffPool> wr_ex_pool_;
 
-        /**
-         * @brief Figure out the request id.
-         * @param req 
-         * @param comm_base 
-         * @return uint64_t 
-         */
-        inline uint64_t get_request_id(struct FlowRequest *req, struct NetCommBase *comm_base) {
-            return req - comm_base->reqs;
+        // Pre-allocated WQEs for consuming retransmission chunks.
+        struct ibv_recv_wr retr_wrs_[kMaxBatchCQ];
+
+        // WQE for sending ACKs.
+        struct ibv_send_wr tx_ack_wr_;
+        
+        // Pre-allocated WQEs for receiving ACKs.
+        struct ibv_recv_wr rx_ack_wrs_[kPostRQThreshold];
+        // Pre-allocted SGEs for receiving ACKs.
+        struct ibv_sge rx_ack_sges_[kPostRQThreshold];
+        uint32_t post_ctrl_rq_cnt_ = 0;
+
+        // Pre-allocated WQEs for consuming immediate data.
+        struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
+        uint32_t post_srq_cnt_ = 0;
+
+        double ratio_;
+        double offset_;
+
+        inline void update_clock(double ratio, double offset) {
+            ratio_ = ratio;
+            offset_ = offset;
         }
 
-        /**
-         * @brief Get the request by id.
-         * @param id 
-         * @param comm_base 
-         * @return struct FlowRequest* 
-         */
-        inline struct FlowRequest *get_request_by_id(int id, struct NetCommBase *comm_base) {
-            return &comm_base->reqs[id];
-        }
-
-        inline void free_request(struct FlowRequest *req) {
-            VLOG(3) << "free_request: " << req;
-            req->type = FlowRequest::UNUSED;
-            req->nmsgs = 0;
-            req->poll_ctx = nullptr;
-            req->events = 0;
-            if (!is_send_) {
-                req->recv.received_bytes = 0;
-                req->recv.fin_msg = 0;
-                req->recv.elems = nullptr;
-            }
-        }
-
-        /**
-         * @brief Get an unused request, if no request is available, return nullptr.
-         * @param comm_base 
-         * @return struct FlowRequest* 
-         */
-        inline struct FlowRequest *get_request(struct NetCommBase *comm_base) {
-            for (int i = 0; i < kMaxReq; i++) {
-                auto *req = &comm_base->reqs[i];
-                if (req->type == FlowRequest::UNUSED) {
-                    req->nmsgs = 0;
-                    req->poll_ctx = nullptr;
-                    VLOG(3) << "get_request: " << req;
-                    return req;
-                }
-            }
-            VLOG(3) << "get_request: nullptr";
-            return nullptr;
+        // Convert NIC clock to host clock (TSC).
+        inline uint64_t convert_nic_to_host(uint64_t host_clock, uint64_t nic_clock) {
+            return ratio_ * nic_clock + offset_;
         }
         
         // Select a QP index in a round-robin manner.
@@ -686,10 +655,117 @@ class RDMAContext {
             return uc_qps_[q1].pcb.timely.prev_rtt_ < uc_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
         }
 
-        // When ready_entropy_cnt_ equals to kTotalQP, the flow is ready.
-        uint32_t ready_entropy_cnt_;
+        void tx_messages(struct ucclRequest *ureq);
 
-        RDMAContext(int dev, struct XchgMeta meta);
+        int supply_rx_buff(struct ucclRequest *ureq);
+
+        /**
+         * @brief Poll the completion queues for all UC QPs.
+         */
+        inline int poll_uc_cq(void) { int work = sender_poll_uc_cq(); work += receiver_poll_uc_cq(); return work;}
+        int sender_poll_uc_cq(void);
+        int receiver_poll_uc_cq(void);
+
+        /**
+         * @brief Poll the completion queue for the Ctrl QP.
+         */
+        int poll_ctrl_cq(void);
+
+        /**
+         * @brief Poll the completion queue for the Retr QP.
+         */
+        int poll_retr_cq(void);
+
+        /**
+         * @brief Check if we need to post enough recv WQEs to the Ctrl QP.
+         * @param force 
+         */
+        void check_ctrl_rq(bool force = false);
+
+        /**
+         * @brief Check if we need to post enough recv WQEs to the SRQ.
+         */
+        void check_srq(bool force = false);
+
+        /**
+         * @brief Retransmit a chunk for the given UC QP.
+         * @param qpw 
+         * @param wr_ex 
+         */
+        void retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex);
+
+        /**
+         * @brief Receive a chunk from the flow.
+         * @param ack_list 
+         */
+        void rx_chunk(struct list_head *ack_list);
+
+        /**
+         * @brief Receive a retransmitted chunk from the flow.
+         * 
+         * @param ack_list 
+         */
+        void rx_retr_chunk(struct list_head *ack_list);
+
+        /**
+         * @brief Receive a barrier from the flow.
+         * @param ack_list
+         */
+        void rx_barrier(struct list_head *ack_list);
+
+        /**
+         * @brief Rceive an ACK from the Ctrl QP.
+         * 
+         * @param pkt_addr
+         */
+        void rx_ack(uint64_t pkt_addr);
+
+        /**
+         * @brief Craft an ACK for a UC QP using the given WR index.
+         * 
+         * @param qpidx 
+         * @param chunk_addr
+         * @param num_sge
+         */
+        void craft_ack(int qpidx, uint64_t chunk_addr, int num_sge);
+
+        /**
+         * @brief Flush all ACKs in the batch.
+         * 
+         * @param num_ack 
+         * @param chunk_addr
+         */
+        void flush_acks(int num_ack, uint64_t chunk_addr);
+
+        void burst_timing_wheel(void);
+
+        /**
+         * @brief Try to update the CSN for the given UC QP.
+         * @param qpw 
+         */
+        void try_update_csn(struct UCQPWrapper *qpw);
+
+        /**
+         * @brief Periodically checks the state of the flow and performs
+         * necessary actions.
+         *
+         * This method is called periodically to check the state of the flow,
+         * update the RTO timer, retransmit unacknowledged messages, and
+         * potentially remove the flow or notify the application about the
+         * connection state.
+         *
+         * @return Returns true if the flow should continue to be checked
+         * periodically, false if the flow should be removed or closed.
+         */
+        bool periodic_check();
+
+        void __retransmit(struct UCQPWrapper *qpw, bool rto);
+        inline void fast_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, false); }
+        inline void rto_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, true); }
+
+        std::string to_string();
+
+        RDMAContext(int dev, union CtrlMeta meta);
 
         ~RDMAContext(void);
         
@@ -708,6 +784,8 @@ struct FactoryDevice {
     uint8_t ib_port_num;
     uint8_t gid_idx;
     union ibv_gid gid;
+
+    struct ibv_pd *pd;
 
     // DMA-BUF support
     bool dma_buf_support;
@@ -733,7 +811,7 @@ class RDMAFactory {
         }
 
         static void init_dev(int gid_idx);
-        static RDMAContext *CreateContext(int dev, struct XchgMeta meta);
+        static RDMAContext *CreateContext(int dev, union CtrlMeta meta);
         static struct FactoryDevice *get_factory_dev(int dev);
         static bool need_sync_clock(int dev);
         
@@ -745,29 +823,29 @@ static inline uint16_t util_rdma_extract_local_subnet_prefix(uint64_t subnet_pre
     return (be64toh(subnet_prefix) & 0xffff);
 }
 
-static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, RDMAContext *rdma_ctx)
+static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, int dev)
 {
     struct ibv_qp_attr attr;
     int attr_mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV | IBV_QP_DEST_QPN |
         IBV_QP_RQ_PSN;
 
-    auto comm_base = &rdma_ctx->recv_comm_.base;
-
     memset(&attr, 0, sizeof(attr));
 
+    auto factory_dev = RDMAFactory::get_factory_dev(dev);
+
     attr.qp_state = IBV_QPS_RTR;
-    attr.path_mtu = rdma_ctx->mtu_;
+    attr.path_mtu = factory_dev->port_attr.active_mtu;
     if (USE_ROCE) {
         attr.ah_attr.is_global = 1;
-        attr.ah_attr.grh.dgid = rdma_ctx->local_gid_;
-        attr.ah_attr.grh.sgid_index = rdma_ctx->sgid_index_;
+        attr.ah_attr.grh.dgid = factory_dev->gid;
+        attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
         attr.ah_attr.grh.hop_limit = 0xff;
     } else {
         attr.ah_attr.is_global = 0;
-        attr.ah_attr.dlid = rdma_ctx->port_attr_.lid;
+        attr.ah_attr.dlid = factory_dev->port_attr.lid;
     }
 
-    attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
+    attr.ah_attr.port_num = IB_PORT_NUM;
     attr.dest_qp_num = qp->qp_num;
     attr.rq_psn = 0;
 
@@ -787,30 +865,30 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, RDMAContext *rdma_ct
     return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
-static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32_t remote_qpn, uint32_t remote_psn)
+static inline int modify_qp_rtr(struct ibv_qp *qp, int dev, struct RemoteRDMAContext *remote_ctx, uint32_t remote_qpn, uint32_t remote_psn)
 {
     struct ibv_qp_attr attr;
     int attr_mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
 
-    auto comm_base = rdma_ctx->is_send_ ? &rdma_ctx->send_comm_.base : &rdma_ctx->recv_comm_.base;
+    auto factory_dev = RDMAFactory::get_factory_dev(dev);
 
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
-    attr.path_mtu = rdma_ctx->mtu_;
+    attr.path_mtu = factory_dev->port_attr.active_mtu;
     if (USE_ROCE) {
         attr.ah_attr.is_global = 1;
-        attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
-        attr.ah_attr.grh.dgid = comm_base->remote_ctx.remote_gid;
-        attr.ah_attr.grh.sgid_index = rdma_ctx->sgid_index_;
+        attr.ah_attr.port_num = IB_PORT_NUM;
+        attr.ah_attr.grh.dgid = remote_ctx->remote_gid;
+        attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
         attr.ah_attr.grh.hop_limit = 0xff;
     } else {
-        if (util_rdma_extract_local_subnet_prefix(rdma_ctx->local_gid_.global.subnet_prefix) != 
-            util_rdma_extract_local_subnet_prefix(comm_base->remote_ctx.remote_gid.global.subnet_prefix)) {
+        if (util_rdma_extract_local_subnet_prefix(factory_dev->gid.global.subnet_prefix) != 
+            util_rdma_extract_local_subnet_prefix(remote_ctx->remote_gid.global.subnet_prefix)) {
                 LOG(ERROR) << "Only support same subnet communication for now.";
         }
         attr.ah_attr.is_global = 0;
-        attr.ah_attr.port_num = rdma_ctx->ib_port_num_;
-        attr.ah_attr.dlid = comm_base->remote_ctx.remote_port_attr.lid;
+        attr.ah_attr.port_num = IB_PORT_NUM;
+        attr.ah_attr.dlid = remote_ctx->remote_port_attr.lid;
     }
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = remote_psn;
@@ -833,7 +911,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
-static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32_t local_psn, bool rc)
+static inline int modify_qp_rts(struct ibv_qp *qp, uint32_t local_psn, bool rc)
 {
     struct ibv_qp_attr attr;
     int attr_mask = IBV_QP_STATE | IBV_QP_SQ_PSN;
@@ -860,7 +938,7 @@ static inline int modify_qp_rts(struct ibv_qp *qp, RDMAContext *rdma_ctx, uint32
     return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
-static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex, bool ts,
+static inline void util_rdma_create_qp(struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex, bool ts,
     struct ibv_cq **cq, bool share_cq, uint32_t cqsize, struct ibv_pd *pd, struct ibv_mr **mr, void *addr, 
         size_t mr_size, uint32_t max_send_wr, uint32_t max_recv_wr, uint32_t max_send_sge, uint32_t max_recv_sge)
 {
@@ -880,31 +958,26 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
             cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
             auto cq_ex = (struct ibv_cq_ex **)cq;
             *cq_ex= ibv_create_cq_ex(context, &cq_ex_attr);
-            if (*cq_ex == nullptr)
-                throw std::runtime_error("ibv_create_cq_ex failed");
+            UCCL_INIT_CHECK(*cq_ex != nullptr, "ibv_create_cq_ex failed");
         } else {
             *cq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
-            if (*cq == nullptr)
-                throw std::runtime_error("ibv_create_cq failed");
+            UCCL_INIT_CHECK(*cq != nullptr, "ibv_create_cq failed");
         }
     }
     
     // Creating MR
     if (addr == nullptr) {
         addr = mmap(nullptr, mr_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-        if (addr == MAP_FAILED)
-            throw std::runtime_error("mmap failed");
+        UCCL_INIT_CHECK(addr != MAP_FAILED, "mmap failed");
     }
     memset(addr, 0, mr_size);
 
     *mr = ibv_reg_mr(pd, addr, mr_size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | ((qp_type == IBV_QPT_RC) ? IBV_ACCESS_REMOTE_READ : 0));
-    if (*mr == nullptr)
-        throw std::runtime_error("ibv_reg_mr failed");
+    UCCL_INIT_CHECK(*mr != nullptr, "ibv_reg_mr failed");
 
     struct ibv_qp_init_attr qp_init_attr;
     memset(&qp_init_attr, 0, sizeof(qp_init_attr));
 
-    qp_init_attr.qp_context = rdma_ctx;
     qp_init_attr.send_cq = *cq;
     qp_init_attr.recv_cq = *cq;
     qp_init_attr.qp_type = qp_type;
@@ -918,8 +991,7 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
 
     // Creating QP
     *qp = ibv_create_qp(pd, &qp_init_attr);
-    if (*qp == nullptr)
-        throw std::runtime_error("ibv_create_qp failed");
+    UCCL_INIT_CHECK(*qp != nullptr, "ibv_create_qp failed");
 
     // Modifying QP state to INIT
     struct ibv_qp_attr qp_attr;
@@ -927,12 +999,10 @@ static inline void util_rdma_create_qp(RDMAContext *rdma_ctx, struct ibv_context
     memset(&qp_attr, 0, sizeof(qp_attr));
     qp_attr.qp_state = IBV_QPS_INIT;
     qp_attr.pkey_index = 0;
-    qp_attr.port_num = rdma_ctx->ib_port_num_;
+    qp_attr.port_num = IB_PORT_NUM;
     qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | ((qp_type == IBV_QPT_RC) ? IBV_ACCESS_REMOTE_READ : 0);
 
-    if (ibv_modify_qp(*qp, &qp_attr, attr_mask)) {
-        throw std::runtime_error("ibv_modify_qp failed");
-    }
+    UCCL_INIT_CHECK(ibv_modify_qp(*qp, &qp_attr, attr_mask) == 0, "ibv_modify_qp failed");
 }
 
 /**

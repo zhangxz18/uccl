@@ -8,6 +8,7 @@
 
 #define CLOUDLAB_DEV
 
+// # of engines per device.
 static const uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
@@ -28,26 +29,24 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 static const std::size_t kFastRexmitDupAckThres = 0;
 
 // IB interface.
-static const uint32_t MAX_IB_DEVICES = 32;
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 #ifdef CLOUDLAB_DEV
 static const bool USE_ROCE = true;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
-static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {2,3};
 static const uint8_t NUM_DEVICES = 2;
+static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {2,3};
 #else
 static const bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
-static const uint8_t GID_INDEX_LIST[MAX_IB_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
 static const uint8_t NUM_DEVICES = 8;
+static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
 #endif
 static const uint8_t IB_PORT_NUM = 1;
 
-// Since rx work is relatively light, we can process multiple rx work 
-// in one batch to hide latency.
-static const uint32_t kMaxRxWork = 8;
+static const uint32_t kMaxTxWork = 8;
+static const uint32_t kMaxRxWork = 16;
 static const uint32_t kChunkSize = 32 << 10;
 static const uint32_t kSignalInterval = 256;
 static const uint32_t kSyncClockIntervalNS = 100000;
@@ -59,7 +58,7 @@ static const uint32_t kMaxSge = 1;
 static const uint32_t kMaxNetReq = 32;
 static const uint32_t kMaxRecv = 8;
 static const uint32_t kMaxReq = kMaxNetReq * kMaxRecv;
-static const uint32_t kMaxSRQ = 32 * kMaxReq;
+static const uint32_t kMaxSRQ = 64 * kMaxReq;
 static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxInflightRetrChunks = 8;
 static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
@@ -67,10 +66,7 @@ static const uint32_t kMaxBatchPost = 32;
 static const uintptr_t kPageSize = sysconf(_SC_PAGESIZE);
 static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 
-// For debugging and testing.
-// Use RDMA RC instead of UC.
-static const bool kTestRC = false;
-static const uint32_t kTestRCEntropy = 64;
+/// For debugging and testing.
 // Disable hardware timestamp.
 static const bool kTestNoHWTimestamp = false;
 // Bypass the timing wheel.
