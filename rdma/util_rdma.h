@@ -261,7 +261,7 @@ struct FifoItem {
     uint32_t nmsgs;
     uint32_t rid;
     uint64_t idx;
-    uint32_t engine_idx;
+    uint32_t engine_offset;
     char padding[28];
 };
 static_assert(sizeof(struct FifoItem) == 64, "FifoItem size is not 64 bytes");

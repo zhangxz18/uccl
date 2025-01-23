@@ -596,7 +596,7 @@ class UcclFlow {
 
     bool check_fifo_ready(int *ret_slot, int *ret_nmsgs);
 
-    void post_multi_send(struct ucclRequest **ureqs, uint32_t engine_idx);
+    void post_multi_send(struct ucclRequest **ureqs, uint32_t engine_offset);
 
     RDMAEndpoint *ep_;
     int bootstrap_fd_;

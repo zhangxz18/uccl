@@ -73,7 +73,7 @@ struct FifoItem *UcclFlow::post_fifo(uint32_t engine_idx, void **data, int *size
         elems[i].idx = rem_fifo->fifo_tail + 1;
         elems[i].size = size[i];
         // For sender to decide the engine.
-        elems[i].engine_idx = engine_idx;
+        elems[i].engine_offset = engine_idx % ep_->num_engines_per_dev_;
 
         // elems[i].rid is filled by engine. See supply_rx_buff.
 
@@ -476,7 +476,7 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     info->bootstrap_fd = fd;
     info->peer_id = peer_id;
 
-    for (int i = 0; i < NUM_ENGINES; i++) {
+    for (int i = 0; i < num_engines_per_dev_; i++) {
         auto engine_idx = dev * num_engines_per_dev_ + i;
         install_ctx_on_engine(engine_idx, meta);
     }
@@ -707,8 +707,9 @@ bool UcclFlow::check_fifo_ready(int *ret_slot, int *ret_nmsgs)
     return true;
 }
 
-void UcclFlow::post_multi_send(struct ucclRequest **ureqs, uint32_t engine_idx)
+void UcclFlow::post_multi_send(struct ucclRequest **ureqs, uint32_t engine_offset)
 {
+    uint32_t engine_idx = ep_->find_first_engine_idx(dev_) + engine_offset;
     auto txq = ep_->channel_vec_[engine_idx]->tx_cmdq_;
     auto n = ureqs[0]->n;
     Channel::Msg msgs[kMaxRecv];
@@ -780,7 +781,7 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
         }
 
         // All requests have matched. Post works to the engine.
-        flow->post_multi_send(ureqs, slots[i].engine_idx);
+        flow->post_multi_send(ureqs, slots[i].engine_offset);
         
         // Move the head of the FIFO.
         send_comm->fifo_head++;
@@ -788,7 +789,7 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
         memset((void*)slots, 0, sizeof(struct FifoItem));
         memset(ureqs, 0, kMaxRecv * sizeof(struct ucclRequest *));
 
-        VLOG(3) << "send_async: posted " << nmsg << " requests" << " on engine " << slots[i].engine_idx
+        VLOG(3) << "send_async: posted " << nmsg << " requests" << " on engine " << slots[i].engine_offset
             << " size: " << size << " slot: " << slot;
 
         return 0;
