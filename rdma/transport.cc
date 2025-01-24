@@ -261,17 +261,16 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
     auto *poll_ctx = ctrl_work.poll_ctx;
 
     int bootstrap_fd = info->bootstrap_fd;
+    auto dev = dev_;
 
     RDMAContext *rdma_ctx;
 
     {
         DCHECK(rdma_ctx_map_.find(info->peer_id) == rdma_ctx_map_.end());
-        rdma_ctx = RDMAFactory::CreateContext(dev_, meta);
+        rdma_ctx = RDMAFactory::CreateContext(dev, meta);
         std::tie(std::ignore, ret) = rdma_ctx_map_.insert({info->peer_id, rdma_ctx});
         DCHECK(ret);
     }
-
-    auto dev = dev_;
 
     // Create a thread to handle the QP setup to avoid blocking the engine.
     std::thread qp_setup_thread([ctrl_work, rdma_ctx, bootstrap_fd, dev]() {
@@ -484,17 +483,11 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     info->bootstrap_fd = fd;
     info->peer_id = peer_id;
 
-    std::vector<PollCtx *> poll_list;
-
     for (int i = 0; i < num_engines_per_dev_; i++) {
         auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
-        auto poll_ctx = install_ctx_on_engine(engine_idx, meta);
-        poll_list.push_back(poll_ctx);
+        auto *poll_ctx = install_ctx_on_engine(engine_idx, meta);
+        uccl_poll(poll_ctx);
     }
-
-    for (auto poll_ctx : poll_list) {uccl_poll(poll_ctx);}
-
-    poll_list.clear();
 
     remote_ctx->remote_gid = info->remote_gid;
     remote_ctx->remote_port_attr = info->remote_port_attr;
