@@ -553,12 +553,15 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
     PeerID peer_id;
     struct RemoteRDMAContext remote_ctx;
     {
-        std::lock_guard<std::mutex> lock(peer_map_mu_[dev]);
+        peer_map_mu_[dev].lock();
         auto it = peer_map_[dev].find({remote_ip, remote_dev});
         if (it == peer_map_[dev].end()) {
             peer_id = next_peer_id_++;
+            // Release the lock before installing RDMAContexts on engines since we may block.
+            peer_map_mu_[dev].unlock();
             // For the first flow to a peer, install RDMAContexts on all engines for this peer.
             install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
+            peer_map_mu_[dev].lock();
             peer_map_[dev].insert({{remote_ip, remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
         } else {
             peer_id = it->second.peer_id;
@@ -566,6 +569,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
             remote_ctx.remote_port_attr = it->second.remote_port_attr;
             it->second.flow_cnt++;
         }
+        peer_map_mu_[dev].unlock();
     }
 
     // Install flow on Endpoint.
@@ -647,12 +651,15 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
     PeerID peer_id;
     struct RemoteRDMAContext remote_ctx;
     {
-        std::lock_guard<std::mutex> lock(peer_map_mu_[dev]);
+        peer_map_mu_[dev].lock();
         auto it = peer_map_[dev].find({remote_ip, *remote_dev});
         if (it == peer_map_[dev].end()) {
             peer_id = next_peer_id_++;
+            // Release the lock before installing RDMAContexts on engines since we may block.
+            peer_map_mu_[dev].unlock();
             // For the first flow to a peer, install RDMAContexts on all engines for this peer.
             install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
+            peer_map_mu_[dev].lock();
             peer_map_[dev].insert({{remote_ip, *remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
         } else {
             peer_id = it->second.peer_id;
@@ -660,6 +667,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
             remote_ctx.remote_port_attr = it->second.remote_port_attr;
             it->second.flow_cnt++;
         }
+        peer_map_mu_[dev].unlock();
     }
 
     // Install flow on Endpoint.
