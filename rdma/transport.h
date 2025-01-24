@@ -31,9 +31,8 @@
 namespace uccl {
 
 struct ConnID {
-    FlowID flow_id;       // Used for UcclRDMAEngine to look up UcclFlow.
-    PeerID peer_id;
-    int boostrap_id;      // Used for bootstrap connection with the peer.
+    FlowID flow_id;       // Used for RDMAEndpoint to look up UcclFlow.
+    PeerID peer_id;       // Used for UcclEngine to look up RDMAContext.
     int dev;
 };
 
@@ -147,13 +146,17 @@ class UcclRDMAEngine {
     void handle_rx_work(void);
 
     /**
-     * @brief Handling all completion events for all flows, including:
-     * High-priority completion events from Ctrl QPs.
-     * Datapath completion events from UC QPs.
-     * Occasinal completion events from FIFO CQs.
+     * @brief Handling all completion events for all RDMAContexts, including:
+     * High-priority completion events from all Ctrl QPs.
+     * Datapath completion events from all UC QPs.
+     * Occasinal completion events from all Retr CQs.
      */
     void handle_completion(void);
 
+    /**
+     * @brief Handle all timing wheel events for all RDMAContexts.
+     * 
+     */
     void handle_timing_wheel(void);
 
     /**
@@ -171,30 +174,19 @@ class UcclRDMAEngine {
      */
     void periodic_process();
 
+    /**
+     * @brief Install a new RDMA context on the engine.
+     * @param ctrl_work 
+     */
     void handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work);
-
-    /**
-     * @brief Registering a memory region.
-     * @param ctrl_work 
-     */
-    void handle_regmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
-
-    /**
-     * @brief Registering a memory region with DMA-BUF support.
-     * @param ctrl_work 
-     */
-    void handle_regmr_dmabuf_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
-
-    /**
-     * @brief Deregistering a memory region.
-     * @param ctrl_work 
-     */
-    void handle_deregmr_on_engine_rdma(Channel::CtrlMsg &ctrl_work);
 
     inline bool need_sync(uint64_t now) {
         return now - last_sync_clock_tsc_ > ns_to_cycles(kSyncClockIntervalNS, freq_ghz);
     }
 
+    /**
+     * @brief Synchronize the clock between host and NIC.
+     */
     inline void handle_clock_synchronization(void) {
         auto host_clock = rdtsc();
         if (need_sync(host_clock)) {
@@ -265,21 +257,9 @@ class UcclRDMAEngine {
     friend class UcclFlow;
 };
 
-// We only support RoCEv2 for now. Lid is not used.
-struct RDMADevice {
-    struct ibv_context *context;
-    // Device name.
-    char ib_name[64];
-    // We only support one port per device, this should always be 1.
-    uint8_t ib_port_num;
-    // GID index.
-    uint8_t gid_idx;
-    // GID.
-    union ibv_gid gid;
-    // Local IP address.
-    std::string local_ip_str;
-};
-
+/**
+ * @brief A peer is identified by its IP address and device index.
+ */
 struct UcclPeer {
     std::string remote_ip;
     int remote_dev;
@@ -421,7 +401,7 @@ class RDMAEndpoint {
     // Find a least loaded engine and update the load for the given device.
     inline int find_least_loaded_engine_idx_and_update(int dev);
 
-    inline int find_first_engine_idx(int dev) {
+    inline int find_first_engine_idx_on_dev(int dev) {
         return dev * num_engines_per_dev_;
     }
 
@@ -445,19 +425,10 @@ class RDMAEndpoint {
 };
 
 /**
- * @class UcclFlow, a connection between a local and a remote endpoint.
+ * @class UcclFlow, a connection between a local and a remote NIC.
  * @brief Class to abstract the components and functionality of a single flow.
- * A flow is a bidirectional connection between two hosts, uniquely identified
+ * A flow is a **unidirectional** connection between two NICs, uniquely identified
  * by a TCP-negotiated `FlowID'.
- *
- * A flow is always associated with a single `Channel' object which serves as
- * the communication interface with the application to which the flow belongs.
- *
- * On normal operation, a flow is:
- *    - Receiving network packets from the NIC, which then converts to messages
- *      and enqueues to the `Channel', so that they reach the application.
- *    - Receiving messages from the application (via the `Channel'), which then
- *      converts to network packets and sends them out to the remote recipient.
  */
 class UcclFlow {
     const static uint32_t kMaxReadyMsgbufs = MAX_UNACKED_PKTS;
@@ -469,7 +440,7 @@ class UcclFlow {
 
     UcclFlow(RDMAEndpoint *ep, int bootstrap_fd, int dev, 
         PeerID peer_id, FlowID flow_id, struct RemoteRDMAContext remote_ctx, std::string remote_ip, int remote_dev, bool is_send) : 
-        ep_(ep), bootstrap_fd_(bootstrap_fd), dev_(dev), 
+        ep_(ep), dev_(dev), 
             peer_id_(peer_id), flow_id_(flow_id), remote_ctx_(remote_ctx), remote_ip_(remote_ip), remote_dev_(remote_dev), is_send_(is_send) {
         
         memset(&send_comm_, 0, sizeof(send_comm_));
@@ -569,6 +540,9 @@ class UcclFlow {
         for (int i = 0; i < n; i++) if (size[i]) last = i;
         return last;
     }
+    /**
+     * @brief Post a RDMA READ operation to GPU flush QP. This operation bypasses the UcclEngine.
+     */
     void post_flush(struct Mhandle **mhandles, void **data, int *size, int n, PollCtx *poll_ctx, int last);
 
     /**
@@ -582,27 +556,40 @@ class UcclFlow {
         struct ibv_send_wr *wr, struct ibv_sge *sge);
 
     /**
-     * @brief Poll the completion queue for the FIFO/GPU flush QP.
+     * @brief Poll the completion queue for the Fifo/GPU flush QP.
      */
     void poll_flow_cq(void);
 
+    /**
+     * @brief This function is called by uccl_send_async to check if the receiver has posted buffers.
+     */
     bool check_fifo_ready(int *ret_slot, int *ret_nmsgs);
 
+    /**
+     * @brief This function is called by uccl_send_async to post multiple send requests to UcclEngine.
+     * @param engine_offset The engine offset to use, which is determined by the receiver.
+     * 0 <= engine_offset < num_engines_per_dev_.
+     */
     void post_multi_send(struct ucclRequest **ureqs, uint32_t engine_offset);
 
     RDMAEndpoint *ep_;
-    int bootstrap_fd_;
-    // PeerID  of this flow.
+    
     PeerID peer_id_;
-    // FlowID of this flow.
     FlowID flow_id_;
+
     int dev_;
+    int remote_dev_;
     struct RemoteRDMAContext remote_ctx_;
     std::string remote_ip_;
-    int remote_dev_;
 
+    /**
+     * @brief Next engine offset to use for receving.
+     */
     uint32_t next_engine_offset_ = 0;
 
+    /**
+     * @brief # of CQEs need to be polled for Fifo/GPU flush QP.
+     */
     uint32_t flow_cq_cnt_ = 0;
 
     /**

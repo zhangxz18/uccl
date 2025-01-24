@@ -141,11 +141,6 @@ error:
     throw std::runtime_error("Failed to initialize RDMAFactory");
 }
 
-struct FactoryDevice *RDMAFactory::get_factory_dev(int dev)
-{
-    return &rdma_ctl.devices_[dev];
-}
-
 /**
  * @brief Create a new RDMA context for a given device running on a specific engine.
  * 
@@ -399,18 +394,18 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
 {
     auto *elems = ureq->recv.elems;
 
-    auto req = get_request();
+    auto req = alloc_recvreq();
     if (req == nullptr)
         return -1;
 
-    req->type = FlowRequest::RECV;
+    req->type = RecvRequest::RECV;
     req->ureq = ureq;
     memset(req->received_bytes, 0, sizeof(uint32_t) * kMaxRecv);
     req->fin_msg = 0;
 
     for (int i = 0; i < ureq->n; i++) {
         // For sender to encode the request id in the immediate data.
-        elems[i].rid = get_request_id(req);
+        elems[i].rid = get_recvreq_id(req);
     }
 
     struct ibv_send_wr* bad_wr;
@@ -1120,7 +1115,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
     // Locate request by rid
-    auto req = get_request_by_id(rid);
+    auto req = get_recvreq_by_id(rid);
     auto *msg_size = &req->ureq->recv.elems[mid].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[mid] += chunk_len;
@@ -1139,7 +1134,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
         // Wakeup app thread.
         uccl_wakeup(poll_ctx);
         // Free the request.
-        free_request(req);
+        free_recvreq(req);
     }
 
     try_update_csn(qpw);
@@ -1229,7 +1224,7 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
         pcb->sack_bitmap_bit_set(distance.to_uint32());
 
         // Locate request by rid
-        auto req = get_request_by_id(rid);
+        auto req = get_recvreq_by_id(rid);
         auto *msg_size = &req->ureq->recv.elems[mid].size;
         uint32_t *received_bytes = req->received_bytes;
         received_bytes[mid] += chunk_len;
@@ -1249,7 +1244,7 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
             // Wakeup app thread.
             uccl_wakeup(poll_ctx);
             // Free the request.
-            free_request(req);
+            free_recvreq(req);
         }
 
         try_update_csn(qpw);
@@ -1321,7 +1316,7 @@ void RDMAContext::rx_chunk(struct list_head *ack_list)
     qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
     // Locate request by rid
-    auto req = get_request_by_id(rid);
+    auto req = get_recvreq_by_id(rid);
     auto *msg_size = &req->ureq->recv.elems[mid].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[mid] += byte_len;
@@ -1340,7 +1335,7 @@ void RDMAContext::rx_chunk(struct list_head *ack_list)
         // Wakeup app thread.
         uccl_wakeup(poll_ctx);
         // Free the request.
-        free_request(req);
+        free_recvreq(req);
     }
 
     try_update_csn(qpw);

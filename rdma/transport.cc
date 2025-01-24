@@ -546,7 +546,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
         }
     }
 
-    auto engine_idx = find_first_engine_idx(dev);
+    auto engine_idx = find_first_engine_idx_on_dev(dev);
 
     PeerID peer_id;
     struct RemoteRDMAContext remote_ctx;
@@ -578,7 +578,6 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
 
     return ConnID{.flow_id = flow_id,
                   .peer_id = peer_id,
-                  .boostrap_id = bootstrap_fd,
                   .dev = dev};
 }
 
@@ -642,7 +641,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
         }
     }
     
-    auto engine_idx = find_first_engine_idx(dev);
+    auto engine_idx = find_first_engine_idx_on_dev(dev);
 
     PeerID peer_id;
     struct RemoteRDMAContext remote_ctx;
@@ -674,7 +673,6 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
 
     return ConnID{.flow_id = flow_id,
                   .peer_id = peer_id,
-                  .boostrap_id = bootstrap_fd,
                   .dev = dev};
 }
 
@@ -704,7 +702,7 @@ bool UcclFlow::check_fifo_ready(int *ret_slot, int *ret_nmsgs)
 
 void UcclFlow::post_multi_send(struct ucclRequest **ureqs, uint32_t engine_offset)
 {
-    uint32_t engine_idx = ep_->find_first_engine_idx(dev_) + engine_offset;
+    uint32_t engine_idx = ep_->find_first_engine_idx_on_dev(dev_) + engine_offset;
     auto txq = ep_->channel_vec_[engine_idx]->tx_cmdq_;
     auto n = ureqs[0]->n;
     Channel::Msg msgs[kMaxRecv];
@@ -836,7 +834,7 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
 
     flow->poll_flow_cq();
 
-    uint32_t candidate = find_first_engine_idx(dev) + flow->next_engine_offset_;
+    uint32_t candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
     if constexpr (!kBindEngine) 
         flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     

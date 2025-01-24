@@ -48,6 +48,7 @@ static constexpr uint32_t MAX_CHUNK_IB_4096_HDR_OVERHEAD = ((kChunkSize + 4096) 
  * - Not thread-safe, single producer, single consumer.
  * - Fixed size elements.
  * - Size must be power of 2.
+ * - Actual size is num_elements - 1.
  */
 class BuffPool {
     public:
@@ -117,7 +118,6 @@ class BuffPool {
 
 /**
  * @brief Buffer pool for work request extension.
- * - Single producer, single consumer.
  */
 class WrExBuffPool : public BuffPool {
     static constexpr uint32_t kWrSize = sizeof(struct wr_ex);
@@ -138,11 +138,17 @@ class WrExBuffPool : public BuffPool {
 };
 
 struct retr_chunk_hdr {
+    // Lossy QP index for the lost chunk.
     uint32_t qidx;
     uint32_t pad;
+    // Target address for the lost chunk.
     uint64_t remote_addr;
 };
 
+/**
+ * @brief Buffer pool for retransmission chunks (original chunk + retransmission header).
+ * Original chunk and retransmission header are transmitted through scatter-gather list.
+ */
 class RetrChunkBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kRetrChunkSize = kChunkSize + sizeof(retr_chunk_hdr);
@@ -154,6 +160,9 @@ class RetrChunkBuffPool : public BuffPool {
         ~RetrChunkBuffPool() = default;
 };
 
+/**
+ * @brief Buffer pool for retransmission headers.
+ */
 class RetrHdrBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kHdrSize = sizeof(struct retr_chunk_hdr);
@@ -165,6 +174,9 @@ class RetrHdrBuffPool : public BuffPool {
         ~RetrHdrBuffPool() = default;
 };
 
+/**
+ * @brief Buffer pool for control packets.
+ */
 class CtrlChunkBuffPool : public BuffPool {
     public:
         static constexpr uint32_t kPktSize = 32;
@@ -229,6 +241,9 @@ class IMMData {
     private:
         uint32_t imm_data_;    
 };
+/**
+ * @brief Metadata for control messages.
+ */
 union CtrlMeta {
     // kInstallCtx
     struct {
@@ -238,18 +253,6 @@ union CtrlMeta {
         PeerID peer_id;
         int bootstrap_fd;
     } install_ctx;
-};
-
-/**
- * @brief Exchange format with remote peer.
- * @ref net_ib.cc:812:struct ncclIbConnectionMetadata
- */
-struct RDMAExchangeFormatRemote {
-    // QP information (Only one QP is used for now).
-    uint32_t qpn;
-    uint32_t psn;
-    uint32_t fifo_key;
-    uint64_t fifo_addr;
 };
 
 struct FifoItem {
@@ -264,6 +267,10 @@ struct FifoItem {
 };
 static_assert(sizeof(struct FifoItem) == 64, "FifoItem size is not 64 bytes");
 
+/**
+ * @brief A FIFO queue for flow control.
+ * Receiver posts a buffer to the FIFO queue for the sender to use RDMA WRITE.
+ */
 struct RemFifo {
     // FIFO elements prepared for sending to remote peer.
     struct FifoItem elems[kMaxReq][kMaxRecv];
@@ -278,13 +285,18 @@ struct RemoteRDMAContext {
     struct ibv_port_attr remote_port_attr;
 };
 
-/// plugin-level ///
 enum ReqType {
     ReqTx,
     ReqRx,
     ReqFlush
 };
 
+/**
+ * @brief ucclRequest is a handle provided by the user to post a request to UCCL RDMAEndpoint.
+ * It is the responsibility of the user to manage the memory of ucclRequest. UCCL RDMAEndpoint 
+ * will not free the memory of ucclRequest. UCCL fills the ucclRequest with the result of the 
+ * request. The user can use the ucclRequest to check the status of the request.
+ */
 struct ucclRequest {
     enum ReqType type;
     PollCtx *poll_ctx;
@@ -310,10 +322,14 @@ struct ucclRequest {
         } send;
     };
 };
-/// plugin-level ///
 
-/// @ref ncclIbRequest
-struct FlowRequest {
+/**
+ * @brief Each RDMAContext has a pool of RecvRequest.
+ * After the recevier posting an async recv ucclRequest to an engine, the engine will allocate a RecvRequest
+ * from its RDMAContext. Then, when receiving the data, the engine will locate the RecvRequest and then
+ * further find the ucclRequest.
+ */
+struct RecvRequest {
     enum type {
         UNUSED = 0,
         RECV,
@@ -380,7 +396,16 @@ class RXTracking {
         inline void cumulate_bytes(uint32_t bytes) { cumulative_bytes_ += bytes;}
         inline void encounter_ooo(void) { ooo_ = true;}
         
+        /**
+         * @brief Send ack immediately if the following conditions are met:
+         * 1. Out-of-order packets are received.
+         * 2. The number of received WQE reaches kMAXWQE.
+         * 3. The number of received bytes reaches kMAXBytes.
+         */
         inline bool need_imm_ack(void) { return ooo_ || cumulative_wqe_ == kMAXWQE || cumulative_bytes_ >= kMAXBytes;}
+        /**
+         * @brief After sending immediate ack, clear the states.
+         */
         inline void clear_imm_ack(void) {
             ooo_ = false;
             cumulative_wqe_ = 0;
@@ -445,20 +470,30 @@ struct ack_item {
     struct list_head ack_link;
 };
 
+/**
+ * @brief UCQPWrapper is a wrapper for ibv_qp with additional information for 
+ * implementing reliable data transfer.
+ */
 struct UCQPWrapper {
     struct ibv_qp *qp;
     uint32_t local_psn;
-    uint32_t remote_psn;
+    // # of chunks in the timing wheel for in-order within the same QP.
     uint32_t in_wheel_cnt_ = 0;
+    // A counter for occasionally posting IBV_SEND_SIGNALED flag.
     uint32_t signal_cnt_ = 0;
+    // Congestion control state.
     swift::Pcb pcb;
+    // States for tracking sent chunks.
     TXTracking txtracking;
+    // States for tracking received chunks.
     RXTracking rxtracking;
+    // We use list_empty(&qpw->ack.ack_link) to check if it has pending ACK to send.
     struct ack_item ack;
 };
 
 /**
- * Uccl SACK Packet Header.
+ * @brief UCCL SACK Packet Header for each QP.
+ * Multiple SACKs are packed in a single packet transmitted through the Ctrl QP.
  */
 struct __attribute__((packed)) UcclSackHdr {
     be16_t qpidx;  // QP index.
@@ -476,12 +511,10 @@ static_assert(CtrlChunkBuffPool::kPktSize >= kUcclSackHdrLen, "CtrlChunkBuffPool
 class UcclEngine;
 
 /**
- * @brief  RDMA context for each UcclFlow, which is produced by RDMAFactory. It contains:
- *   - Multiple Unreliable Connection (UC) QPs and a shared CQ.
- *   - A high-priority QP for control messages and a dedicated CQ, PD, and MR.
- *   - A QP for retransmission and a dedicated CQ, PD, and MR.
- *   - A Reliable Connection (RC) QP for FIFO and a dedicated CQ, PD, and MR.
- *   - A MR for retransmission.
+ * @brief RDMA context for a remote peer on an engine, which is produced by RDMAFactory. It contains:
+ *   - (UC QP): Multiple Unreliable Connection QPs and a shared CQ. All UC QPs share the same SRQ.
+ *   - (Ctrl QP): A high-priority QP for control messages and a dedicated CQ, PD, and MR.
+ *   - (Retr QP): A QP for retransmission and a dedicated CQ, PD, and MR.
  */
 class RDMAContext {
     public:
@@ -493,46 +526,35 @@ class RDMAContext {
         // 256-bit SACK bitmask => we can track up to 256 packets
         static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
 
-        // Track outstanding SEND/RECV requests.
-        struct FlowRequest reqs_[kMaxReq];
+        // Track outstanding RECV requests.
+        struct RecvRequest reqs_[kMaxReq];
 
-        /**
-         * @brief Figure out the request id.
-         * @param req 
-         * @param comm_base 
-         * @return uint64_t 
-         */
-        inline uint64_t get_request_id(struct FlowRequest *req) {
+        inline uint64_t get_recvreq_id(struct RecvRequest *req) {
             return req - reqs_;
         }
 
-        /**
-         * @brief Get the request by id.
-         * @param id 
-         * @return struct FlowRequest* 
-         */
-        inline struct FlowRequest *get_request_by_id(int id) {
+        inline struct RecvRequest *get_recvreq_by_id(int id) {
             return &reqs_[id];
         }
 
-        inline void free_request(struct FlowRequest *req) {
-            VLOG(3) << "free_request: " << req;
-            memset(req, 0, sizeof(struct FlowRequest));
+        inline void free_recvreq(struct RecvRequest *req) {
+            VLOG(3) << "free_recvreq: " << req;
+            memset(req, 0, sizeof(struct RecvRequest));
         }
 
         /**
          * @brief Get an unused request, if no request is available, return nullptr.
-         * @return struct FlowRequest* 
+         * @return struct RecvRequest* 
          */
-        inline struct FlowRequest *get_request(void) {
+        inline struct RecvRequest *alloc_recvreq(void) {
             for (int i = 0; i < kMaxReq; i++) {
                 auto *req = &reqs_[i];
-                if (req->type == FlowRequest::UNUSED) {
-                    VLOG(3) << "get_request: " << req;
+                if (req->type == RecvRequest::UNUSED) {
+                    VLOG(3) << "alloc_recvreq: " << req;
                     return req;
                 }
             }
-            VLOG(3) << "get_request: nullptr";
+            VLOG(3) << "alloc_recvreq: nullptr";
             return nullptr;
         }
 
@@ -659,6 +681,7 @@ class RDMAContext {
 
         /**
          * @brief Poll the completion queues for all UC QPs.
+         * SQ and RQ use separate completion queues.
          */
         inline int poll_uc_cq(void) { int work = sender_poll_uc_cq(); work += receiver_poll_uc_cq(); return work;}
         int sender_poll_uc_cq(void);
@@ -666,22 +689,25 @@ class RDMAContext {
 
         /**
          * @brief Poll the completion queue for the Ctrl QP.
+         * SQ and RQ use the same completion queue.
          */
         int poll_ctrl_cq(void);
 
         /**
          * @brief Poll the completion queue for the Retr QP.
+         * SQ and RQ use the same completion queue.
          */
         int poll_retr_cq(void);
 
         /**
          * @brief Check if we need to post enough recv WQEs to the Ctrl QP.
-         * @param force 
+         * @param force Force to post WQEs.
          */
         void check_ctrl_rq(bool force = false);
 
         /**
          * @brief Check if we need to post enough recv WQEs to the SRQ.
+         * @param force Force to post WQEs.
          */
         void check_srq(bool force = false);
 
@@ -694,27 +720,25 @@ class RDMAContext {
 
         /**
          * @brief Receive a chunk from the flow.
-         * @param ack_list 
+         * @param ack_list If this QP needs ACK, add it to the list.
          */
         void rx_chunk(struct list_head *ack_list);
 
         /**
          * @brief Receive a retransmitted chunk from the flow.
-         * 
-         * @param ack_list 
+         * @param ack_list If this QP needs ACK, add it to the list.
          */
         void rx_retr_chunk(struct list_head *ack_list);
 
         /**
          * @brief Receive a barrier from the flow.
-         * @param ack_list
+         * @param ack_list If this QP needs ACK, add it to the list.
          */
         void rx_barrier(struct list_head *ack_list);
 
         /**
          * @brief Rceive an ACK from the Ctrl QP.
-         * 
-         * @param pkt_addr
+         * @param pkt_addr The position of the ACK packet in the ACK chunk.
          */
         void rx_ack(uint64_t pkt_addr);
 
@@ -735,6 +759,9 @@ class RDMAContext {
          */
         void flush_acks(int num_ack, uint64_t chunk_addr);
 
+        /**
+         * @brief Transmit a batch of chunks queued in the timing wheel.
+         */
         void burst_timing_wheel(void);
 
         /**
@@ -757,6 +784,11 @@ class RDMAContext {
          */
         bool periodic_check();
 
+        /**
+         * @brief Retransmit chunks for the given QP.
+         * @param qpw 
+         * @param rto 
+         */
         void __retransmit(struct UCQPWrapper *qpw, bool rto);
         inline void fast_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, false); }
         inline void rto_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, true); }
@@ -770,7 +802,6 @@ class RDMAContext {
         friend class RDMAFactory;
 };
 
-// Technically, it is equivalent to RDMADevice, but has more detailed device-specific information.
 struct FactoryDevice {
     char ib_name[64];
     std::string local_ip_str;
@@ -808,10 +839,22 @@ class RDMAFactory {
             gid_2_dev_map.clear();
         }
 
+        /**
+         * @brief Initialize RDMA device for the given GID index.
+         * @param gid_idx GID index, which usually starts from 0.
+         */
         static void init_dev(int gid_idx);
+        /**
+         * @brief Create a Context object for the given device using the given meta.
+         * @param dev 
+         * @param meta 
+         * @return RDMAContext* 
+         */
         static RDMAContext *CreateContext(int dev, union CtrlMeta meta);
-        static struct FactoryDevice *get_factory_dev(int dev);
-        static bool need_sync_clock(int dev);
+        static inline struct FactoryDevice *get_factory_dev(int dev) {
+            DCHECK(dev >= 0 && dev < rdma_ctl.devices_.size());
+            return &rdma_ctl.devices_[dev];
+        }
         
         std::string to_string(void) const;
 };
