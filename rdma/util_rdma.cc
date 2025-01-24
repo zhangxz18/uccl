@@ -14,7 +14,8 @@
 
 namespace uccl {
 
-RDMAFactory rdma_ctl;
+// RDMAFactory rdma_ctl;
+std::shared_ptr<RDMAFactory> rdma_ctl;
 
 void RDMAFactory::init_dev(int gid_idx)
 {
@@ -25,8 +26,13 @@ void RDMAFactory::init_dev(int gid_idx)
     struct ibv_port_attr port_attr;
     int i, nb_devices;
 
+    static std::once_flag init_flag;
+    std::call_once(init_flag, []() {
+        rdma_ctl = std::make_shared<RDMAFactory>();
+    });
+
     // Check if the device is already initialized.
-    DCHECK(rdma_ctl.gid_2_dev_map.find(gid_idx) == rdma_ctl.gid_2_dev_map.end());
+    DCHECK(rdma_ctl->gid_2_dev_map.find(gid_idx) == rdma_ctl->gid_2_dev_map.end());
     
     // Get Infiniband name from GID index.
     DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
@@ -126,9 +132,9 @@ void RDMAFactory::init_dev(int gid_idx)
         VLOG(5) << "DMA-BUF support: " << dev.dma_buf_support;
     }
 
-    rdma_ctl.gid_2_dev_map.insert({gid_idx, rdma_ctl.devices_.size()});
+    rdma_ctl->gid_2_dev_map.insert({gid_idx, rdma_ctl->devices_.size()});
     
-    rdma_ctl.devices_.push_back(dev);
+    rdma_ctl->devices_.push_back(dev);
 
     return;
 

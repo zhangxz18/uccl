@@ -26,7 +26,7 @@ typedef uint64_t PeerID;
 
 class RDMAContext;
 class RDMAFactory;
-extern RDMAFactory rdma_ctl;
+extern std::shared_ptr<RDMAFactory> rdma_ctl;
 
 // LRH (Local Routing Header) + GRH (Global Routing Header) + BTH (Base Transport Header)
 static constexpr uint32_t IB_HDR_OVERHEAD = (8 + 40 + 12);
@@ -852,8 +852,8 @@ class RDMAFactory {
          */
         static RDMAContext *CreateContext(int dev, union CtrlMeta meta);
         static inline struct FactoryDevice *get_factory_dev(int dev) {
-            DCHECK(dev >= 0 && dev < rdma_ctl.devices_.size());
-            return &rdma_ctl.devices_[dev];
+            DCHECK(dev >= 0 && dev < rdma_ctl->devices_.size());
+            return &rdma_ctl->devices_[dev];
         }
         
         std::string to_string(void) const;

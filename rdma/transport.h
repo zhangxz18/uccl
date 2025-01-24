@@ -296,6 +296,8 @@ class RDMAEndpoint {
     constexpr static uint16_t kBootstrapPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
+    std::shared_ptr<RDMAFactory> rdma_ctl_;
+
     // The first CPU to run the engine thread belongs to the RDMAEndpoint.
     // The range of CPUs for one device to run engine threads is 
     // [engine_cpu_start_ + i*dev, engine_cpu_start_ + i*dev + num_engines_per_dev_). 

@@ -337,6 +337,8 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         }
     });
 
+    rdma_ctl_ = rdma_ctl;
+
     CHECK_LE(num_engines_per_dev, NUM_CPUS / 4)
         << "num_engines_per_dev should be less than or equal to the number of CPUs / 4";
 
