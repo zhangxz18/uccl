@@ -1,6 +1,5 @@
 #include <glog/logging.h>
 #include <mutex>
-#include <signal.h>
 
 #include <atomic>
 #include <thread>

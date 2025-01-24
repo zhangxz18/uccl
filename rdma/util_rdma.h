@@ -5,8 +5,6 @@
 #include <cstring>
 #include <vector>
 #include <unordered_map>
-#include <deque>
-#include <mutex>
 #include <set>
 
 #include <sys/mman.h>

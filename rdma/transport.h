@@ -1,25 +1,16 @@
 #pragma once
 
 #include <netdb.h>
-#include <bitset>
-#include <chrono>
-#include <concepts>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <future>
-#include <list>
-#include <map>
-#include <set>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <linux/if_ether.h>
@@ -30,12 +21,10 @@
 
 #include <glog/logging.h>
 
-#include "transport_cc.h"
 #include "transport_config.h"
 #include "util.h"
 #include "util_shared_pool.h"
 #include "util_latency.h"
-#include "util_rss.h"
 #include "util_timer.h"
 #include "util_rdma.h"
 

@@ -8,12 +8,9 @@
 
 #include <infiniband/verbs.h>
 
-#include "transport_cc.h"
 #include "transport_config.h"
-#include "util_jring_elem_private.h"
 #include "util_rdma.h"
 #include "util_timer.h"
-#include "util_list.h"
 
 namespace uccl {
 
@@ -219,7 +216,7 @@ void UcclRDMAEngine::run() {
         handle_completion();
 
     }
-    // std::cout << "Engine " << engine_idx_ << " shutdown" << std::endl;
+    VLOG(4) << "Engine " << engine_idx_ << " shutdown";
 }
 
 /**

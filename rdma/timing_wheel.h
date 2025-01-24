@@ -10,7 +10,6 @@
 
 #pragma once
 
-#include <iomanip>
 #include <queue>
 
 #include "timely.h"
@@ -76,7 +75,7 @@ static constexpr double kWheelHorizonUs =
 // static_assert(kWheelHorizonUs <= kRpcRTOUs, "");
 
 static constexpr size_t kWheelNumWslots =
-    1 + std::ceil(kWheelHorizonUs / kWheelSlotWidthUs);
+    1 + DIVUP(kWheelHorizonUs, kWheelSlotWidthUs);
 
 static constexpr bool kWheelRecord = false;  ///< Fast-record wheel actions
 
