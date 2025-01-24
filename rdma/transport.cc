@@ -240,7 +240,7 @@ void UcclRDMAEngine::handle_rto() {
 /// TODO: handle error case
 void UcclRDMAEngine::process_ctl_reqs() {
     Channel::CtrlMsg ctrl_work;
-    if (jring_sc_dequeue_bulk(channel_->ctrl_cmdq_, &ctrl_work, 1, nullptr) ==
+    while (jring_sc_dequeue_bulk(channel_->ctrl_cmdq_, &ctrl_work, 1, nullptr) ==
         1) {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::kInstallCtx:
@@ -271,58 +271,64 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         DCHECK(ret);
     }
 
-    // Send PSN, QPN to remote peer.
-    const int size = sizeof(uint32_t) + sizeof(uint32_t);
-    char buf[RDMAContext::kTotalQP * size];
-    for (auto i = 0; i < kPortEntropy; i++) {
-        memcpy(buf + i * size, &rdma_ctx->uc_qps_[i].local_psn, sizeof(uint32_t));
-        memcpy(buf + i * size + sizeof(uint32_t), &rdma_ctx->uc_qps_[i].qp->qp_num, sizeof(uint32_t));
-    }
-    memcpy(buf + kPortEntropy * size, &rdma_ctx->ctrl_local_psn_, sizeof(uint32_t));
-    memcpy(buf + kPortEntropy * size + sizeof(uint32_t), &rdma_ctx->ctrl_qp_->qp_num, sizeof(uint32_t));
+    // Create a thread to handle the QP setup to avoid blocking the engine.
+    std::thread qp_setup_thread([=]() {
+        // Send PSN, QPN to remote peer.
+        const int size = sizeof(uint32_t) + sizeof(uint32_t);
+        char buf[RDMAContext::kTotalQP * size];
+        for (auto i = 0; i < kPortEntropy; i++) {
+            memcpy(buf + i * size, &rdma_ctx->uc_qps_[i].local_psn, sizeof(uint32_t));
+            memcpy(buf + i * size + sizeof(uint32_t), &rdma_ctx->uc_qps_[i].qp->qp_num, sizeof(uint32_t));
+        }
+        memcpy(buf + kPortEntropy * size, &rdma_ctx->ctrl_local_psn_, sizeof(uint32_t));
+        memcpy(buf + kPortEntropy * size + sizeof(uint32_t), &rdma_ctx->ctrl_qp_->qp_num, sizeof(uint32_t));
 
-    memcpy(buf + (kPortEntropy+1) * size, &rdma_ctx->retr_local_psn_, sizeof(uint32_t));
-    memcpy(buf + (kPortEntropy+1) * size + sizeof(uint32_t), &rdma_ctx->retr_qp_->qp_num, sizeof(uint32_t));
-    ret = send_message(bootstrap_fd, buf, RDMAContext::kTotalQP * size);
-    DCHECK(ret == RDMAContext::kTotalQP * size);
+        memcpy(buf + (kPortEntropy+1) * size, &rdma_ctx->retr_local_psn_, sizeof(uint32_t));
+        memcpy(buf + (kPortEntropy+1) * size + sizeof(uint32_t), &rdma_ctx->retr_qp_->qp_num, sizeof(uint32_t));
+        int ret = send_message(bootstrap_fd, buf, RDMAContext::kTotalQP * size);
+        DCHECK(ret == RDMAContext::kTotalQP * size);
 
-    // Receive PSN, QPN from remote peer.
-    ret = receive_message(bootstrap_fd, buf, RDMAContext::kTotalQP * size);
-    DCHECK(ret == RDMAContext::kTotalQP * size);
+        // Receive PSN, QPN from remote peer.
+        ret = receive_message(bootstrap_fd, buf, RDMAContext::kTotalQP * size);
+        DCHECK(ret == RDMAContext::kTotalQP * size);
 
-    // Modify QPs to RTR and RTS.
-    for (auto i = 0; i < kPortEntropy; i++) {
-        auto remote_psn = *reinterpret_cast<uint32_t*>(buf + i * size);
-        auto remote_qpn = *reinterpret_cast<uint32_t*>(buf + i * size + sizeof(uint32_t));
-        auto qp = rdma_ctx->uc_qps_[i].qp;
+        // Modify QPs to RTR and RTS.
+        for (auto i = 0; i < kPortEntropy; i++) {
+            auto remote_psn = *reinterpret_cast<uint32_t*>(buf + i * size);
+            auto remote_qpn = *reinterpret_cast<uint32_t*>(buf + i * size + sizeof(uint32_t));
+            auto qp = rdma_ctx->uc_qps_[i].qp;
 
-        ret = modify_qp_rtr(qp, dev_, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn);
-        DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
+            ret = modify_qp_rtr(qp, dev_, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn);
+            DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
 
-        ret = modify_qp_rts(qp, rdma_ctx->uc_qps_[i].local_psn, false);
-        DCHECK(ret == 0) << "Failed to modify UC QP to RTS";
-    }
+            ret = modify_qp_rts(qp, rdma_ctx->uc_qps_[i].local_psn, false);
+            DCHECK(ret == 0) << "Failed to modify UC QP to RTS";
+        }
 
-    auto ctrl_rpsn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size);
-    auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
-    auto ctrl_qp = rdma_ctx->ctrl_qp_;
+        auto ctrl_rpsn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size);
+        auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
+        auto ctrl_qp = rdma_ctx->ctrl_qp_;
 
-    ret = modify_qp_rtr(ctrl_qp, dev_, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn);
-    DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
+        ret = modify_qp_rtr(ctrl_qp, dev_, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn);
+        DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
 
-    ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
+        ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
 
-    auto retr_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size);
-    auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
-    auto retr_qp = rdma_ctx->retr_qp_;
+        auto retr_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size);
+        auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
+        auto retr_qp = rdma_ctx->retr_qp_;
 
-    ret = modify_qp_rtr(retr_qp, dev_, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn);
-    DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
+        ret = modify_qp_rtr(retr_qp, dev_, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn);
+        DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
 
-    ret = modify_qp_rts(retr_qp, rdma_ctx->retr_local_psn_, false);
-    DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
+        ret = modify_qp_rts(retr_qp, rdma_ctx->retr_local_psn_, false);
+        DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
 
-    uccl_wakeup(poll_ctx);
+        uccl_wakeup(poll_ctx);
+    });
+
+    // Detach the thread to allow it to run independently.
+    qp_setup_thread.detach();
 }
 
 RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start)
@@ -515,7 +521,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
         VLOG(5) << "[Endpoint] connecting... Make sure the server is up.";
-        sleep(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
