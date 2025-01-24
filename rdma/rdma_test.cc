@@ -287,7 +287,6 @@ static void server_worker(void)
     for (int i = 0; i < FLAGS_nflow; i++) {
         ep.uccl_deregmr(conn_ids[i], mhandles[i]);
         munmap(datas[i], FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
-        delete mhandles[i];
     }
 }
 
@@ -325,7 +324,6 @@ static void client_worker(void)
     for (int i = 0; i < FLAGS_nflow; i++) {
         ep.uccl_deregmr(conn_ids[i], mhandles[i]);
         munmap(datas[i], FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
-        delete mhandles[i];
     }
 }
 
