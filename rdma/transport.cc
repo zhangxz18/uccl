@@ -602,14 +602,13 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
     // Generate unique flow ID for both client and server.
     FlowID flow_id;
     while (true) {
-        // generate flow_id sequentially for better debugging
-        static uint64_t fff = 0;
-        flow_id = fff++;
         bool unique;
         {
             std::lock_guard<std::mutex> lock(fd_map_mu_);
-            unique =
-                (fd_map_.find(flow_id) == fd_map_.end());
+            // generate flow_id sequentially for better debugging
+            static uint64_t fff = 0;
+            flow_id = fff++;
+            unique = (fd_map_.find(flow_id) == fd_map_.end());
             if (unique) {
                 // Speculatively insert the flow ID.
                 fd_map_[flow_id] = bootstrap_fd;
