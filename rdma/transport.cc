@@ -474,7 +474,7 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     info->peer_id = peer_id;
 
     for (int i = 0; i < num_engines_per_dev_; i++) {
-        auto engine_idx = dev * num_engines_per_dev_ + i;
+        auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
         install_ctx_on_engine(engine_idx, meta);
     }
 

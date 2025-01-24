@@ -509,7 +509,7 @@ class UcclFlow {
         }
         // Avoid all flows using the same initial engine offset.
         static uint32_t off[NUM_DEVICES] = {};
-        next_engine_offset_ = off[dev]++;
+        next_engine_offset_ = off[dev]++ % NUM_ENGINES;
     }
 
     ~UcclFlow() {
