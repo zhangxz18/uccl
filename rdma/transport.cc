@@ -271,8 +271,13 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         DCHECK(ret);
     }
 
+    auto dev = dev_;
+
     // Create a thread to handle the QP setup to avoid blocking the engine.
-    std::thread qp_setup_thread([=]() {
+    std::thread qp_setup_thread([ctrl_work, rdma_ctx, bootstrap_fd, dev]() {
+        auto meta = ctrl_work.meta;
+        auto info = &meta.install_ctx;
+        auto *poll_ctx = ctrl_work.poll_ctx;
         // Send PSN, QPN to remote peer.
         const int size = sizeof(uint32_t) + sizeof(uint32_t);
         char buf[RDMAContext::kTotalQP * size];
@@ -298,7 +303,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             auto remote_qpn = *reinterpret_cast<uint32_t*>(buf + i * size + sizeof(uint32_t));
             auto qp = rdma_ctx->uc_qps_[i].qp;
 
-            ret = modify_qp_rtr(qp, dev_, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn);
+            ret = modify_qp_rtr(qp, dev, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn);
             DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
 
             ret = modify_qp_rts(qp, rdma_ctx->uc_qps_[i].local_psn, false);
@@ -309,7 +314,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
         auto ctrl_qp = rdma_ctx->ctrl_qp_;
 
-        ret = modify_qp_rtr(ctrl_qp, dev_, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn);
+        ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn);
         DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
 
         ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
@@ -318,7 +323,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
         auto retr_qp = rdma_ctx->retr_qp_;
 
-        ret = modify_qp_rtr(retr_qp, dev_, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn);
+        ret = modify_qp_rtr(retr_qp, dev, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn);
         DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
 
         ret = modify_qp_rts(retr_qp, rdma_ctx->retr_local_psn_, false);
@@ -442,7 +447,7 @@ RDMAEndpoint::~RDMAEndpoint() {
     stats_thread_.join();
 }
 
-void RDMAEndpoint::install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta)
+PollCtx *RDMAEndpoint::install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta)
 {
     auto *cmdq = channel_vec_[engine_idx]->ctrl_cmdq_;
     
@@ -455,9 +460,7 @@ void RDMAEndpoint::install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta met
 
     while (jring_mp_enqueue_bulk(cmdq, &ctrl_msg, 1, nullptr) != 1) {}
 
-    uccl_poll(poll_ctx);
-
-    VLOG(5) << "Installed RDMAContext on engine " << engine_idx;
+    return poll_ctx;
 }
 
 void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struct RemoteRDMAContext *remote_ctx)
@@ -481,10 +484,17 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     info->bootstrap_fd = fd;
     info->peer_id = peer_id;
 
+    std::vector<PollCtx *> poll_list;
+
     for (int i = 0; i < num_engines_per_dev_; i++) {
         auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
-        install_ctx_on_engine(engine_idx, meta);
+        auto poll_ctx = install_ctx_on_engine(engine_idx, meta);
+        poll_list.push_back(poll_ctx);
     }
+
+    for (auto poll_ctx : poll_list) {uccl_poll(poll_ctx);}
+
+    poll_list.clear();
 
     remote_ctx->remote_gid = info->remote_gid;
     remote_ctx->remote_port_attr = info->remote_port_attr;
@@ -563,12 +573,13 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
         auto it = peer_map_[dev].find({remote_ip, remote_dev});
         if (it == peer_map_[dev].end()) {
             peer_id = next_peer_id_++;
-            // Release the lock before installing RDMAContexts on engines since we may block.
+            peer_map_[dev].insert({{remote_ip, remote_dev}, {peer_id, 0, 0, 1}});
+            // Release the lock before installing RDMAContexts on engines to avoid lock contention.
             peer_map_mu_[dev].unlock();
             // For the first flow to a peer, install RDMAContexts on all engines for this peer.
             install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
             peer_map_mu_[dev].lock();
-            peer_map_[dev].insert({{remote_ip, remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
+            peer_map_[dev][{remote_ip, remote_dev}] = {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1};
         } else {
             peer_id = it->second.peer_id;
             remote_ctx.remote_gid = it->second.remote_gid;
@@ -661,12 +672,13 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
         auto it = peer_map_[dev].find({remote_ip, *remote_dev});
         if (it == peer_map_[dev].end()) {
             peer_id = next_peer_id_++;
-            // Release the lock before installing RDMAContexts on engines since we may block.
+            peer_map_[dev].insert({{remote_ip, *remote_dev}, {peer_id, 0, 0, 1}});
+            // Release the lock before installing RDMAContexts on engines to avoid lock contention.
             peer_map_mu_[dev].unlock();
             // For the first flow to a peer, install RDMAContexts on all engines for this peer.
             install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
             peer_map_mu_[dev].lock();
-            peer_map_[dev].insert({{remote_ip, *remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
+            peer_map_[dev][{remote_ip, *remote_dev}] = {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1};
         } else {
             peer_id = it->second.peer_id;
             remote_ctx.remote_gid = it->second.remote_gid;

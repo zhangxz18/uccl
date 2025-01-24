@@ -222,11 +222,7 @@ ncclResult_t pluginConnect(int dev, void* opaque_handle, void** sendComm,
     struct ucclSendComm *scomm = 
         (struct ucclSendComm *)calloc(1, sizeof(struct ucclSendComm));
     
-    if (!connect_mtx[dev].try_lock()) {
-        *sendComm = nullptr;
-        free(scomm);
-        return ncclSuccess;
-    }
+    connect_mtx[dev].lock();
 
     if (handle->cid == 0) {
         handle->cid = alloc_cid(dev);
@@ -281,11 +277,7 @@ ncclResult_t pluginAccept(void* listenComm, void** recvComm,
     struct ucclRecvComm *rcomm = 
         (struct ucclRecvComm *)calloc(1, sizeof(struct ucclRecvComm));
 
-    if (!accept_mtx[lcomm->dev].try_lock()) {
-        *recvComm = nullptr;
-        free(rcomm);
-        return ncclSuccess;
-    }
+    accept_mtx[lcomm->dev].lock();
     
     auto it = accept_tracker[lcomm->dev].find(lcomm->aid);
     if (it == accept_tracker[lcomm->dev].end()) {

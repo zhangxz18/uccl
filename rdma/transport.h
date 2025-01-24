@@ -394,7 +394,7 @@ class RDMAEndpoint {
 
    private:
 
-    void install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta);
+    PollCtx *install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta);
 
     void install_ctx_on_engines(int fd, int dev, PeerID peer_id, struct RemoteRDMAContext *remote_ctx);
     
