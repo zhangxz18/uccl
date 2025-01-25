@@ -544,6 +544,9 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
     if (str_to_ip(factory_dev->local_ip_str.c_str()) < str_to_ip(remote_ip.c_str())) {
         // Let the side with smaller IP address install context on engines when callding uccl_connect().
         install = true;
+    } else if (str_to_ip(factory_dev->local_ip_str.c_str()) == str_to_ip(remote_ip.c_str())) {
+        // Let the side with smaller dev install context on engines when callding uccl_connect().
+        if (dev < remote_dev) install = true;
     }
 
     PeerID peer_id;
@@ -659,6 +662,9 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
     if (str_to_ip(factory_dev->local_ip_str.c_str()) > str_to_ip(remote_ip.c_str())) {
         // Let the side with larger IP address install context on engines when callding uccl_accept().
         install = true;
+    } else if (str_to_ip(factory_dev->local_ip_str.c_str()) == str_to_ip(remote_ip.c_str())) {
+        // Let the side with larger dev install context on engines when callding uccl_accept().
+        if (dev > *remote_dev) install = true;
     }
 
     PeerID peer_id;
