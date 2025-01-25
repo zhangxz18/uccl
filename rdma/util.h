@@ -83,6 +83,25 @@ inline void net_barrier(int bootstrap_fd) {
     DCHECK(ret == sizeof(bool) && sync);
 }
 
+inline void create_listen_socket(int *listen_fd, uint16_t listen_port)
+{
+    *listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    DCHECK(*listen_fd >= 0) << "ERROR: opening socket";
+    int flag = 1;
+    DCHECK(setsockopt(*listen_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(int)) >= 0)
+        << "ERROR: setsockopt SO_REUSEADDR fails";
+    struct sockaddr_in serv_addr;
+    bzero((char *)&serv_addr, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(listen_port);
+    DCHECK(bind(*listen_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >= 0) 
+        << "ERROR: binding";
+
+    DCHECK(!listen(*listen_fd, 128)) << "ERROR: listen";
+    VLOG(5) << "[Endpoint] server ready, listening on port " << listen_port;
+}
+
 
 #define UINT_CSN_BIT 8
 static_assert(UINT_CSN_BIT == 16 || UINT_CSN_BIT == 8, "UINT_CSN_BIT must be equal to 8 or 16");

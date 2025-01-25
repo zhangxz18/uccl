@@ -293,7 +293,7 @@ struct PeerInfo {
  */
 class RDMAEndpoint {
     constexpr static uint32_t kMaxInflightMsg = 1024 * 256;
-    constexpr static uint16_t kBootstrapPort = 30000;
+    constexpr static uint16_t kTestListenPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
     std::shared_ptr<RDMAFactory> rdma_ctl_;
@@ -319,7 +319,7 @@ class RDMAEndpoint {
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
 
-    int listen_fds_[NUM_DEVICES];
+    int test_listen_fds_[NUM_DEVICES];
 
     std::mutex fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
@@ -341,10 +341,10 @@ class RDMAEndpoint {
 
     /// For testing easily.
     ConnID test_uccl_connect(int dev, std::string remote_ip, int remote_dev) {
-        return uccl_connect(dev, remote_ip, remote_dev, kBootstrapPort + remote_dev);
+        return uccl_connect(dev, remote_ip, remote_dev, kTestListenPort + remote_dev);
     }
     ConnID test_uccl_accept(int dev, std::string &remote_ip, int *remote_dev) {
-        return uccl_accept(dev, listen_fds_[dev], remote_ip, remote_dev);
+        return uccl_accept(dev, test_listen_fds_[dev], remote_ip, remote_dev);
     }
     /// For testing easily.
 
