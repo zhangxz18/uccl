@@ -478,6 +478,7 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     ret = send_message(fd, &factory_dev->port_attr, sizeof(ibv_port_attr));
     DCHECK(ret == sizeof(ibv_port_attr)) << "Failed to send PortAttr";
     ret = receive_message(fd, &info->remote_port_attr, sizeof(ibv_port_attr));
+    DCHECK(ret == sizeof(ibv_port_attr)) << "Failed to receive PortAttr";
 
     info->bootstrap_fd = fd;
     info->peer_id = peer_id;
@@ -555,8 +556,6 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
             break;
         }
     }
-
-    auto engine_idx = find_first_engine_idx_on_dev(dev);
 
     PeerID peer_id;
     struct RemoteRDMAContext remote_ctx;
@@ -654,8 +653,6 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
             DCHECK(1 == fd_map_.erase(flow_id));
         }
     }
-    
-    auto engine_idx = find_first_engine_idx_on_dev(dev);
 
     PeerID peer_id;
     struct RemoteRDMAContext remote_ctx;
