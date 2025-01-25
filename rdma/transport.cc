@@ -556,7 +556,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
                 peer_id = next_peer_id_++;
                 // For the first flow to a peer, install RDMAContexts on all engines for this peer.
                 install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
-                peer_map_[dev][{remote_ip, remote_dev}] = {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1};
+                peer_map_[dev].insert({{remote_ip, remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
             } else {
                 // Let uccl_accept() to install ctx on engines.
                 // Wait until uccl_accept() installs ctx on engines.
@@ -565,10 +565,11 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
                 peer_map_mu_[dev].lock();
-                peer_id = it->second.peer_id;
-                remote_ctx.remote_gid = it->second.remote_gid;
-                remote_ctx.remote_port_attr = it->second.remote_port_attr;
-                it->second.flow_cnt++;
+                auto nit = peer_map_[dev].find({remote_ip, remote_dev});
+                peer_id = nit->second.peer_id;
+                remote_ctx.remote_gid = nit->second.remote_gid;
+                remote_ctx.remote_port_attr = nit->second.remote_port_attr;
+                nit->second.flow_cnt++;
             }
         } else {
             peer_id = it->second.peer_id;
@@ -670,7 +671,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
                 peer_id = next_peer_id_++;
                 // For the first flow to a peer, install RDMAContexts on all engines for this peer.
                 install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
-                peer_map_[dev][{remote_ip, *remote_dev}] = {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1};
+                peer_map_[dev].insert({{remote_ip, *remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
             } else {
                 // Let uccl_connect() to install ctx on engines.
                 // Wait until uccl_connect() installs ctx on engines.
@@ -679,10 +680,11 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
                 peer_map_mu_[dev].lock();
-                peer_id = it->second.peer_id;
-                remote_ctx.remote_gid = it->second.remote_gid;
-                remote_ctx.remote_port_attr = it->second.remote_port_attr;
-                it->second.flow_cnt++;
+                auto nit = peer_map_[dev].find({remote_ip, *remote_dev});
+                peer_id = nit->second.peer_id;
+                remote_ctx.remote_gid = nit->second.remote_gid;
+                remote_ctx.remote_port_attr = nit->second.remote_port_attr;
+                nit->second.flow_cnt++;
             }
         } else {
             peer_id = it->second.peer_id;
