@@ -28,7 +28,7 @@ void interrupt_handler(int signal) {
 
 DEFINE_bool(server, false, "Whether this is a server receiving traffic.");
 DEFINE_string(serverip, "192.168.25.2", "Server IP address the client tries to connect.");
-DEFINE_string(perftype, "basic", "Performance type: basic/lat/tpt.");
+DEFINE_string(perftype, "basic", "Performance type: basic/lat/tpt/bi.");
 DEFINE_bool(warmup, false, "Whether to run warmup.");
 DEFINE_uint32(nflow, 1, "Number of flows.");
 DEFINE_uint32(nmsg, 8, "Number of messages within one request to post.");
@@ -164,6 +164,10 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
     while (FLAGS_iterations) {
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
+                if (quit) {
+                    FLAGS_iterations = 0;
+                    break;
+                }
                 if (!ep.uccl_poll_once(ureq_vec[f][r].poll_ctx)) continue;
 
                 if (!FLAGS_flush) {
@@ -231,12 +235,16 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
                 for (int n = 0; n < FLAGS_nmsg; n++) {
                     if (ep.uccl_poll_once(ureq_vec[f][r][n].poll_ctx)) {
                         void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
-                        while (ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
+                        while (!quit && ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                         cur_sec_bytes += FLAGS_msize;
                         if (++fin_msg == FLAGS_nreq) {
                             FLAGS_iterations--;
                             fin_msg = 0;
                         }
+                    }
+                    if (quit) {
+                        FLAGS_iterations = 0;
+                        break;
                     }
                 }
             }
@@ -331,16 +339,16 @@ int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+    signal(SIGINT, interrupt_handler);
+    signal(SIGTERM, interrupt_handler);
+    signal(SIGHUP, interrupt_handler);
     
     if (FLAGS_server) {
         server_worker();
     } else {
         client_worker();
     }
-
-    signal(SIGINT, interrupt_handler);
-    signal(SIGTERM, interrupt_handler);
-    signal(SIGHUP, interrupt_handler);
 
     return 0;
 }
