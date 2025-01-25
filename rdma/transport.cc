@@ -258,7 +258,6 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
     int ret;
     auto meta = ctrl_work.meta;
     auto info = &meta.install_ctx;
-    auto *poll_ctx = ctrl_work.poll_ctx;
 
     int bootstrap_fd = info->bootstrap_fd;
     auto dev = dev_;
