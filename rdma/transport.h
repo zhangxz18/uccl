@@ -329,7 +329,7 @@ class RDMAEndpoint {
     std::unordered_map<UcclPeer, PeerInfo, UcclPeerHash> peer_map_[NUM_DEVICES];
     std::mutex peer_map_mu_[NUM_DEVICES];
 
-    PeerID next_peer_id_ = 0;
+    PeerID next_peer_id_[NUM_DEVICES] = {};
 
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_[NUM_DEVICES];

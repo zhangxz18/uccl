@@ -556,7 +556,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
         auto it = peer_map_[dev].find({remote_ip, remote_dev});
         if (it == peer_map_[dev].end()) {
             if (install) {
-                peer_id = next_peer_id_++;
+                peer_id = next_peer_id_[dev]++;
                 // For the first flow to a peer, install RDMAContexts on all engines for this peer.
                 install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
                 peer_map_[dev].insert({{remote_ip, remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
@@ -674,7 +674,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
         auto it = peer_map_[dev].find({remote_ip, *remote_dev});
         if (it == peer_map_[dev].end()) {
             if (install) {
-                peer_id = next_peer_id_++;
+                peer_id = next_peer_id_[dev]++;
                 // For the first flow to a peer, install RDMAContexts on all engines for this peer.
                 install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
                 peer_map_[dev].insert({{remote_ip, *remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
