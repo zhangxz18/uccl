@@ -341,7 +341,7 @@ class RDMAEndpoint {
 
     /// For testing easily.
     ConnID test_uccl_connect(int dev, std::string remote_ip, int remote_dev) {
-        return uccl_connect(dev, remote_ip, remote_dev, kTestListenPort + remote_dev);
+        return uccl_connect(dev, remote_dev, remote_ip, kTestListenPort + remote_dev);
     }
     ConnID test_uccl_accept(int dev, std::string &remote_ip, int *remote_dev) {
         return uccl_accept(dev, test_listen_fds_[dev], remote_ip, remote_dev);
@@ -350,7 +350,7 @@ class RDMAEndpoint {
 
     // Connect to a remote peer <remote_ip, remote_dev> with the given dev, who is listening on the given listen_port.
     // This function is thread-safe.
-    ConnID uccl_connect(int dev, std::string remote_ip, int remote_dev, uint16_t listen_port);
+    ConnID uccl_connect(int dev, int remote_dev, std::string remote_ip, uint16_t remote_port);
     
     // Accept a connection using the given listen_fd. <remote_ip, remote_dev> is returned.
     // This function is thread-safe.

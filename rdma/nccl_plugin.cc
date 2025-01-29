@@ -219,7 +219,7 @@ ncclResult_t pluginConnect(int dev, void* opaque_handle, void** sendComm,
         handle->state = kConnConnecting;
         // Delegate connection to another thread.
         std::thread t = std::thread([dev, handle, remote_ip_str] {
-            handle->connect_buffer.base.conn_id = ep->uccl_connect(dev, remote_ip_str, handle->remote_dev, handle->listen_port);
+            handle->connect_buffer.base.conn_id = ep->uccl_connect(dev, handle->remote_dev, remote_ip_str, handle->listen_port);
             handle->connect_buffer.base.dev = dev;
             std::atomic_thread_fence(std::memory_order_release);
             handle->state = kConnConnected;

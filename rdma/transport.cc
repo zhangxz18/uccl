@@ -476,7 +476,7 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     remote_ctx->remote_port_attr = info->remote_port_attr;
 }
 
-ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev, uint16_t listen_port)
+ConnID RDMAEndpoint::uccl_connect(int dev, int remote_dev, std::string remote_ip, uint16_t remote_port)
 {
     struct sockaddr_in serv_addr = {};
     struct hostent *server;
@@ -500,9 +500,9 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = str_to_ip(remote_ip.c_str());
-    serv_addr.sin_port = htons(listen_port);
+    serv_addr.sin_port = htons(remote_port);
 
-    VLOG(5) << "[Endpoint] connecting to " << "<" << remote_ip << ", " << remote_dev << ">:" << listen_port;
+    VLOG(5) << "[Endpoint] connecting to " << "<" << remote_ip << ", " << remote_dev << ">:" << remote_port;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
@@ -542,10 +542,10 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
     }
 
     if (str_to_ip(factory_dev->local_ip_str.c_str()) < str_to_ip(remote_ip.c_str())) {
-        // Let the side with smaller IP address install context on engines when callding uccl_connect().
+        // uccl_connect() only allows the side with smaller IP address to install context.
         install = true;
     } else if (str_to_ip(factory_dev->local_ip_str.c_str()) == str_to_ip(remote_ip.c_str())) {
-        // Let the side with smaller dev install context on engines when callding uccl_connect().
+        // Handle the intra-node case.
         if (dev < remote_dev) install = true;
     }
 
@@ -555,16 +555,19 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
         peer_map_mu_[dev].lock();
         auto it = peer_map_[dev].find({remote_ip, remote_dev});
         if (it == peer_map_[dev].end()) {
+            // This device has not connected to the remote device yet.
             if (install) {
                 peer_id = next_peer_id_[dev]++;
-                // For the first flow to a peer, install RDMAContexts on all engines for this peer.
+                // Install RDMAContexts on all engines.
                 install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
                 peer_map_[dev].insert({{remote_ip, remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
             } else {
-                // Let uccl_accept() to install ctx on engines.
-                // Wait until uccl_accept() installs ctx on engines.
+                // Wait until uccl_accept() to install context on engines.
+                // Note that this only works for NCCL as we are sure that another connection is being created 
+                // by uccl_accept() for the same remote device.
                 peer_map_mu_[dev].unlock();
-                while (peer_map_[dev].find({remote_ip, remote_dev}) == peer_map_[dev].end()) {
+                while (peer_map_[dev].find({remote_ip, remote_dev}) == 
+                    peer_map_[dev].end()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
                 peer_map_mu_[dev].lock();
@@ -575,6 +578,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, std::string remote_ip, int remote_dev
                 nit->second.flow_cnt++;
             }
         } else {
+            // This device has connected to the remote device.
             peer_id = it->second.peer_id;
             remote_ctx.remote_gid = it->second.remote_gid;
             remote_ctx.remote_port_attr = it->second.remote_port_attr;
@@ -660,10 +664,10 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
 
     auto factory_dev = RDMAFactory::get_factory_dev(dev);
     if (str_to_ip(factory_dev->local_ip_str.c_str()) > str_to_ip(remote_ip.c_str())) {
-        // Let the side with larger IP address install context on engines when callding uccl_accept().
+        // uccl_accept() only allows the side with larger IP address to install context.
         install = true;
     } else if (str_to_ip(factory_dev->local_ip_str.c_str()) == str_to_ip(remote_ip.c_str())) {
-        // Let the side with larger dev install context on engines when callding uccl_accept().
+        // Handle the intra-node case.
         if (dev > *remote_dev) install = true;
     }
 
@@ -673,14 +677,16 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
         peer_map_mu_[dev].lock();
         auto it = peer_map_[dev].find({remote_ip, *remote_dev});
         if (it == peer_map_[dev].end()) {
+            // This device has not connected to the remote device yet.
             if (install) {
                 peer_id = next_peer_id_[dev]++;
-                // For the first flow to a peer, install RDMAContexts on all engines for this peer.
+                // Install RDMAContexts on all engines.
                 install_ctx_on_engines(bootstrap_fd, dev, peer_id, &remote_ctx);
                 peer_map_[dev].insert({{remote_ip, *remote_dev}, {peer_id, remote_ctx.remote_gid, remote_ctx.remote_port_attr, 1}});
             } else {
-                // Let uccl_connect() to install ctx on engines.
-                // Wait until uccl_connect() installs ctx on engines.
+                // Wait until uccl_connect() to install context on engines.
+                // Note that this only works for NCCL as we are sure that another connection is being created 
+                // by uccl_connect() for the same remote device.
                 peer_map_mu_[dev].unlock();
                 while (peer_map_[dev].find({remote_ip, *remote_dev}) == peer_map_[dev].end()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -693,6 +699,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
                 nit->second.flow_cnt++;
             }
         } else {
+            // This device has connected to the remote device.
             peer_id = it->second.peer_id;
             remote_ctx.remote_gid = it->second.remote_gid;
             remote_ctx.remote_port_attr = it->second.remote_port_attr;
