@@ -27,9 +27,6 @@ class ucclRequestBuffPool : public BuffPool {
      ~ucclRequestBuffPool() = default;
 };
 
-Spin ureq_spin[NUM_DEVICES];
-std::shared_ptr<ucclRequestBuffPool> uccl_req_pool[NUM_DEVICES];
-
 std::shared_ptr<RDMAEndpoint> ep;
 
 enum ConnState {
@@ -41,6 +38,7 @@ enum ConnState {
 struct ucclBaseComm {
     int dev;
     ConnID conn_id;
+    std::shared_ptr<ucclRequestBuffPool> uccl_req_pool;
 };
 
 struct AsyncAcceptState {
@@ -89,8 +87,6 @@ ncclResult_t pluginInit(ncclDebugLogger_t logFunction)
 {
     // FLAGS_v = 4;
     ep = std::make_shared<RDMAEndpoint>(GID_INDEX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
-    for (int i = 0; i < NUM_DEVICES; i++)
-        uccl_req_pool[i] = std::make_shared<ucclRequestBuffPool>();
     return ncclSuccess;
 }
 
@@ -233,11 +229,12 @@ ncclResult_t pluginConnect(int dev, void* opaque_handle, void** sendComm,
     } else {
         DCHECK(handle->state == kConnConnected);
         scomm->base = handle->connect_buffer.base;
+        scomm->base.uccl_req_pool = std::make_shared<ucclRequestBuffPool>();
         *sendComm = scomm;
     }
 
     if (*sendComm) {
-        printf("Connected to %s/%d on dev:%d, %ld\n", remote_ip_str.c_str(), handle->remote_dev, dev, scomm->base.conn_id.flow_id);
+        // printf("Connected to %s/%d on dev:%d, %ld\n", remote_ip_str.c_str(), handle->remote_dev, dev, scomm->base.conn_id.flow_id);
     }
 
     return ncclSuccess;
@@ -278,13 +275,14 @@ ncclResult_t pluginAccept(void* listenComm, void** recvComm,
     } else {
         DCHECK(lcomm->state == kConnConnected);
         rcomm->base = lcomm->accept_buffer.base;
+        rcomm->base.uccl_req_pool = std::make_shared<ucclRequestBuffPool>();
         rcomm->remote_ip_str = lcomm->accept_buffer.remote_ip_str;
         rcomm->remote_dev = lcomm->accept_buffer.remote_dev;
         *recvComm = rcomm;
     }
 
     if (*recvComm) {
-        printf("Accepted from %s/%d on dev:%d, %ld\n", rcomm->remote_ip_str.c_str(), rcomm->remote_dev, lcomm->dev, rcomm->base.conn_id.flow_id);
+        // printf("Accepted from %s/%d on dev:%d, %ld\n", rcomm->remote_ip_str.c_str(), rcomm->remote_dev, lcomm->dev, rcomm->base.conn_id.flow_id);
     }
 
     return ncclSuccess;
@@ -327,25 +325,21 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
     uint64_t addr;
     auto dev = scomm->base.dev;
     {
-        ureq_spin[dev].Lock();
-        if (uccl_req_pool[dev]->alloc_buff(&addr)) {
+        if (scomm->base.uccl_req_pool->alloc_buff(&addr)) {
             *request = nullptr;
-            ureq_spin[dev].Unlock();
             return ncclSuccess;
         }
-        ureq_spin[dev].Unlock();
     }
 
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
     if (ep->uccl_send_async(conn_id, mh, data, size, req)) {
         {
-            ureq_spin[dev].Lock();
-            uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
-            ureq_spin[dev].Unlock();
+            scomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         }
         *request = nullptr;
         return ncclSuccess;
     }
+    req->req_pool = (void*)scomm->base.uccl_req_pool.get();
 
     *request = req;
 
@@ -364,25 +358,21 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
     uint64_t addr;
     auto dev = rcomm->base.dev;
     {
-        ureq_spin[dev].Lock();
-        if (uccl_req_pool[dev]->alloc_buff(&addr)) {
+        if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
             *request = nullptr;
-            ureq_spin[dev].Unlock();
             return ncclSuccess;
         }
-        ureq_spin[dev].Unlock();
     }
     
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);    
     if (ep->uccl_recv_async(conn_id, mhs, data, sizes, n, req)) {
         {
-            ureq_spin[dev].Lock();
-            uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
-            ureq_spin[dev].Unlock();
+            rcomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         }
         *request = nullptr;
         return ncclSuccess;
     }
+    req->req_pool = (void*)rcomm->base.uccl_req_pool.get();
 
     *request = req;
 
@@ -400,25 +390,22 @@ ncclResult_t pluginIflush(void* recvComm, int n, void** data, int* sizes,
     uint64_t addr;
     auto dev = rcomm->base.dev;
     {
-        ureq_spin[dev].Lock();
-        if (uccl_req_pool[dev]->alloc_buff(&addr)) {
+        if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
             *request = nullptr;
-            ureq_spin[dev].Unlock();
             return ncclSuccess;
         }
-        ureq_spin[dev].Unlock();
     }
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
     
     if (ep->uccl_flush(conn_id, mhs, data, sizes, n, req)) {
         {
-            ureq_spin[dev].Lock();
-            uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
-            ureq_spin[dev].Unlock();
+            rcomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         }
         *request = nullptr;
         return ncclSuccess;
     }
+
+    req->req_pool = (void*)rcomm->base.uccl_req_pool.get();
 
     *request = req;
 
@@ -442,10 +429,8 @@ ncclResult_t pluginTest(void* request, int* done, int* size) {
             // Do nothing.
         }
         {
-            auto dev = req->dev;
-            ureq_spin[dev].Lock();
-            uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
-            ureq_spin[dev].Unlock();
+            auto uccl_req_pool = reinterpret_cast<ucclRequestBuffPool *>(req->req_pool);
+            uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         }
     } else {
         *done = 0;

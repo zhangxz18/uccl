@@ -301,9 +301,10 @@ enum ReqType {
  */
 struct ucclRequest {
     enum ReqType type;
-    PollCtx *poll_ctx;
-    int dev;
     int n;
+    PollCtx *poll_ctx;
+    void *context;
+    void *req_pool;
     union {
         struct {
             int data_len[kMaxRecv];
@@ -323,7 +324,6 @@ struct ucclRequest {
             int tx_events;
         } send;
     };
-    void *context;
 };
 
 /**

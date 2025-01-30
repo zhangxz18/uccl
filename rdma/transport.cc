@@ -880,7 +880,6 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
     flow = it->second;
 
     ureq->type = ReqTx;
-    ureq->dev = dev;
     ureq->send.data_len = size;
 
     int slot, nmsg;
@@ -966,7 +965,6 @@ int RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, void **d
     flow->post_flush(mhandles, data, size, n, poll_ctx, last);
 
     ureq->type = ReqFlush;
-    ureq->dev = dev;
     ureq->poll_ctx = poll_ctx;
 
     return 0;
@@ -986,7 +984,6 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
         flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
         ureq->type = ReqRxRC;
         ureq->context = flow;
-        ureq->dev = dev;
         ureq->poll_ctx = ctx_pool_->pop();
 
         flow->poll_flow_cq();
@@ -999,7 +996,6 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
         flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     
     ureq->type = ReqRx;
-    ureq->dev = dev;
     ureq->n = n;
     for (int i = 0; i < n; i++) ureq->recv.data_len[i] = size[i];
     ureq->poll_ctx = ctx_pool_->pop();
