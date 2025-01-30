@@ -76,6 +76,31 @@ inline int send_message(int sockfd, const void *buffer, size_t n_bytes) {
     return bytes_sent;
 }
 
+inline void send_ready(int bootstrap_fd) {
+    bool ready = true;
+    int ret = send_message(bootstrap_fd, &ready, sizeof(bool));
+    DCHECK(ret == sizeof(bool));
+}
+
+inline void send_abort(int bootstrap_fd) {
+    bool ready = false;
+    int ret = send_message(bootstrap_fd, &ready, sizeof(bool));
+    DCHECK(ret == sizeof(bool));
+}
+
+inline void wait_ready(int bootstrap_fd) {
+    bool ready;
+    int ret = receive_message(bootstrap_fd, &ready, sizeof(bool));
+    DCHECK(ret == sizeof(bool) && ready == true);
+}
+
+inline bool wait_sync(int bootstrap_fd) {
+    bool ready;
+    int ret = receive_message(bootstrap_fd, &ready, sizeof(bool));
+    DCHECK(ret == sizeof(bool));
+    return ready;
+}
+
 inline void net_barrier(int bootstrap_fd) {
     bool sync = true;
     int ret = send_message(bootstrap_fd, &sync, sizeof(bool));

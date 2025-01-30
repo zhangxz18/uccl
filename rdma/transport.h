@@ -396,6 +396,25 @@ class RDMAEndpoint {
 
     PollCtx *install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta);
 
+    /**
+     * @brief Safely install context on all engines serving the device.
+     * When local_lock_first is true, the function will acquire local lock first,
+     * and then acquire remote lock. Otherwise, it will acquire remote lock first.
+     * When holding the two locks, and no context is installed for the remote peer before,
+     * the function will install the context on all engines serving the device.
+     * peer_id and remote_ctx are returned for creating UcclFlow.
+     * 
+     * @param dev 
+     * @param bootstrap_fd 
+     * @param local_lock_first 
+     * @param remote_ip 
+     * @param remote_dev 
+     * @param peer_id 
+     * @param remote_ctx 
+     */
+    void safe_install_ctx(int dev, int bootstrap_fd, bool local_lock_first, std::string &remote_ip, int remote_dev, 
+    PeerID *peer_id, struct RemoteRDMAContext *remote_ctx);
+
     void install_ctx_on_engines(int fd, int dev, PeerID peer_id, struct RemoteRDMAContext *remote_ctx);
     
     inline void put_load_on_engine(int engine_id);
