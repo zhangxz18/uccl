@@ -432,11 +432,11 @@ ncclResult_t pluginTest(void* request, int* done, int* size) {
     struct ucclRequest *req = 
         reinterpret_cast<struct ucclRequest *>(request);
     
-    if (ep->uccl_poll_once(req->poll_ctx)) {
+    if (ep->uccl_test_ureq(req)) {
         *done = 1;
-        if (req->type == ReqTx) {
+        if (req->type == ReqTx || req->type == ReqTxRC) {
             size[0] = req->send.data_len;
-        } else if (req->type == ReqRx) {
+        } else if (req->type == ReqRx || req->type == ReqRxRC) {
             for (int i = 0; i < req->n; i++) size[i] = req->recv.data_len[i];
         } else if (req->type == ReqFlush) {
             // Do nothing.
