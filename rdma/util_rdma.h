@@ -288,7 +288,9 @@ struct RemoteRDMAContext {
 enum ReqType {
     ReqTx,
     ReqRx,
-    ReqFlush
+    ReqFlush,
+    ReqTxRC,
+    ReqRxRC,
 };
 
 /**
@@ -321,6 +323,7 @@ struct ucclRequest {
             int tx_events;
         } send;
     };
+    void *context;
 };
 
 /**
@@ -345,7 +348,7 @@ struct alignas(32) NetCommBase {
     // Pointing to rdma_ctx_->fifo_mr_->addr.
     struct RemFifo *fifo;
 
-    // CQ for Fifo QP and GPU flush QP
+    // CQ for Fifo QP and GPU flush QP and RC QP.
     struct ibv_cq *flow_cq;
 
     // Fifo QP based on Reliable Connection (RC).
@@ -354,6 +357,10 @@ struct alignas(32) NetCommBase {
     uint32_t fifo_local_psn;
     // Memory region for Fifo.
     struct ibv_mr *fifo_mr;
+
+    // RC UP for small messages bypassing UcclEngine.
+    struct ibv_qp *rc_qp;
+    uint32_t rc_local_psn;
 
     uint64_t remote_fifo_addr;
     uint32_t remote_fifo_rkey;

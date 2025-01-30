@@ -168,7 +168,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
                     FLAGS_iterations = 0;
                     break;
                 }
-                if (!ep.uccl_poll_once(ureq_vec[f][r].poll_ctx)) continue;
+                if (!ep.uccl_test_ureq(&ureq_vec[f][r])) continue;
 
                 if (!FLAGS_flush) {
                     FLAGS_iterations--;
@@ -233,7 +233,7 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 for (int n = 0; n < FLAGS_nmsg; n++) {
-                    if (ep.uccl_poll_once(ureq_vec[f][r][n].poll_ctx)) {
+                    if (ep.uccl_test_ureq(&ureq_vec[f][r][n])) {
                         void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
                         while (!quit && ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                         cur_sec_bytes += FLAGS_msize;

@@ -9,6 +9,7 @@
 #include <infiniband/verbs.h>
 
 #include "transport_config.h"
+#include "util.h"
 #include "util_rdma.h"
 #include "util_timer.h"
 
@@ -16,7 +17,7 @@ namespace uccl {
 
 void UcclFlow::poll_flow_cq(void)
 {
-    if (is_send_ || !flow_cq_cnt_) return;
+    if (!flow_cq_cnt_) return;
     
     auto comm_base = &recv_comm_.base;
     auto cq = comm_base->flow_cq;
@@ -24,10 +25,20 @@ void UcclFlow::poll_flow_cq(void)
     
     int nb_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
     for (auto i = 0; i < nb_cqe; i++) {
-        if (wcs[i].opcode == IBV_WC_RDMA_READ) {
+        auto opcode = wcs[i].opcode;
+        if (opcode == IBV_WC_RDMA_READ) {
             // GPU flush completion.
             auto *poll_ctx = reinterpret_cast<PollCtx *>(wcs[i].wr_id);
             uccl_wakeup(poll_ctx);
+        } else if (opcode == IBV_WC_RDMA_WRITE) {
+            if (wcs[i].qp_num == comm_base->rc_qp->qp_num) {
+                auto poll_ctx = (PollCtx *)wcs[i].wr_id;
+                uccl_wakeup(poll_ctx);
+            }
+        } else if (opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+            auto ureq = (struct ucclRequest *)wcs[i].wr_id;
+            ureq->recv.data_len[0] = ntohl(wcs[i].imm_data);
+            uccl_wakeup(ureq->poll_ctx);
         }
     }
     flow_cq_cnt_ -= nb_cqe;
@@ -50,6 +61,64 @@ void UcclFlow::post_flush(struct Mhandle **mhandles, void **data, int *size, int
     flow_cq_cnt_++;
 
     VLOG(5) << "Post flush: addr: " << wr.wr.rdma.remote_addr << ", rkey: " << wr.wr.rdma.rkey;
+}
+
+void UcclFlow::rc_recv(void *data, int size, struct Mhandle *mhandle, struct ibv_send_wr *wr, struct ibv_sge *sge, struct ucclRequest *ureq)
+{
+    auto *comm_base = &recv_comm_.base;
+    memset(wr, 0, sizeof(*wr));
+    struct RemFifo *rem_fifo = comm_base->fifo;
+    int slot = rem_fifo->fifo_tail % kMaxReq;
+    auto elems = rem_fifo->elems[slot];
+    auto qp = comm_base->fifo_qp;
+    
+    elems[0].addr = reinterpret_cast<uint64_t>(data);
+    elems[0].rkey = mhandle->mr->rkey;
+    elems[0].nmsgs = 1;
+    // For sender to check if the receiver is ready.
+    elems[0].idx = rem_fifo->fifo_tail + 1;
+    elems[0].size = size;
+    // For sender to know we are using RC.
+    elems[0].engine_offset = RDMAEndpoint::RC_MAGIC;
+
+    VLOG(5) << "Post Recv: addr: " << elems[0].addr << ", rkey: " << elems[0].rkey << ", size: " << elems[0].size;
+    
+    // Figure out the remote address to write.
+    wr->wr.rdma.remote_addr = comm_base->remote_fifo_addr + slot * kMaxRecv * sizeof(struct FifoItem);
+    wr->wr.rdma.rkey = comm_base->remote_fifo_rkey;
+
+    sge->lkey = comm_base->fifo_mr->lkey;
+    sge->addr = (uint64_t)elems;
+    sge->length = 1 * sizeof(struct FifoItem);
+
+    wr->sg_list = sge;
+    wr->num_sge = 1;
+
+    wr->opcode = IBV_WR_RDMA_WRITE;
+    wr->send_flags = IBV_SEND_INLINE;
+
+    // Occasionally post a request with the IBV_SEND_SIGNALED flag.
+    if (slot == 0) {
+        wr->send_flags |= IBV_SEND_SIGNALED;
+        flow_cq_cnt_++;
+    }
+
+    struct ibv_send_wr *bad_wr;
+    DCHECK(ibv_post_send(qp, wr, &bad_wr) == 0);
+
+    // Post a recv buffer for consuming immedate data.
+    struct ibv_recv_wr recv_wr = {};
+    recv_wr.wr_id = (uint64_t)ureq;
+    recv_wr.sg_list = nullptr;
+    recv_wr.num_sge = 0;
+    recv_wr.next = nullptr;
+    struct ibv_recv_wr *bad_recv_wr;
+    DCHECK(ibv_post_recv(comm_base->rc_qp, &recv_wr, &bad_recv_wr) == 0);
+    flow_cq_cnt_++;
+
+    VLOG(3) << "recv slot" << slot;
+
+    rem_fifo->fifo_tail++;
 }
 
 struct FifoItem *UcclFlow::post_fifo(uint32_t engine_idx, void **data, int *size, int n, struct Mhandle **mhandle, 
@@ -740,8 +809,49 @@ bool UcclFlow::check_fifo_ready(int *ret_slot, int *ret_nmsgs)
     return true;
 }
 
+void UcclFlow::rc_send(struct ucclRequest *ureq)
+{
+    auto *qp = send_comm_.base.rc_qp;
+    auto size = ureq->send.data_len;
+    auto laddr = ureq->send.laddr;
+    auto raddr = ureq->send.raddr;
+    auto lkey = ureq->send.lkey;
+    auto rkey = ureq->send.rkey;
+
+    struct ibv_sge sge;
+    struct ibv_send_wr wr, *bad_wr = nullptr;
+
+    sge.addr = laddr;
+    sge.lkey = lkey;
+    sge.length = size;
+
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.next = nullptr;
+    
+    wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    wr.imm_data = htonl(size);
+    wr.wr.rdma.remote_addr = raddr;
+    wr.wr.rdma.rkey = rkey;
+
+    wr.send_flags = IBV_SEND_SIGNALED;
+
+    wr.wr_id = (uint64_t)ureq->poll_ctx;
+
+    DCHECK(ibv_post_send(qp, &wr, &bad_wr) == 0) << "Failed to post send";
+    flow_cq_cnt_++;
+
+}
+
 void UcclFlow::post_multi_send(struct ucclRequest **ureqs, uint32_t engine_offset)
 {
+    if (engine_offset == RDMAEndpoint::RC_MAGIC) {
+        ureqs[0]->type = ReqTxRC;
+        ureqs[0]->context = this;
+        rc_send(ureqs[0]);
+        return;
+    }
+
     uint32_t engine_idx = ep_->find_first_engine_idx_on_dev(dev_) + engine_offset;
     auto txq = ep_->channel_vec_[engine_idx]->tx_cmdq_;
     auto n = ureqs[0]->n;
@@ -831,6 +941,14 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
     return 0;
 }
 
+bool RDMAEndpoint::uccl_test_ureq(struct ucclRequest *ureq) {
+    if (ureq->type == ReqTxRC || ureq->type == ReqRxRC) {
+        UcclFlow *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+        flow->poll_flow_cq();
+    } 
+    return uccl_poll_once(ureq->poll_ctx);
+}
+
 int RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq)
 {
     auto dev = conn_id.dev;
@@ -873,6 +991,17 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
     }
 
     flow->poll_flow_cq();
+
+    if (size[0] <= kRCSize && n == 1) {
+        flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
+        ureq->type = ReqRxRC;
+        ureq->context = flow;
+        ureq->dev = dev;
+        ureq->n = 1;
+        ureq->recv.data_len[0] = size[0];
+        ureq->poll_ctx = ctx_pool_->pop();
+        return 0;
+    }
 
     uint32_t candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
     if constexpr (!kBindEngine) 
