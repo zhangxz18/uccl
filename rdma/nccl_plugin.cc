@@ -27,7 +27,7 @@ class ucclRequestBuffPool : public BuffPool {
      ~ucclRequestBuffPool() = default;
 };
 
-std::mutex ureq_mtx[NUM_DEVICES];
+Spin ureq_spin[NUM_DEVICES];
 std::shared_ptr<ucclRequestBuffPool> uccl_req_pool[NUM_DEVICES];
 
 std::shared_ptr<RDMAEndpoint> ep;
@@ -327,18 +327,21 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
     uint64_t addr;
     auto dev = scomm->base.dev;
     {
-        std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+        ureq_spin[dev].Lock();
         if (uccl_req_pool[dev]->alloc_buff(&addr)) {
             *request = nullptr;
+            ureq_spin[dev].Unlock();
             return ncclSuccess;
         }
+        ureq_spin[dev].Unlock();
     }
 
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
     if (ep->uccl_send_async(conn_id, mh, data, size, req)) {
         {
-            std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+            ureq_spin[dev].Lock();
             uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
+            ureq_spin[dev].Unlock();
         }
         *request = nullptr;
         return ncclSuccess;
@@ -361,18 +364,21 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
     uint64_t addr;
     auto dev = rcomm->base.dev;
     {
-        std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+        ureq_spin[dev].Lock();
         if (uccl_req_pool[dev]->alloc_buff(&addr)) {
             *request = nullptr;
+            ureq_spin[dev].Unlock();
             return ncclSuccess;
         }
+        ureq_spin[dev].Unlock();
     }
     
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);    
     if (ep->uccl_recv_async(conn_id, mhs, data, sizes, n, req)) {
         {
-            std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+            ureq_spin[dev].Lock();
             uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
+            ureq_spin[dev].Unlock();
         }
         *request = nullptr;
         return ncclSuccess;
@@ -394,18 +400,21 @@ ncclResult_t pluginIflush(void* recvComm, int n, void** data, int* sizes,
     uint64_t addr;
     auto dev = rcomm->base.dev;
     {
-        std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+        ureq_spin[dev].Lock();
         if (uccl_req_pool[dev]->alloc_buff(&addr)) {
             *request = nullptr;
+            ureq_spin[dev].Unlock();
             return ncclSuccess;
         }
+        ureq_spin[dev].Unlock();
     }
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
     
     if (ep->uccl_flush(conn_id, mhs, data, sizes, n, req)) {
         {
-            std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+            ureq_spin[dev].Lock();
             uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
+            ureq_spin[dev].Unlock();
         }
         *request = nullptr;
         return ncclSuccess;
@@ -434,8 +443,9 @@ ncclResult_t pluginTest(void* request, int* done, int* size) {
         }
         {
             auto dev = req->dev;
-            std::lock_guard<std::mutex> lock(ureq_mtx[dev]);
+            ureq_spin[dev].Lock();
             uccl_req_pool[dev]->free_buff(reinterpret_cast<uint64_t>(req));
+            ureq_spin[dev].Unlock();
         }
     } else {
         *done = 0;
