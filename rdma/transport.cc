@@ -873,13 +873,10 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
     auto dev = conn_id.dev;
     auto flow_id = conn_id.flow_id;
     UcclFlow *flow;
-    {
-        active_flows_spin_[dev].Lock();
-        auto it = active_flows_map_[dev].find(flow_id);
-        DCHECK(it != active_flows_map_[dev].end());
-        flow = it->second;
-        active_flows_spin_[dev].Unlock();
-    }
+
+    auto it = active_flows_map_[dev].find(flow_id);
+    DCHECK(it != active_flows_map_[dev].end());
+    flow = it->second;
 
     ureq->type = ReqTx;
     ureq->dev = dev;
@@ -954,13 +951,10 @@ int RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, void **d
     auto dev = conn_id.dev;
     auto flow_id = conn_id.flow_id;
     UcclFlow *flow;
-    {
-        active_flows_spin_[dev].Lock();
-        auto it = active_flows_map_[dev].find(flow_id);
-        DCHECK(it != active_flows_map_[dev].end());
-        flow = it->second;
-        active_flows_spin_[dev].Unlock();
-    }
+
+    auto it = active_flows_map_[dev].find(flow_id);
+    DCHECK(it != active_flows_map_[dev].end());
+    flow = it->second;
 
     flow->poll_flow_cq();
 
