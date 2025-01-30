@@ -561,6 +561,7 @@ void RDMAEndpoint::safe_install_ctx(int dev, int bootstrap_fd, bool local_lock_f
             auto it = peer_map_[dev].find({remote_ip, remote_dev});
             DCHECK(it == peer_map_[dev].end());
             send_ready(bootstrap_fd);
+            *peer_id = next_peer_id_[dev]++;
             // Install RDMAContexts on all engines.
             install_ctx_on_engines(bootstrap_fd, dev, *peer_id, remote_ctx);
             peer_map_[dev].insert({{remote_ip, remote_dev}, {*peer_id, remote_ctx->remote_gid, remote_ctx->remote_port_attr, 1}});
@@ -981,16 +982,15 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
     DCHECK(it != active_flows_map_[dev].end());
     flow = it->second;
 
-    flow->poll_flow_cq();
-
     if (size[0] <= kRCSize && n == 1) {
         flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
         ureq->type = ReqRxRC;
         ureq->context = flow;
         ureq->dev = dev;
-        ureq->n = 1;
-        ureq->recv.data_len[0] = size[0];
         ureq->poll_ctx = ctx_pool_->pop();
+
+        flow->poll_flow_cq();
+
         return 0;
     }
 
@@ -1020,6 +1020,8 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
 
     VLOG(3) << "recv_async: posted " << n << " requests" << " on engine " << candidate
         << " size: " << size[0];
+    
+    flow->poll_flow_cq();
 
     return 0;
 }
