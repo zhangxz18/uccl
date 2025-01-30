@@ -404,11 +404,6 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
     if (req == nullptr)
         return -1;
 
-    req->type = RecvRequest::RECV;
-    req->ureq = ureq;
-    memset(req->received_bytes, 0, sizeof(uint32_t) * kMaxRecv);
-    req->fin_msg = 0;
-
     for (int i = 0; i < ureq->n; i++) {
         // For sender to encode the request id in the immediate data.
         elems[i].rid = get_recvreq_id(req);
@@ -416,6 +411,11 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
 
     struct ibv_send_wr* bad_wr;
     DCHECK(ibv_post_send(ureq->recv.qp, &ureq->recv.wr, &bad_wr) == 0);
+    
+    req->type = RecvRequest::RECV;
+    req->ureq = ureq;
+    memset(req->received_bytes, 0, sizeof(uint32_t) * kMaxRecv);
+    req->fin_msg = 0;
     
     return 0;
 }
