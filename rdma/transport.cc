@@ -417,10 +417,10 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
 
     rdma_ctl_ = rdma_ctl;
 
-    CHECK_LE(num_engines_per_dev, NUM_CPUS / 4)
-        << "num_engines_per_dev should be less than or equal to the number of CPUs / 4";
-
     int total_num_engines = num_devices * num_engines_per_dev;
+
+    CHECK_LE(ENGINE_CPU_START + total_num_engines - 1, NUM_CPUS)
+        << "The number of engines exceeds the number of CPUs";
 
     // Create multiple engines. Each engine has its own thread and channel to let the endpoint communicate with.
     for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();

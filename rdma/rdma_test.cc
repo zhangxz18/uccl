@@ -4,7 +4,6 @@
  */
 
 #include <chrono>
-#include <deque>
 #include <thread>
 
 #include <signal.h>
@@ -14,7 +13,6 @@
 
 #include "transport.h"
 #include "transport_config.h"
-#include "util.h"
 #include "util_timer.h"
 
 using namespace uccl;
