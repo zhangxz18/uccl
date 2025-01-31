@@ -848,7 +848,6 @@ void UcclFlow::post_multi_send(struct ucclRequest **ureqs, uint32_t engine_offse
 {
     if (engine_offset == RDMAEndpoint::RC_MAGIC) {
         ureqs[0]->type = ReqTxRC;
-        ureqs[0]->context = this;
         rc_send(ureqs[0]);
         return;
     }
@@ -910,6 +909,7 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
         ureq->n = nmsg;
         ureq->send.rid = slots[i].rid;
         ureq->poll_ctx = poll_ctx;
+        ureq->context = flow;
         // Temporarily set tx_events to 1 to indicate size mismatch.
         ureq->send.tx_events = size < slots[i].size ? 1 : 0;
         // Track this request.
@@ -938,12 +938,12 @@ int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const
     return 0;
 }
 
-bool RDMAEndpoint::uccl_test_ureq(struct ucclRequest *ureq) {
-    if (ureq->type == ReqTxRC || ureq->type == ReqRxRC) {
-        UcclFlow *flow = reinterpret_cast<UcclFlow *>(ureq->context);
-        flow->poll_flow_cq();
-    } 
-    return uccl_poll_once(ureq->poll_ctx);
+bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq) {
+    UcclFlow *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+    if (ureq->type == ReqTxRC || ureq->type == ReqRxRC) {flow->poll_flow_cq();} 
+    auto ret = uccl_poll_once(ureq->poll_ctx);
+    if ((ureq->type == ReqRx || ureq->type == ReqRxRC) && ret) {flow->dec_outstanding_reqs();}
+    return ret;
 }
 
 int RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq)
@@ -980,6 +980,10 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
     DCHECK(it != active_flows_map_[dev].end());
     flow = it->second;
 
+    if (!flow->check_room()) {return -1;}
+
+    flow->inc_outstanding_reqs();
+
     if (size[0] <= kRCSize && n == 1) {
         flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
         ureq->type = ReqRxRC;
@@ -996,6 +1000,7 @@ int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, voi
         flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     
     ureq->type = ReqRx;
+    ureq->context = flow;
     ureq->n = n;
     for (int i = 0; i < n; i++) ureq->recv.data_len[i] = size[i];
     ureq->poll_ctx = ctx_pool_->pop();

@@ -44,7 +44,7 @@ static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
         struct ucclRequest ureq;
         DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
 
-        ep.uccl_poll(ureq.poll_ctx);
+        ep.uccl_poll_ureq(&ureq);
 
         // verify data
         for (int i = 0; i < 65536 / 4; i++) {
@@ -68,7 +68,7 @@ static void client_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
         struct ucclRequest ureq;
         while (ep.uccl_send_async(conn_id, mhandle, send_data, 65536, &ureq)) {}
 
-        ep.uccl_poll(ureq.poll_ctx);
+        ep.uccl_poll_ureq(&ureq);
 
         // VLOG(5) << "Iteration " << i << " done";
         std::cout << "Iteration " << i << " done" << std::endl;
@@ -86,7 +86,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
             void *recv_data = data;
             struct ucclRequest ureq;
             DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
-            ep.uccl_poll(ureq.poll_ctx);
+            ep.uccl_poll_ureq(&ureq);
         }
     }
 
@@ -96,7 +96,7 @@ static void server_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
         auto t1 = rdtsc();
         struct ucclRequest ureq;
         DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
-        ep.uccl_poll(ureq.poll_ctx);
+        ep.uccl_poll_ureq(&ureq);
         auto t2 = rdtsc();
         lat_vec.push_back(to_usec(t2 - t1, freq_ghz));
     }
@@ -115,7 +115,7 @@ static void client_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
             void *send_data = data;
             struct ucclRequest ureq;
             while (ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize, &ureq)) {}
-            ep.uccl_poll(ureq.poll_ctx);
+            ep.uccl_poll_ureq(&ureq);
         }
     }
 
@@ -123,7 +123,7 @@ static void client_lat(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhandle
         void *send_data = data;
         struct ucclRequest ureq;
         while (ep.uccl_send_async(conn_id, mhandle, send_data, FLAGS_msize, &ureq)) {}
-        ep.uccl_poll(ureq.poll_ctx);
+        ep.uccl_poll_ureq(&ureq);
     }
 }
 
@@ -166,7 +166,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
                     FLAGS_iterations = 0;
                     break;
                 }
-                if (!ep.uccl_test_ureq(&ureq_vec[f][r])) continue;
+                if (!ep.uccl_poll_ureq_once(&ureq_vec[f][r])) continue;
 
                 if (!FLAGS_flush) {
                     FLAGS_iterations--;
@@ -231,7 +231,7 @@ static void client_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 for (int n = 0; n < FLAGS_nmsg; n++) {
-                    if (ep.uccl_test_ureq(&ureq_vec[f][r][n])) {
+                    if (ep.uccl_poll_ureq_once(&ureq_vec[f][r][n])) {
                         void *send_data = reinterpret_cast<char*>(datas[f]) + r * FLAGS_msize * FLAGS_nmsg + n * FLAGS_msize;
                         while (!quit && ep.uccl_send_async(conn_ids[f], mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                         cur_sec_bytes += FLAGS_msize;

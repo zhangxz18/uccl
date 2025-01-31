@@ -375,7 +375,12 @@ class RDMAEndpoint {
     int uccl_flush(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n,
                             struct ucclRequest *ureq);
     
-    bool uccl_test_ureq(struct ucclRequest *ureq);
+    bool uccl_poll_ureq_once(struct ucclRequest *ureq);
+
+    inline bool uccl_poll_ureq(struct ucclRequest *ureq) {
+        while (!uccl_poll_ureq_once(ureq)) {}
+        return true;
+    }
 
     inline bool uccl_wait(PollCtx *ctx) {
         std::unique_lock<std::mutex> lock(ctx->mu);
@@ -648,6 +653,18 @@ class UcclFlow {
 
     void rc_send(struct ucclRequest *ureq);
 
+    inline bool check_room(void) {
+        return outstanding_reqs_ < kMaxReq;
+    }
+
+    inline void inc_outstanding_reqs(void) {
+        outstanding_reqs_++;
+    }
+
+    inline void dec_outstanding_reqs(void) {
+        outstanding_reqs_--;
+    }
+
     RDMAEndpoint *ep_;
     
     PeerID peer_id_;
@@ -678,6 +695,8 @@ class UcclFlow {
         // For connection setup by accept().
         struct RecvComm recv_comm_;
     };
+
+    uint32_t outstanding_reqs_ = 0;
 
     // Whether this context is for sending or receiving.
     bool is_send_;

@@ -419,7 +419,7 @@ ncclResult_t pluginTest(void* request, int* done, int* size) {
     struct ucclRequest *req = 
         reinterpret_cast<struct ucclRequest *>(request);
     
-    if (ep->uccl_test_ureq(req)) {
+    if (ep->uccl_poll_ureq_once(req)) {
         *done = 1;
         if (req->type == ReqTx || req->type == ReqTxRC) {
             size[0] = req->send.data_len;
