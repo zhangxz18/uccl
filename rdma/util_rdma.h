@@ -193,7 +193,7 @@ class IMMData {
     public:
         // High--------------------32bit----------------------Low
         //  |***Reserved***|  NCHUNK  |  CSN  |  RID  |  MID  |
-        //     (16-X)bit      5bit       Xbit    8bit    3bit
+        //       3bit          10bit     8bit    8bit    3bit
         constexpr static int kMID = 0;
         constexpr static int kRID = 3;
         constexpr static int kCSN = 11;
@@ -203,7 +203,7 @@ class IMMData {
         ~IMMData() = default;
 
         inline uint32_t GetNCHUNK(void) {
-            return (imm_data_ >> kNCHUNK) & 0x1F;
+            return (imm_data_ >> kNCHUNK) & 0x3FF;
         }
 
         inline uint32_t GetCSN(void) {
@@ -219,7 +219,7 @@ class IMMData {
         }
 
         inline void SetNCHUNK(uint32_t nchunk) {
-            imm_data_ |= (nchunk & 0x1F) << kNCHUNK;
+            imm_data_ |= (nchunk & 0x3FF) << kNCHUNK;
         }
 
         inline void SetCSN(uint32_t psn) {

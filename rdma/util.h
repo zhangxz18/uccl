@@ -129,26 +129,8 @@ inline void create_listen_socket(int *listen_fd, uint16_t listen_port)
 
 
 #define UINT_CSN_BIT 8
-static_assert(UINT_CSN_BIT == 16 || UINT_CSN_BIT == 8, "UINT_CSN_BIT must be equal to 8 or 16");
 #define UINT_CSN_MASK ((1 << UINT_CSN_BIT) - 1)
 
-#if UINT_CSN_BIT == 16
-constexpr bool seqno_lt(uint16_t a, uint16_t b) {
-    return static_cast<int16_t>(a - b) < 0;
-}
-constexpr bool seqno_le(uint16_t a, uint16_t b) {
-    return static_cast<int16_t>(a - b) <= 0;
-}
-constexpr bool seqno_eq(uint16_t a, uint16_t b) {
-    return static_cast<int16_t>(a - b) == 0;
-}
-constexpr bool seqno_ge(uint16_t a, uint16_t b) {
-    return static_cast<int16_t>(a - b) >= 0;
-}
-constexpr bool seqno_gt(uint16_t a, uint16_t b) {
-    return static_cast<int16_t>(a - b) > 0;
-}
-#else
 constexpr bool seqno_lt(uint8_t a, uint8_t b) {
     return static_cast<int8_t>(a - b) < 0;
 }
@@ -164,7 +146,6 @@ constexpr bool seqno_ge(uint8_t a, uint8_t b) {
 constexpr bool seqno_gt(uint8_t a, uint8_t b) {
     return static_cast<int8_t>(a - b) > 0;
 }
-#endif
 
 /**
  * @brief An X-bit (8/16) unsigned integer used for Chunk Sequence Number (CSN).
@@ -234,11 +215,7 @@ class UINT_CSN {
         inline uint32_t to_uint32() const { return value_; }
 
     private:
-    #if UINT_CSN_BIT == 8
-        uint8_t value_;
-    #else
-        uint16_t value_;
-    #endif
+    uint8_t value_;
 };
 
 struct alignas(64) PollCtx {
