@@ -55,8 +55,8 @@ class Timely {
     static constexpr double kAddRate = 5.0 * 1000 * 1000;
 
     static constexpr double kMinRTT = 2;
-    static constexpr double kTLow = 400;
-    static constexpr double kTHigh = 1000;
+    static constexpr double kTLow = 800;
+    static constexpr double kTHigh = 1400;
     static constexpr size_t kHaiThresh = 5;
 
     double rate_ = 0.0;  ///< The current sending rate
