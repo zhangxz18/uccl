@@ -47,8 +47,8 @@ static const uint8_t IB_PORT_NUM = 1;
 
 // NCCL uses 65536B as the minimal recv buffer size even for 1024B message
 static const uint32_t kRCSize = 65536;
-static const uint32_t kMaxTxWork = 8;
-static const uint32_t kMaxRxWork = 16;
+static const uint32_t kMaxTxWork = 1;
+static const uint32_t kMaxRxWork = 8;
 static const uint32_t kChunkSize = 32 << 10;
 static const uint32_t kSignalInterval = 256;
 static const uint32_t kSyncClockIntervalNS = 100000;
