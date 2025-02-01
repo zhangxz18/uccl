@@ -26,20 +26,22 @@ void UcclFlow::poll_flow_cq(void)
     int nb_cqe = ibv_poll_cq(cq, kMaxBatchCQ, wcs);
     for (auto i = 0; i < nb_cqe; i++) {
         auto opcode = wcs[i].opcode;
-        if (opcode == IBV_WC_RDMA_READ) {
-            // GPU flush completion.
-            auto *poll_ctx = reinterpret_cast<PollCtx *>(wcs[i].wr_id);
-            uccl_wakeup(poll_ctx);
-        } else if (opcode == IBV_WC_RDMA_WRITE) {
+        if (opcode == IBV_WC_RDMA_WRITE) {
+            // RC send completion.
             if (wcs[i].qp_num == comm_base->rc_qp->qp_num) {
                 auto poll_ctx = (PollCtx *)wcs[i].wr_id;
                 uccl_wakeup(poll_ctx);
             }
         } else if (opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+            // RC recv completion.
             auto ureq = (struct ucclRequest *)wcs[i].wr_id;
             ureq->recv.data_len[0] = ntohl(wcs[i].imm_data);
             uccl_wakeup(ureq->poll_ctx);
-        }
+        } else if (opcode == IBV_WC_RDMA_READ) {
+            // GPU flush completion.
+            auto *poll_ctx = reinterpret_cast<PollCtx *>(wcs[i].wr_id);
+            uccl_wakeup(poll_ctx);
+        }  
     }
     flow_cq_cnt_ -= nb_cqe;
 }
@@ -66,7 +68,6 @@ void UcclFlow::post_flush(struct Mhandle **mhandles, void **data, int *size, int
 void UcclFlow::rc_recv(void *data, int size, struct Mhandle *mhandle, struct ibv_send_wr *wr, struct ibv_sge *sge, struct ucclRequest *ureq)
 {
     auto *comm_base = &recv_comm_.base;
-    memset(wr, 0, sizeof(*wr));
     struct RemFifo *rem_fifo = comm_base->fifo;
     int slot = rem_fifo->fifo_tail % kMaxReq;
     auto elems = rem_fifo->elems[slot];
@@ -83,6 +84,7 @@ void UcclFlow::rc_recv(void *data, int size, struct Mhandle *mhandle, struct ibv
 
     VLOG(5) << "Post Recv: addr: " << elems[0].addr << ", rkey: " << elems[0].rkey << ", size: " << elems[0].size;
     
+    memset(wr, 0, sizeof(*wr));
     // Figure out the remote address to write.
     wr->wr.rdma.remote_addr = comm_base->remote_fifo_addr + slot * kMaxRecv * sizeof(struct FifoItem);
     wr->wr.rdma.rkey = comm_base->remote_fifo_rkey;
