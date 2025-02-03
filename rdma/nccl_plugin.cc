@@ -292,7 +292,7 @@ ncclResult_t pluginRegMr(void* collComm, void* data, size_t size, int type,
                          void** mhandle) {
     int ret;
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
-    ret = ep->uccl_regmr(base->conn_id, data, size, type, (struct Mhandle **)mhandle);
+    ret = ep->uccl_regmr((UcclFlow *)base->conn_id.context, data, size, type, (struct Mhandle **)mhandle);
     VLOG(5) << "pluginRegMr, " << size << ", " << base->conn_id.flow_id;
 
     return ret == 0 ? ncclSuccess : ncclInternalError;
@@ -303,7 +303,7 @@ ncclResult_t pluginRegMrDmaBuf(void* collComm, void* data, size_t size,
                                void** mhandle) {
     int ret;
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
-    ret = ep->uccl_regmr_dmabuf(base->conn_id, data, size, type, offset, fd, (struct Mhandle **)mhandle);
+    ret = ep->uccl_regmr_dmabuf((UcclFlow *)base->conn_id.context, data, size, type, offset, fd, (struct Mhandle **)mhandle);
     VLOG(5) << "pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id;
     
     return ret == 0 ? ncclSuccess : ncclInternalError;
@@ -311,7 +311,7 @@ ncclResult_t pluginRegMrDmaBuf(void* collComm, void* data, size_t size,
 
 ncclResult_t pluginDeregMr(void* collComm, void* mhandle) {
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
-    ep->uccl_deregmr(base->conn_id, (struct Mhandle *)mhandle);
+    ep->uccl_deregmr((struct Mhandle *)mhandle);
     return ncclSuccess;
 }
 
@@ -332,10 +332,8 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
     }
 
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
-    if (ep->uccl_send_async(conn_id, mh, data, size, req)) {
-        {
-            scomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
-        }
+    if (ep->uccl_send_async((UcclFlow *)conn_id.context, mh, data, size, req)) {
+        scomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         *request = nullptr;
         return ncclSuccess;
     }
@@ -365,10 +363,8 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
     }
     
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);    
-    if (ep->uccl_recv_async(conn_id, mhs, data, sizes, n, req)) {
-        {
-            rcomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
-        }
+    if (ep->uccl_recv_async((UcclFlow *)conn_id.context, mhs, data, sizes, n, req)) {
+        rcomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         *request = nullptr;
         return ncclSuccess;
     }
@@ -397,10 +393,8 @@ ncclResult_t pluginIflush(void* recvComm, int n, void** data, int* sizes,
     }
     struct ucclRequest *req = reinterpret_cast<struct ucclRequest *>(addr);
     
-    if (ep->uccl_flush(conn_id, mhs, data, sizes, n, req)) {
-        {
-            rcomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
-        }
+    if (ep->uccl_flush((UcclFlow *)conn_id.context, mhs, data, sizes, n, req)) {
+        rcomm->base.uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
         *request = nullptr;
         return ncclSuccess;
     }

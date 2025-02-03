@@ -31,6 +31,7 @@
 namespace uccl {
 
 struct ConnID {
+    void *context;
     FlowID flow_id;       // Used for RDMAEndpoint to look up UcclFlow.
     PeerID peer_id;       // Used for UcclEngine to look up RDMAContext.
     int dev;
@@ -359,20 +360,32 @@ class RDMAEndpoint {
     
     // Register a memory region.
     int uccl_regmr(ConnID flow_id, void *data, size_t len, int type, struct Mhandle **mhandle);
+    int uccl_regmr(UcclFlow *flow, void *data, size_t len, int type, struct Mhandle **mhandle);
     // Register a DMA-BUF memory region.
     int uccl_regmr_dmabuf(ConnID flow_id, void *data, size_t len, int type, int offset, int fd, struct Mhandle **mhandle);
+    int uccl_regmr_dmabuf(UcclFlow *flow, void *data, size_t len, int type, int offset, int fd, struct Mhandle **mhandle);
     // Deregister a memory region.
-    void uccl_deregmr(ConnID flow_id, struct Mhandle *mhandle);
+    void uccl_deregmr(struct Mhandle *mhandle);
 
     // Post a buffer to engine for sending data asynchronously.
     int uccl_send_async(ConnID flow_id, struct Mhandle *mhandle, const void *data,
                              const size_t size, struct ucclRequest *ureq);
+    
+    int uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const void *data,
+                             const size_t size, struct ucclRequest *ureq);
+
     // Post n buffers to engine for receiving data asynchronously.
     int uccl_recv_async(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n, 
                             struct ucclRequest *ureq);
 
+    int uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, void **data, int *size, int n, 
+                            struct ucclRequest *ureq);
+
     // Ensure that all received data is visible to GPU.
     int uccl_flush(ConnID flow_id, struct Mhandle **mhandles, void **data, int *size, int n,
+                            struct ucclRequest *ureq);
+
+    int uccl_flush(UcclFlow *flow, struct Mhandle **mhandles, void **data, int *size, int n,
                             struct ucclRequest *ureq);
     
     bool uccl_poll_ureq_once(struct ucclRequest *ureq);
