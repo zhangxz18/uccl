@@ -934,77 +934,6 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
     return 0;
 }
 
-int RDMAEndpoint::uccl_send_async(ConnID conn_id, struct Mhandle *mhandle, const void *data,
-                                   const size_t size, struct ucclRequest *ureq) 
-{
-    auto dev = conn_id.dev;
-    auto flow_id = conn_id.flow_id;
-    UcclFlow *flow;
-
-    auto it = active_flows_map_[dev].find(flow_id);
-    DCHECK(it != active_flows_map_[dev].end());
-    flow = it->second;
-
-    ureq->type = ReqTx;
-    ureq->send.data_len = size;
-
-    int slot, nmsg;
-    
-    if (!flow->check_fifo_ready(&slot, &nmsg))
-        return -1;
-    auto send_comm = &flow->send_comm_;
-    auto ureqs = send_comm->fifo_ureqs[slot];
-    auto rem_fifo = send_comm->base.fifo;
-    volatile struct FifoItem *slots = rem_fifo->elems[slot];
-
-    auto *poll_ctx = ctx_pool_->pop();
-
-    for (int i = 0; i < nmsg; i++) {
-        if (ureqs[i] != nullptr) continue;
-        DCHECK(!(slots[i].size < 0 || slots[i].addr == 0 || slots[i].rkey == 0));
-
-        if (size > slots[i].size) {
-            // Can't send more than what the receiver can receive.
-            // Adjust data_len to the actual size sent.
-            ureq->send.data_len = slots[i].size;
-        }
-
-        ureq->send.laddr = (uint64_t)data;
-        ureq->send.lkey = mhandle->mr->lkey;
-        ureq->send.raddr = slots[i].addr;
-        ureq->send.rkey = slots[i].rkey;
-        ureq->n = nmsg;
-        ureq->send.rid = slots[i].rid;
-        ureq->poll_ctx = poll_ctx;
-        ureq->context = flow;
-        // Temporarily set tx_events to 1 to indicate size mismatch.
-        ureq->send.tx_events = size < slots[i].size ? 1 : 0;
-        // Track this request.
-        ureqs[i] = ureq;
-
-        // If this is a multi-recv, send only when all requests have matched.
-        for (int i = 0; i < nmsg; i++) {
-            if (ureqs[i] == nullptr) return 0;
-        }
-
-        // All requests have matched. Post works to the engine.
-        flow->post_multi_send(ureqs, slots[i].engine_offset);
-        
-        // Move the head of the FIFO.
-        send_comm->fifo_head++;
-
-        memset((void*)slots, 0, sizeof(struct FifoItem));
-        memset(ureqs, 0, kMaxRecv * sizeof(struct ucclRequest *));
-
-        VLOG(3) << "send_async: posted " << nmsg << " requests" << " on engine " << slots[i].engine_offset
-            << " size: " << size << " slot: " << slot;
-
-        return 0;
-    }
-
-    return 0;
-}
-
 bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq) {
     UcclFlow *flow = reinterpret_cast<UcclFlow *>(ureq->context);
     if (ureq->type == ReqTxRC || ureq->type == ReqRxRC) {flow->poll_flow_cq();} 
@@ -1015,30 +944,6 @@ bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq) {
 
 int RDMAEndpoint::uccl_flush(UcclFlow *flow, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq)
 {
-    flow->poll_flow_cq();
-
-    int last = flow->check_need_flush(size, n);
-    if (last == -1) return 0;
-
-    auto *poll_ctx = ctx_pool_->pop();
-    flow->post_flush(mhandles, data, size, n, poll_ctx, last);
-
-    ureq->type = ReqFlush;
-    ureq->poll_ctx = poll_ctx;
-
-    return 0;
-}
-
-int RDMAEndpoint::uccl_flush(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq)
-{
-    auto dev = conn_id.dev;
-    auto flow_id = conn_id.flow_id;
-    UcclFlow *flow;
-
-    auto it = active_flows_map_[dev].find(flow_id);
-    DCHECK(it != active_flows_map_[dev].end());
-    flow = it->second;
-
     flow->poll_flow_cq();
 
     int last = flow->check_need_flush(size, n);
@@ -1076,76 +981,18 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
     if constexpr (!kBindEngine) 
         flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     
+    auto elems = flow->post_fifo(candidate, data, size, n, mhandles, &ureq->recv.wr, &ureq->recv.sge);
     ureq->type = ReqRx;
     ureq->context = flow;
     ureq->n = n;
     for (int i = 0; i < n; i++) ureq->recv.data_len[i] = size[i];
     ureq->poll_ctx = ctx_pool_->pop();
-
-    auto elems = flow->post_fifo(candidate, data, size, n, mhandles, &ureq->recv.wr, &ureq->recv.sge);
     ureq->recv.elems = elems;
     ureq->recv.qp = flow->recv_comm_.base.fifo_qp;
 
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
         .peer_id = flow->peer_id_,
-        .ureq = ureq,
-        .poll_ctx = ureq->poll_ctx,
-    };
-
-    auto rxq = channel_vec_[candidate]->rx_cmdq_;
-    while (jring_mp_enqueue_bulk(rxq, &msg, 1, nullptr) != 1) {}
-
-    VLOG(3) << "recv_async: posted " << n << " requests" << " on engine " << candidate
-        << " size: " << size[0];
-    
-    flow->poll_flow_cq();
-
-    return 0;
-}
-
-int RDMAEndpoint::uccl_recv_async(ConnID conn_id, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq) 
-{
-    auto dev = conn_id.dev;
-    auto flow_id = conn_id.flow_id;
-    UcclFlow *flow;
-
-    auto it = active_flows_map_[dev].find(flow_id);
-    DCHECK(it != active_flows_map_[dev].end());
-    flow = it->second;
-
-    if (!flow->check_room()) {return -1;}
-
-    flow->inc_outstanding_reqs();
-
-    if (size[0] <= kRCSize && n == 1) {
-        flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
-        ureq->type = ReqRxRC;
-        ureq->context = flow;
-        ureq->poll_ctx = ctx_pool_->pop();
-
-        flow->poll_flow_cq();
-
-        return 0;
-    }
-
-    uint32_t candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
-    if constexpr (!kBindEngine) 
-        flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
-    
-    ureq->type = ReqRx;
-    ureq->context = flow;
-    ureq->n = n;
-    for (int i = 0; i < n; i++) ureq->recv.data_len[i] = size[i];
-    ureq->poll_ctx = ctx_pool_->pop();
-
-    auto elems = flow->post_fifo(candidate, data, size, n, mhandles, &ureq->recv.wr, &ureq->recv.sge);
-    ureq->recv.elems = elems;
-    ureq->recv.qp = flow->recv_comm_.base.fifo_qp;
-
-    Channel::Msg msg = {
-        .opcode = Channel::Msg::Op::kRx,
-        .peer_id = conn_id.peer_id,
         .ureq = ureq,
         .poll_ctx = ureq->poll_ctx,
     };
@@ -1210,56 +1057,8 @@ int RDMAEndpoint::uccl_regmr_dmabuf(UcclFlow *flow, void *addr, size_t len, int 
     return 0;
 }
 
-int RDMAEndpoint::uccl_regmr_dmabuf(ConnID conn_id, void *addr, size_t len, int type, int offset, int fd, struct Mhandle **mhandle)
-{
-    UcclFlow *flow;
-    auto dev = conn_id.dev;
-    {
-        active_flows_spin_[dev].Lock();
-        auto it = active_flows_map_[dev].find(conn_id.flow_id);
-        if (it == active_flows_map_[dev].end()) {
-            LOG(ERROR) << "Flow ID " << conn_id.flow_id << " not found";
-            active_flows_spin_[dev].Unlock();
-            return -1;
-        }
-        flow = it->second;
-        active_flows_spin_[dev].Unlock();
-    }
-
-    auto factory_dev = RDMAFactory::get_factory_dev(flow->dev_);
-    *mhandle = new Mhandle();
-
-    (*mhandle)->mr = ibv_reg_dmabuf_mr(factory_dev->pd, offset, len, (uint64_t)addr, fd, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-
-    return 0;
-}
-
 int RDMAEndpoint::uccl_regmr(UcclFlow *flow, void *addr, size_t len, int type /*unsed for now*/, struct Mhandle **mhandle)
 {
-    auto factory_dev = RDMAFactory::get_factory_dev(flow->dev_);
-
-    *mhandle = new Mhandle();
-    (*mhandle)->mr = ibv_reg_mr(factory_dev->pd, addr, len, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-
-    return 0;
-}
-
-int RDMAEndpoint::uccl_regmr(ConnID conn_id, void *addr, size_t len, int type /*unsed for now*/, struct Mhandle **mhandle)
-{
-    UcclFlow *flow;
-    auto dev = conn_id.dev;
-    {
-        active_flows_spin_[dev].Lock();
-        auto it = active_flows_map_[dev].find(conn_id.flow_id);
-        if (it == active_flows_map_[dev].end()) {
-            LOG(ERROR) << "Flow ID " << conn_id.flow_id << " not found";
-            active_flows_spin_[dev].Unlock();
-            return -1;
-        }
-        flow = it->second;
-        active_flows_spin_[dev].Unlock();
-    }
-
     auto factory_dev = RDMAFactory::get_factory_dev(flow->dev_);
 
     *mhandle = new Mhandle();

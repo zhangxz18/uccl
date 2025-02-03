@@ -42,7 +42,7 @@ static void server_basic(RDMAEndpoint &ep, ConnID conn_id, struct Mhandle *mhand
         void *recv_data = data;
 
         struct ucclRequest ureq;
-        DCHECK(ep.uccl_recv_async(conn_id, &mhandle, &recv_data, &len, 1, &ureq) == 0);
+        DCHECK(ep.uccl_recv_async((UcclFlow *)conn_id.context, &mhandle, &recv_data, &len, 1, &ureq) == 0);
 
         ep.uccl_poll_ureq(&ureq);
 
@@ -176,7 +176,7 @@ static void server_tpt(RDMAEndpoint &ep, std::vector<ConnID> &conn_ids, std::vec
                 }
                 
                 if (flag[f][r] == 0) {
-                    DCHECK(ep.uccl_flush(conn_ids[f], mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
+                    DCHECK(ep.uccl_flush((UcclFlow *)conn_ids[f].context, mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
                     flag[f][r] = 1;
                 }
                 else if (flag[f][r] == 1) {
@@ -270,7 +270,7 @@ static void server_worker(void)
         printf("Server accepted connection from %s (flow#%d)\n", remote_ip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);
-        ep.uccl_regmr(conn_id, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
+        ep.uccl_regmr((UcclFlow *)conn_id.context, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
 
         conn_ids.push_back(conn_id);
         datas.push_back(data);
@@ -311,7 +311,7 @@ static void client_worker(void)
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         void *data = mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         assert(data != MAP_FAILED);
-        ep.uccl_regmr(conn_id, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
+        ep.uccl_regmr((UcclFlow *)conn_id.context, data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
 
         conn_ids.push_back(conn_id);
         datas.push_back(data);
