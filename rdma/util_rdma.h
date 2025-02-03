@@ -913,7 +913,7 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, int dev)
     return ibv_modify_qp(qp, &attr, attr_mask);
 }
 
-static inline int modify_qp_rtr(struct ibv_qp *qp, int dev, struct RemoteRDMAContext *remote_ctx, uint32_t remote_qpn, uint32_t remote_psn)
+static inline int modify_qp_rtr(struct ibv_qp *qp, int dev, struct RemoteRDMAContext *remote_ctx, uint32_t remote_qpn, uint32_t remote_psn, uint8_t sl)
 {
     struct ibv_qp_attr attr;
     int attr_mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
@@ -938,6 +938,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, int dev, struct RemoteRDMACon
         attr.ah_attr.port_num = IB_PORT_NUM;
         attr.ah_attr.dlid = remote_ctx->remote_port_attr.lid;
     }
+    attr.ah_attr.sl = sl;
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = remote_psn;
 

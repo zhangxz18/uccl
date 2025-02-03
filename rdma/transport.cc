@@ -372,7 +372,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             auto remote_qpn = *reinterpret_cast<uint32_t*>(buf + i * size + sizeof(uint32_t));
             auto qp = rdma_ctx->uc_qps_[i].qp;
 
-            ret = modify_qp_rtr(qp, dev, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn);
+            ret = modify_qp_rtr(qp, dev, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn, 0);
             DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
 
             ret = modify_qp_rts(qp, rdma_ctx->uc_qps_[i].local_psn, false);
@@ -383,7 +383,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
         auto ctrl_qp = rdma_ctx->ctrl_qp_;
 
-        ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn);
+        ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn, 1);
         DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
 
         ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
@@ -392,7 +392,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
         auto retr_qp = rdma_ctx->retr_qp_;
 
-        ret = modify_qp_rtr(retr_qp, dev, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn);
+        ret = modify_qp_rtr(retr_qp, dev, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn, 0);
         DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
 
         ret = modify_qp_rts(retr_qp, rdma_ctx->retr_local_psn_, false);
