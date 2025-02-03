@@ -389,7 +389,7 @@ struct RecvComm {
 
 class RXTracking {
         // 1 means always send immediate ack.
-        static constexpr uint32_t kMAXWQE = 2;
+        static constexpr uint32_t kMAXWQE = 4;
         static constexpr uint32_t kMAXBytes = kMAXWQE * kChunkSize;
     public:
 

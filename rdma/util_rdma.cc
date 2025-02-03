@@ -969,6 +969,8 @@ int RDMAContext::poll_ctrl_cq(void)
         ibv_end_poll(cq_ex);
 
         work += cq_budget;
+
+        if (cq_budget < kMaxBatchCQ) break;
     }
     
     return work;
