@@ -983,7 +983,7 @@ void RDMAContext::burst_timing_wheel(void)
 
     wheel->reap(rdtsc());
 
-    auto num_chunks = std::min(kMaxBatchPost, (uint32_t)wheel->ready_queue_.size());
+    auto num_chunks = std::min(kMaxBurstTW, (uint32_t)wheel->ready_queue_.size());
     
     for (auto i = 0; i < num_chunks; i++) {
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wheel->ready_queue_.front().sslot_);

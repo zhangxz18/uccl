@@ -462,8 +462,6 @@ class RDMAEndpoint {
  * by a TCP-negotiated `FlowID'.
  */
 class UcclFlow {
-    const static uint32_t kMaxReadyMsgbufs = MAX_UNACKED_PKTS;
-    constexpr static int kMaxBatchCQ = 32;
     static constexpr int kFifoMRSize = sizeof(struct RemFifo);
     static constexpr int kFifoCQSize = 4096;
    
