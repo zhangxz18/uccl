@@ -233,7 +233,7 @@ RDMAContext::RDMAContext(int dev, union CtrlMeta meta): dev_(dev), wheel_({freq_
     
     for (int i = 0; i < kPortEntropy; i++) {
         struct ibv_qp *qp = ibv_create_qp(pd_, &qp_init_attr);
-        UCCL_INIT_CHECK(qp != nullptr, "ibv_create_qp failed");
+        UCCL_INIT_CHECK(qp != nullptr, "ibv_create_qp failed for UC");
     
         // Modify QP state to INIT.
         UCCL_INIT_CHECK(ibv_modify_qp(qp, &qpAttr, 
@@ -254,7 +254,7 @@ RDMAContext::RDMAContext(int dev, union CtrlMeta meta): dev_(dev), wheel_({freq_
     ctrl_local_psn_ = BASE_PSN;
     util_rdma_create_qp(context_, &ctrl_qp_, IBV_QPT_UC, true, true,
         (struct ibv_cq **)&ctrl_cq_ex_, false, kCQSize, pd_, &ctrl_mr_, nullptr, kCtrlMRSize, 
-            CtrlChunkBuffPool::kNumChunk, CtrlChunkBuffPool::kNumChunk, kMaxBatchCQ, 1);
+            CtrlChunkBuffPool::kNumChunk, CtrlChunkBuffPool::kNumChunk, 1, 1);
     
     // Initialize Control packet buffer pool.
     ctrl_chunk_pool_.emplace(ctrl_mr_);
