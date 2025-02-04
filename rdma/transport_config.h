@@ -59,7 +59,7 @@ static const uint32_t kMaxInline = 512;
 static const uint32_t kMaxSge = 1;
 // Maximum number of outstanding receive messages in one recv request.
 static const uint32_t kMaxRecv = 8;
-// Maximum number of outstanding receive requests in one QP.
+// Maximum number of outstanding receive requests in one engine.
 static const uint32_t kMaxReq = 32 * kMaxRecv;
 // Maximum number of WQEs in SRQ (Shared Receive Queue).
 static const uint32_t kMaxSRQ = 64 * kMaxReq;
