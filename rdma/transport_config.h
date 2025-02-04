@@ -73,7 +73,7 @@ static const uint32_t kMaxBurstTW = 32;
 // Posting recv WQEs every kPostRQThreshold.
 static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 
-// Sack bitmap size in bytes.
+// Sack bitmap size in bits.
 static const std::size_t kSackBitmapSize = 64 << 1;
 // kFastRexmitDupAckThres equals to 0 means all duplicate acks are caused by packet loss.
 // This is true for flow-level ECMP, which is the common case.
