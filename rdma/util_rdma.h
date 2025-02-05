@@ -624,7 +624,7 @@ class RDMAContext {
         // Memory region for retransmission.
         struct ibv_mr *retr_mr_;
         struct ibv_mr *retr_hdr_mr_;
-        uint32_t inflight_retr_chunks_;
+        uint32_t inflight_retr_chunks_ = 0;
 
         // Global timing wheel for all UC QPs.
         TimingWheel wheel_;

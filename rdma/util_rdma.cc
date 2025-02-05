@@ -1115,6 +1115,12 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
         VLOG(5) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
         return;
     }
+    // Locate request by rid
+    auto req = get_recvreq_by_id(rid);
+    if (req->type == RecvRequest::UNUSED) {
+        VLOG(5) << "Request is already freed. Dropping retransmission chunk for QP#" << qpidx;
+        return;
+    }
 
     VLOG(5) << "Barrier found a pending retransmission chunk for QP#" << qpidx;
 
@@ -1133,8 +1139,6 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
 
     qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
-    // Locate request by rid
-    auto req = get_recvreq_by_id(rid);
     auto *msg_size = &req->ureq->recv.elems[mid].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[mid] += chunk_len;
@@ -1209,6 +1213,14 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
         retr_chunk_pool_->free_buff(chunk_addr);
         return;
     }
+
+    // Locate request by rid
+    auto req = get_recvreq_by_id(rid);
+    if (req->type == RecvRequest::UNUSED) {
+        VLOG(5) << "Request is already freed. Dropping retransmission chunk for QP#" << hdr->qidx;
+        retr_chunk_pool_->free_buff(chunk_addr);
+        return;
+    }
     
     auto bitmap_bucket_idx = distance.to_uint32() / swift::Pcb::kSackBitmapBucketSize;
     auto cursor = distance.to_uint32() % swift::Pcb::kSackBitmapBucketSize;
@@ -1242,8 +1254,6 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
 
         pcb->sack_bitmap_bit_set(distance.to_uint32());
 
-        // Locate request by rid
-        auto req = get_recvreq_by_id(rid);
         auto *msg_size = &req->ureq->recv.elems[mid].size;
         uint32_t *received_bytes = req->received_bytes;
         received_bytes[mid] += chunk_len;
@@ -1314,6 +1324,13 @@ void RDMAContext::rx_chunk(struct list_head *ack_list)
         return;
     }
 
+    // Locate request by rid
+    auto req = get_recvreq_by_id(rid);
+    if (req->type == RecvRequest::UNUSED) {
+        VLOG(5) << "Request is already freed. Dropping chunk for QP#" << qpidx;
+        return;
+    }
+
     /* 
      * No need for the following code to check as we can only accept a retransmission chunk when 
      * the barrier after this chunk has arrived.
@@ -1334,8 +1351,6 @@ void RDMAContext::rx_chunk(struct list_head *ack_list)
 
     qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
-    // Locate request by rid
-    auto req = get_recvreq_by_id(rid);
     auto *msg_size = &req->ureq->recv.elems[mid].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[mid] += byte_len;
