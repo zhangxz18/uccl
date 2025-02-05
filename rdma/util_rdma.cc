@@ -920,9 +920,7 @@ int RDMAContext::poll_retr_cq(void)
         int i;
         for (i = 0; i < num_post_recv; i++) {
             uint64_t chunk_addr;
-            if (retr_chunk_pool_->alloc_buff(&chunk_addr)) {
-                VLOG(5) << "Failed to allocate retransmission chunk buffer";
-            }
+            DCHECK(retr_chunk_pool_->alloc_buff(&chunk_addr) == 0);
             sges[i].addr = chunk_addr;
             sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
             sges[i].lkey = retr_chunk_pool_->get_lkey();
