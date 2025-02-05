@@ -9,6 +9,7 @@
 
 #include <glog/logging.h>
 
+#include "transport.h"
 #include "transport_config.h"
 #include "util.h"
 
@@ -154,13 +155,13 @@ error:
  * @param meta 
  * @return RDMAContext* 
  */
-RDMAContext *RDMAFactory::CreateContext(int dev, union CtrlMeta meta)
+RDMAContext *RDMAFactory::CreateContext(TimerManager *rto, int dev, union CtrlMeta meta)
 {
-    RDMAContext *ctx = new RDMAContext(dev, meta);
+    RDMAContext *ctx = new RDMAContext(rto, dev, meta);
     return ctx;
 }
 
-RDMAContext::RDMAContext(int dev, union CtrlMeta meta): dev_(dev), wheel_({freq_ghz})
+RDMAContext::RDMAContext(TimerManager *rto, int dev, union CtrlMeta meta): rto_(rto), dev_(dev), wheel_({freq_ghz})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -479,6 +480,8 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
             sent_offset += chunk_size;
             // Track this chunk.
             qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+            // Arm timer for TX
+            arm_timer_for_qp(qpw);
 
             VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", mid: " << ureq->n << " with QP#" << qpidx;
 
@@ -549,6 +552,8 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
 
                 // Track this chunk.
                 qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+                // Arm timer for TX
+                arm_timer_for_qp(qpw);
 
                 VLOG(5) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
             }
@@ -558,7 +563,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     }
 }
 
-uint64_t TXTracking::ack_chunks(uint32_t num_acked_chunks)
+uint64_t TXTracking::ack_transmitted_chunks(uint32_t num_acked_chunks)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
@@ -811,7 +816,8 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
                         auto wr_ex = chunk.wr_ex;
                         retransmit_chunk(qpw, wr_ex);
                     }
-                    qpw->pcb.rto_reset();
+                    // Arm timer for Retransmission.
+                    arm_timer_for_qp(qpw);
                 } else {
                     sack_bitmap_count--;
                 }
@@ -825,7 +831,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         update_sackbitmap = true;
         auto num_acked_chunks = UINT_CSN(ackno) - qpw->pcb.snd_una;
 
-        auto t1 = qpw->txtracking.ack_chunks(num_acked_chunks.to_uint32());
+        auto t1 = qpw->txtracking.ack_transmitted_chunks(num_acked_chunks.to_uint32());
         auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
         uint64_t t5;
         if constexpr (kTestNoHWTimestamp)
@@ -849,7 +855,10 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         qpw->pcb.duplicate_acks = 0;
         qpw->pcb.snd_ooo_acks = 0;
         qpw->pcb.rto_rexmits_consectutive = 0;
-        qpw->pcb.rto_maybe_reset();
+        if (!qpw->txtracking.empty()) {
+            // Rearm timer if we still have unacked chunks.
+            arm_timer_for_qp(qpw);
+        }
     }
     
     // For duplicate ACKs and valid ACKs, we may need to update the SACK bitmap at the sender side.
@@ -996,6 +1005,8 @@ void RDMAContext::burst_timing_wheel(void)
         // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
         qpw->txtracking.track_chunk(wr_ex->ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+        // Arm timer for TX
+        arm_timer_for_qp(qpw);
 
         qpw->in_wheel_cnt_--;
 
@@ -1463,7 +1474,8 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
         auto chunk = qpw->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
         retransmit_chunk(qpw, wr_ex);
-        qpw->pcb.rto_reset();
+        // Arm timer for Retransmission
+        arm_timer_for_qp(qpw);
         if (rto) {
             qpw->pcb.rto_rexmits++;
             qpw->pcb.rto_rexmits_consectutive++;
@@ -1495,7 +1507,6 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
             } else {
                 // This bit is stale and its corresponding chunk is already acked.
                 // Do nothing.
-                std::cout << "DEBUG:QP#" << qpw - uc_qps_ << std::endl;
             }
         } else {
             sack_bitmap_count--;
@@ -1503,7 +1514,8 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
         index++;
     }
 
-    qpw->pcb.rto_reset();
+    // Arm timer for Retransmission
+    arm_timer_for_qp(qpw);
     if (done) {
         if (rto) {
             qpw->pcb.rto_rexmits++;

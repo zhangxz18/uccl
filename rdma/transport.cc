@@ -276,6 +276,8 @@ void UcclRDMAEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
+        handle_rto();
+
         handle_clock_synchronization();
 
         handle_rx_work();
@@ -297,14 +299,25 @@ void UcclRDMAEngine::run() {
 void UcclRDMAEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
-    handle_rto();
     process_ctl_reqs();
 }
 
 void UcclRDMAEngine::handle_rto() {
-    for (auto &it : rdma_ctx_map_) {
-        auto is_active_ctx = it.second->periodic_check();
-        DCHECK(is_active_ctx);
+
+    if constexpr (kTestNoRTO) return;
+
+    auto expired_qp_vec = rto_tm_.check_expired();
+
+
+    for (auto data : expired_qp_vec) {
+        auto *rdma_ctx = reinterpret_cast<struct RDMAContext *>(data.rdma_ctx);
+        auto *qpw = reinterpret_cast<struct UCQPWrapper *>(data.qpw);
+
+        DCHECK(rdma_ctx && qpw);
+        
+        rdma_ctx->mark_qp_timeout(qpw);
+
+        rdma_ctx->rto_retransmit(qpw);
     }
 }
 
@@ -337,7 +350,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
 
     {
         DCHECK(rdma_ctx_map_.find(info->peer_id) == rdma_ctx_map_.end());
-        rdma_ctx = RDMAFactory::CreateContext(dev, meta);
+        rdma_ctx = RDMAFactory::CreateContext(&rto_tm_, dev, meta);
         std::tie(std::ignore, ret) = rdma_ctx_map_.insert({info->peer_id, rdma_ctx});
         DCHECK(ret);
     }

@@ -449,7 +449,7 @@ class TXTracking {
             return unacked_chunks_.front();
         }
 
-        uint64_t ack_chunks(uint32_t num_acked_chunks);
+        uint64_t ack_transmitted_chunks(uint32_t num_acked_chunks);
 
         inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
             unacked_chunks_.push_back({ureq, csn, wr_ex, timestamp});
@@ -496,6 +496,7 @@ struct UCQPWrapper {
     RXTracking rxtracking;
     // We use list_empty(&qpw->ack.ack_link) to check if it has pending ACK to send.
     struct ack_item ack;
+    bool rto_armed = false;
 };
 
 /**
@@ -563,6 +564,26 @@ class RDMAContext {
             }
             VLOG(3) << "alloc_recvreq: nullptr";
             return nullptr;
+        }
+
+        TimerManager *rto_;
+
+        inline void arm_timer_for_qp(struct UCQPWrapper *qpw) {
+            if (!qpw->rto_armed) {
+                rto_->arm_timer({this, qpw});
+                qpw->rto_armed = true;
+            }
+        }
+
+        inline void mark_qp_timeout(struct UCQPWrapper *qpw) {
+            qpw->rto_armed = false;
+        }
+
+        inline void disarm_timer_for_qp(struct UCQPWrapper *qpw) {
+            if (qpw->rto_armed) {
+                rto_->disarm_timer({this, qpw});
+                qpw->rto_armed = false;
+            }
         }
 
         // Remote RDMA context.
@@ -802,7 +823,7 @@ class RDMAContext {
 
         std::string to_string();
 
-        RDMAContext(int dev, union CtrlMeta meta);
+        RDMAContext(TimerManager *rto, int dev, union CtrlMeta meta);
 
         ~RDMAContext(void);
         
@@ -857,7 +878,7 @@ class RDMAFactory {
          * @param meta 
          * @return RDMAContext* 
          */
-        static RDMAContext *CreateContext(int dev, union CtrlMeta meta);
+        static RDMAContext *CreateContext(TimerManager *rto, int dev, union CtrlMeta meta);
         static inline struct FactoryDevice *get_factory_dev(int dev) {
             DCHECK(dev >= 0 && dev < rdma_ctl->devices_.size());
             return &rdma_ctl->devices_[dev];

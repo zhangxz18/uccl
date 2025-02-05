@@ -81,6 +81,9 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
 static const std::size_t kFastRexmitDupAckThres = 0;
 
+// Retransmission timeout in milliseconds.
+static const uint32_t kRTOMSec = 10;
+
 /// Debugging and testing.
 // Disable hardware timestamp.
 static const bool kTestNoHWTimestamp = false;

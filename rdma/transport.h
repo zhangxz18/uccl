@@ -106,7 +106,9 @@ class RDMAEndpoint;
 class UcclRDMAEngine {
    public:
     // Slow timer (periodic processing) interval in microseconds.
-    const size_t kSlowTimerIntervalUs = 4000;  // 4ms
+    const size_t kSlowTimerIntervalUs = 2000;  // 2ms
+
+    TimerManager rto_tm_;
 
     UcclRDMAEngine() = delete;
     UcclRDMAEngine(UcclRDMAEngine const &) = delete;
@@ -126,6 +128,7 @@ class UcclRDMAEngine {
           last_periodic_tsc_(rdtsc()),
           last_sync_clock_tsc_(rdtsc()),
           periodic_ticks_(0),
+          rto_tm_(kRTOMSec),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
             struct ibv_values_ex values;
