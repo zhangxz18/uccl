@@ -172,6 +172,21 @@ public:
         }
     }
 
+    void rearm_timer(struct TimerData data) {
+        const auto new_expire = Clock::now() + timeout_;
+        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+            // Update existing timer.
+            const size_t index = it->second;
+            heap_[index].expire = new_expire;
+            adjust_heap_node(index);
+        } else {
+            // Add new timer.
+            heap_.push_back({new_expire, data});
+            qpw_map_[data.qpw] = heap_.size() - 1;
+            heapify_up(heap_.size() - 1);
+        }
+    }
+
     std::vector<struct TimerData> check_expired() {
         std::vector<struct TimerData> expired;
         const auto now = Clock::now();

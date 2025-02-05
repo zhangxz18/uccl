@@ -568,10 +568,21 @@ class RDMAContext {
 
         TimerManager *rto_;
 
+        // Try to arm a timer for the given QP. If the timer is already armed, do nothing.
         inline void arm_timer_for_qp(struct UCQPWrapper *qpw) {
             if (!qpw->rto_armed) {
                 rto_->arm_timer({this, qpw});
                 qpw->rto_armed = true;
+            }
+        }
+
+        // Try to rearm a timer for the given QP. If the timer is not armed, arm it.
+        // If the timer is already armed, rearm it.
+        inline void rearm_timer_for_qp(struct UCQPWrapper *qpw) {
+            if (qpw->rto_armed) {
+                rto_->rearm_timer({this, qpw});
+            } else {
+                arm_timer_for_qp(qpw);
             }
         }
 

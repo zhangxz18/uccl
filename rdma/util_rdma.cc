@@ -816,8 +816,8 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
                         auto wr_ex = chunk.wr_ex;
                         retransmit_chunk(qpw, wr_ex);
                     }
-                    // Arm timer for Retransmission.
-                    arm_timer_for_qp(qpw);
+                    // Rearm timer for Retransmission.
+                    rearm_timer_for_qp(qpw);
                 } else {
                     sack_bitmap_count--;
                 }
@@ -857,7 +857,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         qpw->pcb.rto_rexmits_consectutive = 0;
         if (!qpw->txtracking.empty()) {
             // Rearm timer if we still have unacked chunks.
-            arm_timer_for_qp(qpw);
+            rearm_timer_for_qp(qpw);
         }
     }
     
@@ -1496,7 +1496,7 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
         auto wr_ex = chunk.wr_ex;
         retransmit_chunk(qpw, wr_ex);
         // Arm timer for Retransmission
-        arm_timer_for_qp(qpw);
+        rearm_timer_for_qp(qpw);
         if (rto) {
             qpw->pcb.rto_rexmits++;
             qpw->pcb.rto_rexmits_consectutive++;
@@ -1536,7 +1536,7 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
     }
 
     // Arm timer for Retransmission
-    arm_timer_for_qp(qpw);
+    rearm_timer_for_qp(qpw);
     if (done) {
         if (rto) {
             qpw->pcb.rto_rexmits++;
