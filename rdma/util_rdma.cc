@@ -920,7 +920,13 @@ int RDMAContext::poll_retr_cq(void)
         int i;
         for (i = 0; i < num_post_recv; i++) {
             uint64_t chunk_addr;
-            DCHECK(retr_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+            if (retr_chunk_pool_->alloc_buff(&chunk_addr)) {
+                // Retr chunk pool exhausted. This may caused by serve retransmission.
+                // We can't post enough recv requests for retransmission chunks.
+                // Subsequent retransmission chunks will be dropped until the pool is refilled.
+                if (i) i--;
+                break;
+            }
             sges[i].addr = chunk_addr;
             sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
             sges[i].lkey = retr_chunk_pool_->get_lkey();
@@ -928,13 +934,15 @@ int RDMAContext::poll_retr_cq(void)
             retr_wrs_[i].num_sge = 1;
             retr_wrs_[i].wr_id = chunk_addr;
         }
-        retr_wrs_[i - 1].next = nullptr;
-        struct ibv_recv_wr *bad_wr;
-        DCHECK(ibv_post_recv(retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << i << " recv requests for Retr QP";
-        
-        // Restore
-        retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
+        if (i) {
+            retr_wrs_[i - 1].next = nullptr;
+            struct ibv_recv_wr *bad_wr;
+            DCHECK(ibv_post_recv(retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
+            VLOG(5) << "Posted " << i << " recv requests for Retr QP";
+            
+            // Restore
+            retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
+        }
     }
     return cq_budget;
 }
