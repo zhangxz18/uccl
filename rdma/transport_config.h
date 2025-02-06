@@ -69,7 +69,7 @@ static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxInflightRetrChunks = 8;
 static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
-static const uint32_t kMaxBurstTW = 16;
+static const uint32_t kMaxBurstTW = 24;
 // Posting recv WQEs every kPostRQThreshold.
 static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 
@@ -81,8 +81,9 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
 static const std::size_t kFastRexmitDupAckThres = 0;
 
-// Retransmission timeout in milliseconds.
-static const uint32_t kRTOMSec = 10;
+// Minimum retransmission timeout in microseconds.
+const double kMinRTOUsec = 2000; // 2ms
+const uint32_t kRTORTT = 10;     // RTO = kRTORTT RTTs
 // Slow timer (periodic processing) interval in microseconds.
 const size_t kSlowTimerIntervalUs = 1000;  // 1ms
 
@@ -98,6 +99,10 @@ static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
 static const bool kTestNoRTO = false;
+// Use constant RTO.
+static const bool kConstRTO = false;
+// Constant retransmission timeout in milliseconds.
+static const uint32_t kRTOMSec = 10;
 // Always use the same engine for each flow.
 static const bool kBindEngine = false;
 /// Debugging and testing.

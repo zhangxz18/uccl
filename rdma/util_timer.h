@@ -174,6 +174,19 @@ public:
         }
     }
 
+    void arm_timer(struct TimerData data, double timeout_us) {
+        auto timeout = us_to_cycles(timeout_us, freq_ghz);
+        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+            // Already being armed, do nothing.
+        } else {
+            // Add new timer.
+             const CycleCount new_expire = rdtsc() + timeout;
+            heap_.push_back({new_expire, data});
+            qpw_map_[data.qpw] = heap_.size() - 1;
+            heapify_up(heap_.size() - 1);
+        }
+    }
+
     void rearm_timer(struct TimerData data) {
         const CycleCount new_expire = rdtsc() + timeout_;
         if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
@@ -189,7 +202,8 @@ public:
         }
     }
 
-    void rearm_timer(struct TimerData data, CycleCount timeout) {
+    void rearm_timer(struct TimerData data, double timeout_us) {
+        auto timeout = us_to_cycles(timeout_us, freq_ghz);
         const CycleCount new_expire = rdtsc() + timeout;
         if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
             // Update existing timer.
