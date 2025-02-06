@@ -153,19 +153,17 @@ struct TimerData {
 
 class TimerManager {
 public:
-    using Clock = std::chrono::steady_clock;
-    using TimePoint = Clock::time_point;
-    using Duration = Clock::duration;
+    using CycleCount = uint64_t;
     
     explicit TimerManager(unsigned int timeout_ms = 10) 
-        : timeout_(std::chrono::milliseconds(timeout_ms)) {}
+        : timeout_(ms_to_cycles(timeout_ms, freq_ghz)) {}
 
     void arm_timer(struct TimerData data) {
         if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
             // Already being armed, do nothing.
         } else {
             // Add new timer.
-            const auto new_expire = Clock::now() + timeout_;
+             const CycleCount new_expire = rdtsc() + timeout_;
             heap_.push_back({new_expire, data});
             qpw_map_[data.qpw] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);
@@ -173,7 +171,22 @@ public:
     }
 
     void rearm_timer(struct TimerData data) {
-        const auto new_expire = Clock::now() + timeout_;
+        const CycleCount new_expire = rdtsc() + timeout_;
+        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+            // Update existing timer.
+            const size_t index = it->second;
+            heap_[index].expire = new_expire;
+            adjust_heap_node(index);
+        } else {
+            // Add new timer.
+            heap_.push_back({new_expire, data});
+            qpw_map_[data.qpw] = heap_.size() - 1;
+            heapify_up(heap_.size() - 1);
+        }
+    }
+
+    void rearm_timer(struct TimerData data, CycleCount timeout) {
+        const CycleCount new_expire = rdtsc() + timeout;
         if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
             // Update existing timer.
             const size_t index = it->second;
@@ -189,7 +202,7 @@ public:
 
     std::vector<struct TimerData> check_expired() {
         std::vector<struct TimerData> expired;
-        const auto now = Clock::now();
+        const CycleCount now = rdtsc();
         
         while (!heap_.empty() && heap_[0].expire <= now) {
             expired.push_back(heap_[0].data);
@@ -226,14 +239,9 @@ public:
         }
     }
 
-    Duration next_expiration() const {
-        if (heap_.empty()) return Duration::max();
-        return std::max(Duration(0), heap_[0].expire - Clock::now());
-    }
-
 private:
     struct TimerNode {
-        TimePoint expire;
+        CycleCount expire;
         struct TimerData data;
         
         bool operator<(const TimerNode& rhs) const {
@@ -243,7 +251,7 @@ private:
 
     std::vector<TimerNode> heap_;
     std::unordered_map<void*, size_t> qpw_map_;
-    const Duration timeout_;
+    const CycleCount timeout_;
 
     void heapify_up(size_t index) {
         while (index > 0) {
