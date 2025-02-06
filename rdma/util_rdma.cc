@@ -882,6 +882,7 @@ int RDMAContext::poll_retr_cq(void)
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) {
+        // No events in Retr CQ. Try to post WQEs to Retr RQ.
         if (fill_retr_rq_cnt_) {
             int i;
             for (i = 0; i < fill_retr_rq_cnt_; i++) {

@@ -679,6 +679,7 @@ class RDMAContext {
         struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
         uint32_t post_srq_cnt_ = 0;
 
+        // When the Retr chunk pool exhausts, we can't post enough WQEs to the Retr RQ.
         uint32_t fill_retr_rq_cnt_ = 0;
 
         double ratio_;
