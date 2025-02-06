@@ -81,11 +81,16 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
 static const std::size_t kFastRexmitDupAckThres = 0;
 
-// Minimum retransmission timeout in microseconds.
-const double kMinRTOUsec = 2000; // 2ms
-const uint32_t kRTORTT = 10;     // RTO = kRTORTT RTTs
+// Constant/Dynamic RTO.
+static const bool kConstRTO = true;
+// kConstRTO == true: Constant retransmission timeout in microseconds.
+static const double kRTOUSec = 1000; // 1ms
+// kConstRTO == false: Minimum retransmission timeout in microseconds.
+static const double kMinRTOUsec = 1000; // 1ms
+static const uint32_t kRTORTT = 10;     // RTO = kRTORTT RTTs
+
 // Slow timer (periodic processing) interval in microseconds.
-const size_t kSlowTimerIntervalUs = 1000;  // 1ms
+static const size_t kSlowTimerIntervalUs = 1000;  // 1ms
 
 /// Debugging and testing.
 // Disable hardware timestamp.
@@ -99,10 +104,6 @@ static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
 static const bool kTestNoRTO = false;
-// Use constant RTO.
-static const bool kConstRTO = false;
-// Constant retransmission timeout in milliseconds.
-static const uint32_t kRTOMSec = 10;
 // Always use the same engine for each flow.
 static const bool kBindEngine = false;
 /// Debugging and testing.

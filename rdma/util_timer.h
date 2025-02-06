@@ -156,8 +156,8 @@ class TimerManager {
 public:
     using CycleCount = uint64_t;
     
-    explicit TimerManager(unsigned int timeout_ms = 10) 
-        : timeout_(ms_to_cycles(timeout_ms, freq_ghz)) {
+    explicit TimerManager(double timeout_us = 1000) 
+        : timeout_(us_to_cycles(timeout_us, freq_ghz)) {
         heap_.reserve(kPortEntropy * 64);
         qpw_map_.reserve(kPortEntropy * 64);
     }

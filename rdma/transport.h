@@ -124,7 +124,7 @@ class UcclRDMAEngine {
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           last_sync_clock_tsc_(rdtsc()),
-          rto_tm_(kRTOMSec),
+          rto_tm_(kRTOUSec),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
             struct ibv_values_ex values;
