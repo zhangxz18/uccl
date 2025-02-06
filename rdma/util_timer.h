@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "glog/logging.h"
+#include "transport_config.h"
 
 namespace uccl {
 
@@ -156,7 +157,10 @@ public:
     using CycleCount = uint64_t;
     
     explicit TimerManager(unsigned int timeout_ms = 10) 
-        : timeout_(ms_to_cycles(timeout_ms, freq_ghz)) {}
+        : timeout_(ms_to_cycles(timeout_ms, freq_ghz)) {
+        heap_.reserve(kPortEntropy * 64);
+        qpw_map_.reserve(kPortEntropy * 64);
+    }
 
     void arm_timer(struct TimerData data) {
         if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
