@@ -388,9 +388,6 @@ struct RecvComm {
 };
 
 class RXTracking {
-        // 1 means always send immediate ack.
-        static constexpr uint32_t kMAXWQE = 4;
-        static constexpr uint32_t kMAXBytes = kMAXWQE * kChunkSize;
     public:
 
         std::set<UINT_CSN> ready_csn_;
@@ -406,10 +403,10 @@ class RXTracking {
         /**
          * @brief Send ack immediately if the following conditions are met:
          * 1. Out-of-order packets are received.
-         * 2. The number of received WQE reaches kMAXWQE.
-         * 3. The number of received bytes reaches kMAXBytes.
+         * 2. The number of received WQE reaches kMAXCumWQE.
+         * 3. The number of received bytes reaches kMAXCumBytes.
          */
-        inline bool need_imm_ack(void) { return ooo_ || cumulative_wqe_ == kMAXWQE || cumulative_bytes_ >= kMAXBytes;}
+        inline bool need_imm_ack(void) { return ooo_ || cumulative_wqe_ == kMAXCumWQE || cumulative_bytes_ >= kMAXCumBytes;}
         /**
          * @brief After sending immediate ack, clear the states.
          */

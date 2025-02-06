@@ -74,6 +74,11 @@ static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMa
 static const uint32_t kMaxBurstTW = 24;
 // Posting recv WQEs every kPostRQThreshold.
 static const uint32_t kPostRQThreshold = kMaxBatchCQ;
+// When CQEs from one QP reach kMAXCumWQE, send immediate ack.
+// 1 means always send immediate ack.
+static constexpr uint32_t kMAXCumWQE = 4;
+// When the cumulative bytes reach kMAXCumBytes, send immediate ack.
+static constexpr uint32_t kMAXCumBytes = kMAXCumWQE * kChunkSize;
 
 // Sack bitmap size in bits.
 static const std::size_t kSackBitmapSize = 64 << 1;
