@@ -48,7 +48,7 @@ static const uint32_t kSignalInterval = 256;
 // Interval for syncing the clock with NIC.
 static const uint32_t kSyncClockIntervalNS = 100000;
 // Maximum number of CQEs to retrieve in one loop.
-static const uint32_t kMaxBatchCQ = 32;
+static const uint32_t kMaxBatchCQ = 16;
 // CQ moderation count.
 static const uint32_t kCQMODCount = 32;
 // CQ moderation period in microsecond.
@@ -69,7 +69,7 @@ static const uint32_t kMaxRetr = 16;
 static const uint32_t kMaxInflightRetrChunks = 8;
 static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
-static const uint32_t kMaxBurstTW = 32;
+static const uint32_t kMaxBurstTW = 16;
 // Posting recv WQEs every kPostRQThreshold.
 static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 
