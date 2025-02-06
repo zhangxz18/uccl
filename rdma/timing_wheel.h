@@ -115,16 +115,20 @@ static_assert(sizeof(wheel_bkt_t) == 64, "");
 
 struct timing_wheel_args_t {
     double freq_ghz_;
+    uint64_t wslot_width_tsc_;
+    uint64_t horizon_tsc_;
+    size_t bkt_pool_;
 };
 
 class TimingWheel {
    public:
     TimingWheel(timing_wheel_args_t args)
         : freq_ghz_(args.freq_ghz_),
-          wslot_width_tsc_(us_to_cycles(kWheelSlotWidthUs, freq_ghz_)),
-          horizon_tsc_(us_to_cycles(kWheelHorizonUs, freq_ghz_)),
-          prev_desired_tx_tsc_(rdtsc()),
-          bkt_pool_(kBktPoolSize) {
+        wslot_width_tsc_(args.wslot_width_tsc_),
+        horizon_tsc_(args.horizon_tsc_),
+        bkt_pool_(args.bkt_pool_), 
+        prev_desired_tx_tsc_(rdtsc()) 
+        {
         wheel_buffer_ = new uint8_t[kWheelNumWslots * sizeof(wheel_bkt_t)];
 
         size_t base_tsc = rdtsc();

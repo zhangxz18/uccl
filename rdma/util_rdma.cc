@@ -161,7 +161,11 @@ RDMAContext *RDMAFactory::CreateContext(TimerManager *rto, int dev, union CtrlMe
     return ctx;
 }
 
-RDMAContext::RDMAContext(TimerManager *rto, int dev, union CtrlMeta meta): rto_(rto), dev_(dev), wheel_({freq_ghz})
+RDMAContext::RDMAContext(TimerManager *rto, int dev, union CtrlMeta meta): rto_(rto), dev_(dev), 
+    wheel_({freq_ghz, 
+        us_to_cycles(kWheelSlotWidthUs, freq_ghz), 
+            us_to_cycles(kWheelHorizonUs, freq_ghz), 
+                kBktPoolSize})
 {
     auto *factory_dev = RDMAFactory::get_factory_dev(dev);
 
