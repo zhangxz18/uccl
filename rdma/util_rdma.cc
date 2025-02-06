@@ -9,6 +9,8 @@
 
 #include <glog/logging.h>
 
+#include <cuda_runtime.h>
+
 #include "transport.h"
 #include "transport_config.h"
 #include "util.h"
@@ -1173,7 +1175,11 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     auto remote_addr = pending_retr_chunk->second.remote_addr;
 
     // Accept this retransmission chunk.
-    memcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
+    #ifdef CLOUDLAB_DEV
+        memcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
+    #else
+        cudaMemcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len, cudaMemcpyHostToDevice);
+    #endif
 
     qpw->rxtracking.ready_csn_.insert(csn);
 
@@ -1285,7 +1291,11 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
     } else {
         VLOG(5) << "This retransmission chunk is accepted!!!";
         // Accept this retransmission chunk.
-        memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr), chunk_len);
+        #ifdef CLOUDLAB_DEV
+            memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
+        #else
+            cudaMemcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len, cudaMemcpyHostToDevice);
+        #endif
 
         qpw->rxtracking.ready_csn_.insert(csn);
 
