@@ -1476,35 +1476,6 @@ void RDMAContext::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
     VLOG(5) << "craft_ack: seqno: " << qpw->pcb.seqno().to_uint32() << ", ackno: " << qpw->pcb.ackno().to_uint32()  << " to QP#" << qpidx;
 }
 
-bool RDMAContext::periodic_check() 
-{
-    if constexpr (kTestNoRTO)
-        return true;
-    
-    for (int i = 0; i < kPortEntropy; i++) {
-        auto qpw = &uc_qps_[i];
-
-        if (qpw->txtracking.empty()) {
-            qpw->pcb.rto_reset();
-            continue;
-        }
-
-        qpw->pcb.rto_advance();
-
-        // TODO(ilias): send RST packet, indicating removal of the flow.
-        if (qpw->pcb.max_rto_rexmits_consectutive_reached()) {
-            VLOG(5) << "Max RTO retransmits reached for QP#" << i;
-            qpw->pcb.rto_reset();
-            continue;
-        }
-
-        if (qpw->pcb.rto_expired()) {
-            rto_retransmit(qpw);
-        }
-    }
-    return true;
-}
-
 void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
 {
     /// TODO: We should throttle the volume of retransmission. 

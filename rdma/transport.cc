@@ -276,8 +276,6 @@ void UcclRDMAEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
-        handle_rto();
-
         handle_clock_synchronization();
 
         handle_rx_work();
@@ -297,8 +295,9 @@ void UcclRDMAEngine::run() {
  * main engine cycle (see method `Run`).
  */
 void UcclRDMAEngine::periodic_process() {
-    // Advance the periodic ticks counter.
-    periodic_ticks_++;
+    // Handle RTOs for all QPs.
+    handle_rto();
+    // Handle control plane requests.
     process_ctl_reqs();
 }
 
@@ -307,7 +306,6 @@ void UcclRDMAEngine::handle_rto() {
     if constexpr (kTestNoRTO) return;
 
     auto expired_qp_vec = rto_tm_.check_expired();
-
 
     for (auto data : expired_qp_vec) {
         auto *rdma_ctx = reinterpret_cast<struct RDMAContext *>(data.rdma_ctx);

@@ -105,9 +105,6 @@ class RDMAEndpoint;
  */
 class UcclRDMAEngine {
    public:
-    // Slow timer (periodic processing) interval in microseconds.
-    const size_t kSlowTimerIntervalUs = 2000;  // 2ms
-
     TimerManager rto_tm_;
 
     UcclRDMAEngine() = delete;
@@ -127,7 +124,6 @@ class UcclRDMAEngine {
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           last_sync_clock_tsc_(rdtsc()),
-          periodic_ticks_(0),
           rto_tm_(kRTOMSec),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
@@ -243,8 +239,6 @@ class UcclRDMAEngine {
     std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_rx_works_;
     // Timestamp of last periodic process execution.
     uint64_t last_periodic_tsc_;
-    // Clock ticks for the slow timer.
-    uint64_t periodic_ticks_;
     // Slow timer interval in TSC.
     uint64_t kSlowTimerIntervalTsc_;
 

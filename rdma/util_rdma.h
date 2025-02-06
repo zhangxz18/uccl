@@ -813,20 +813,6 @@ class RDMAContext {
         void try_update_csn(struct UCQPWrapper *qpw);
 
         /**
-         * @brief Periodically checks the state of the flow and performs
-         * necessary actions.
-         *
-         * This method is called periodically to check the state of the flow,
-         * update the RTO timer, retransmit unacknowledged messages, and
-         * potentially remove the flow or notify the application about the
-         * connection state.
-         *
-         * @return Returns true if the flow should continue to be checked
-         * periodically, false if the flow should be removed or closed.
-         */
-        bool periodic_check();
-
-        /**
          * @brief Retransmit chunks for the given QP.
          * @param qpw 
          * @param rto 

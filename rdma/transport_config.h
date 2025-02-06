@@ -83,6 +83,8 @@ static const std::size_t kFastRexmitDupAckThres = 0;
 
 // Retransmission timeout in milliseconds.
 static const uint32_t kRTOMSec = 10;
+// Slow timer (periodic processing) interval in microseconds.
+const size_t kSlowTimerIntervalUs = 1000;  // 1ms
 
 /// Debugging and testing.
 // Disable hardware timestamp.
