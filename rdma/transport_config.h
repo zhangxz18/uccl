@@ -8,6 +8,8 @@
 
 #define CLOUDLAB_DEV
 
+// #define STATS
+
 /// Interface configuration.
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 #ifdef CLOUDLAB_DEV
@@ -82,12 +84,12 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 static const std::size_t kFastRexmitDupAckThres = 0;
 
 // Constant/Dynamic RTO.
-static const bool kConstRTO = true;
+static const bool kConstRTO = false;
 // kConstRTO == true: Constant retransmission timeout in microseconds.
 static const double kRTOUSec = 1000; // 1ms
 // kConstRTO == false: Minimum retransmission timeout in microseconds.
 static const double kMinRTOUsec = 1000; // 1ms
-static const uint32_t kRTORTT = 10;     // RTO = kRTORTT RTTs
+static const uint32_t kRTORTT = 5;     // RTO = kRTORTT RTTs
 
 // Slow timer (periodic processing) interval in microseconds.
 static const size_t kSlowTimerIntervalUs = 1000;  // 1ms

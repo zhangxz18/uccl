@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <endian.h>
+#include <string>
 #include <utility>
 
 #include <infiniband/verbs.h>
@@ -1050,11 +1051,16 @@ void RDMAEndpoint::stats_thread_fn() {
 
         if (engine_vec_.empty()) continue;
         std::string s;
-        s += "\n\t[Uccl Engine] ";
+        uint32_t eidx = 0;
         for (auto &engine : engine_vec_) {
-            s += engine->status_to_string();
+            s = engine->status_to_string();
+            #ifdef STATS
+            if (!s.empty()) {
+                std::cout << "[Engine#" << std::to_string(eidx++) << "]\n";
+                std::cout << s;
+            }
+            #endif
         }
-        VLOG(5) << s;
     }
 }
 
@@ -1087,6 +1093,12 @@ void RDMAEndpoint::uccl_deregmr(struct Mhandle *mhandle)
 std::string UcclRDMAEngine::status_to_string()
 {
     std::string s;
+
+    for (auto rdma_ctx : rdma_ctx_map_) {
+        s += "    [Context#" + std::to_string(rdma_ctx.first) + "]";
+        s += rdma_ctx.second->to_string();
+    }
+
     return s;
 }
 

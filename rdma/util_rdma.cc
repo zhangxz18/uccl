@@ -853,6 +853,9 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
             ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
         
+        // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
+        //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz)) << ", Acked chunks: " << num_acked_chunks.to_uint32();
+        
         qpw->pcb.update_rate(rdtsc(), fabric_delay_tsc);
 
         VLOG(5) << "CC rate: " << qpw->pcb.timely.get_rate_gbps() << " Gbps";
@@ -1181,6 +1184,10 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
         cudaMemcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len, cudaMemcpyHostToDevice);
     #endif
 
+    #ifdef STATS
+    qpw->pcb.accept_retr++;
+    #endif
+
     qpw->rxtracking.ready_csn_.insert(csn);
 
     /// FIXME: Should we update the timestamp here?
@@ -1295,6 +1302,10 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
             memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
         #else
             cudaMemcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len, cudaMemcpyHostToDevice);
+        #endif
+        
+        #ifdef STATS
+        qpw->pcb.accept_retr++;
         #endif
 
         qpw->rxtracking.ready_csn_.insert(csn);
@@ -1561,11 +1572,22 @@ std::string RDMAContext::to_string()
 {
     std::string s; s.clear();
 
+    uint32_t rto_rexmits = 0;
+    uint32_t fast_rexmits = 0;
+    uint32_t accept_retr = 0;
+
     for (int qpidx = 0; qpidx < kPortEntropy; qpidx++) {
-        auto qpw = uc_qps_[qpidx];
-        s += "\n\t[UC] QP#" + std::to_string(qpidx);
-        s += qpw.pcb.to_string();
+        auto *qpw = &uc_qps_[qpidx];
+        rto_rexmits += qpw->pcb.rto_rexmits;
+        fast_rexmits += qpw->pcb.fast_rexmits;
+        accept_retr += qpw->pcb.accept_retr;
+        // s += "\n\t[UC] QP#" + std::to_string(qpidx);
+        // s += qpw.pcb.to_string();
     }
+
+    s += "\tRTO retr:" + std::to_string(rto_rexmits) + ", Fast retr:" + std::to_string(fast_rexmits) + ", Accept retr:" + std::to_string(accept_retr);
+
+    s += "\n";
 
     return s;
 }

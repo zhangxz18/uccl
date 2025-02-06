@@ -193,6 +193,7 @@ struct Pcb {
     int rto_timer{kRtoDisabled};
     uint32_t fast_rexmits{0};
     uint32_t rto_rexmits{0};
+    uint32_t accept_retr{0};
     uint16_t rto_rexmits_consectutive{0};
     double ecn_alpha{1.0};
 };
