@@ -858,6 +858,8 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         if (!qpw->txtracking.empty()) {
             // Rearm timer if we still have unacked chunks.
             rearm_timer_for_qp(qpw);
+        } else {
+            disarm_timer_for_qp(qpw);
         }
     }
     
@@ -879,7 +881,39 @@ int RDMAContext::poll_retr_cq(void)
     int num_post_recv = 0;
 
     struct ibv_poll_cq_attr poll_cq_attr = {};
-    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) {
+        if (fill_retr_rq_cnt_) {
+            int i;
+            for (i = 0; i < fill_retr_rq_cnt_; i++) {
+                uint64_t chunk_addr;
+                if (retr_chunk_pool_->alloc_buff(&chunk_addr)) {
+                    // Retr chunk pool exhausted. This may caused by serve retransmission.
+                    // We can't post enough recv requests for retransmission chunks.
+                    // Subsequent retransmission chunks will be dropped until the pool is refilled.
+                    if (i) i--;
+                    break;
+                }
+                sges[i].addr = chunk_addr;
+                sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
+                sges[i].lkey = retr_chunk_pool_->get_lkey();
+                retr_wrs_[i].sg_list = &sges[i];
+                retr_wrs_[i].num_sge = 1;
+                retr_wrs_[i].wr_id = chunk_addr;
+            }
+            if (i) {
+                retr_wrs_[i - 1].next = nullptr;
+                struct ibv_recv_wr *bad_wr;
+                DCHECK(ibv_post_recv(retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
+                VLOG(5) << "Posted " << i << " recv requests for Retr QP";
+                
+                // Restore
+                retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
+
+            }
+            fill_retr_rq_cnt_ -= i;
+        }
+        return 0;
+    }
 
     while (1) {
         if (cq_ex->status == IBV_WC_SUCCESS) {
@@ -943,7 +977,10 @@ int RDMAContext::poll_retr_cq(void)
             // Restore
             retr_wrs_[i - 1].next = (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
         }
+
+        fill_retr_rq_cnt_ += (num_post_recv - i);
     }
+
     return cq_budget;
 }
 
@@ -1121,12 +1158,6 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
         VLOG(5) << "Barrier arrived without pending retransmission chunk for QP#" << qpidx;
         return;
     }
-    // Locate request by rid
-    auto req = get_recvreq_by_id(rid);
-    if (req->type == RecvRequest::UNUSED) {
-        VLOG(5) << "Request is already freed. Dropping retransmission chunk for QP#" << qpidx;
-        return;
-    }
 
     VLOG(5) << "Barrier found a pending retransmission chunk for QP#" << qpidx;
 
@@ -1145,6 +1176,8 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
 
     qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
 
+    // Locate request by rid
+    auto req = get_recvreq_by_id(rid);
     auto *msg_size = &req->ureq->recv.elems[mid].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[mid] += chunk_len;
@@ -1222,11 +1255,6 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
 
     // Locate request by rid
     auto req = get_recvreq_by_id(rid);
-    if (req->type == RecvRequest::UNUSED) {
-        VLOG(5) << "Request is already freed. Dropping retransmission chunk for QP#" << hdr->qidx;
-        retr_chunk_pool_->free_buff(chunk_addr);
-        return;
-    }
     
     auto bitmap_bucket_idx = distance.to_uint32() / swift::Pcb::kSackBitmapBucketSize;
     auto cursor = distance.to_uint32() % swift::Pcb::kSackBitmapBucketSize;
@@ -1332,10 +1360,6 @@ void RDMAContext::rx_chunk(struct list_head *ack_list)
 
     // Locate request by rid
     auto req = get_recvreq_by_id(rid);
-    if (req->type == RecvRequest::UNUSED) {
-        VLOG(5) << "Request is already freed. Dropping chunk for QP#" << qpidx;
-        return;
-    }
 
     /* 
      * No need for the following code to check as we can only accept a retransmission chunk when 

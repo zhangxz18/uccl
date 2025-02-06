@@ -679,6 +679,8 @@ class RDMAContext {
         struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
         uint32_t post_srq_cnt_ = 0;
 
+        uint32_t fill_retr_rq_cnt_ = 0;
+
         double ratio_;
         double offset_;
 
