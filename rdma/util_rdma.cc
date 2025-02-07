@@ -544,7 +544,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
                 auto num_mtu = (chunk_size + mtu_bytes_) / mtu_bytes_;
                 hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            if (wheel->queue_on_timing_wheel(qpw->pcb.timely.rate_, &qpw->pcb.prev_desired_tx_tsc, rdtsc(), 
+            if (wheel->queue_on_timing_wheel(g_pcb_.timely.rate_, &prev_desired_tx_tsc_, rdtsc(), 
                 wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0)) {
                     qpw->in_wheel_cnt_++;
                     // For future tracking.
@@ -856,9 +856,11 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
         //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz)) << ", Acked chunks: " << num_acked_chunks.to_uint32();
         
-        qpw->pcb.update_rate(rdtsc(), fabric_delay_tsc);
+        qpw->pcb.update_rate(t6, fabric_delay_tsc);
 
-        VLOG(5) << "CC rate: " << qpw->pcb.timely.get_rate_gbps() << " Gbps";
+        g_pcb_.update_rate(t6, fabric_delay_tsc);
+
+        VLOG(5) << "CC rate: " << g_pcb_.timely.get_rate_gbps() << " Gbps";
 
         qpw->pcb.snd_una = ackno;
         qpw->pcb.duplicate_acks = 0;

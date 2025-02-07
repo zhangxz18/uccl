@@ -534,6 +534,10 @@ class RDMAContext {
         // Track outstanding RECV requests.
         struct RecvRequest reqs_[kMaxReq];
 
+        swift::Pcb g_pcb_;
+
+        size_t prev_desired_tx_tsc_;
+
         inline uint64_t get_recvreq_id(struct RecvRequest *req) {
             return req - reqs_;
         }
