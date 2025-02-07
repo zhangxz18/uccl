@@ -126,8 +126,7 @@ class TimingWheel {
         : freq_ghz_(args.freq_ghz_),
         wslot_width_tsc_(args.wslot_width_tsc_),
         horizon_tsc_(args.horizon_tsc_),
-        bkt_pool_(args.bkt_pool_), 
-        prev_desired_tx_tsc_(rdtsc()) 
+        bkt_pool_(args.bkt_pool_)
         {
         wheel_buffer_ = new uint8_t[kWheelNumWslots * sizeof(wheel_bkt_t)];
 
@@ -153,16 +152,16 @@ class TimingWheel {
     // Queue a work request (i.e., one chunk) on the timing wheel.
     // Returns true if the work request was queued on the wheel.
     // Otherwise, the timing wheel was bypassed and the caller can transmit directly.
-    inline bool queue_on_timing_wheel(double target_rate, size_t ref_tsc, void *wr, size_t chunk_size, bool allow_bypass) {
+    inline bool queue_on_timing_wheel(double target_rate, size_t *prev_desired_tx_tsc, size_t ref_tsc, void *wr, size_t chunk_size, bool allow_bypass) {
         if constexpr (kTestConstantRate)
-            target_rate = Timely::gbps_to_rate(400.0);
+            target_rate = Timely::gbps_to_rate(kLinkBandwidth);
         double ns_delta = 1000000000 * (chunk_size / target_rate);
         double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
 
-        size_t desired_tx_tsc = prev_desired_tx_tsc_ + cycle_delta;
+        size_t desired_tx_tsc = *prev_desired_tx_tsc + cycle_delta;
         desired_tx_tsc = (std::max)(desired_tx_tsc, ref_tsc);
 
-        prev_desired_tx_tsc_ = desired_tx_tsc;
+        *prev_desired_tx_tsc = desired_tx_tsc;
 
         if (desired_tx_tsc == ref_tsc && allow_bypass) {
             return false;
@@ -293,8 +292,6 @@ class TimingWheel {
         reset_bkt(bkt);
         return bkt;
     }
-
-    size_t prev_desired_tx_tsc_;
 
     const double freq_ghz_;  ///< TSC freq, used only for us/tsc conversion
     const size_t wslot_width_tsc_;  ///< Time-granularity in TSC units

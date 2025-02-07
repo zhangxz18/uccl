@@ -544,7 +544,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
                 auto num_mtu = (chunk_size + mtu_bytes_) / mtu_bytes_;
                 hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            if (wheel->queue_on_timing_wheel(qpw->pcb.timely.rate_, rdtsc(), 
+            if (wheel->queue_on_timing_wheel(qpw->pcb.timely.rate_, &qpw->pcb.prev_desired_tx_tsc, rdtsc(), 
                 wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0)) {
                     qpw->in_wheel_cnt_++;
                     // For future tracking.
