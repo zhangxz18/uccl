@@ -20,8 +20,8 @@
  * @brief Timely parameters that need to be sweeped
  */
 static constexpr bool kPatched = true;  ///< Patch from ECN-vs-delay
-static constexpr double kEwmaAlpha = 0.46;
-static constexpr double kBeta = 0.26;
+static constexpr double kEwmaAlpha = 0.25;
+static constexpr double kBeta = 0.02;
 
 namespace uccl {
 
@@ -51,12 +51,12 @@ class Timely {
         false;  ///< Track per-packet RTT stats
 
     // Config
-    static constexpr double kMinRate = 15.0 * 1000 * 1000;
-    static constexpr double kAddRate = 5.0 * 1000 * 1000;
+    static constexpr double kMinRate = 1.0 * 1000 * 1000 * 1000;
+    static constexpr double kAddRate = 1.0 * 1000 * 1000 * 1000;
 
     static constexpr double kMinRTT = 2;
-    static constexpr double kTLow = 100;
-    static constexpr double kTHigh = 1000;
+    static constexpr double kTLow = 2.5;
+    static constexpr double kTHigh = 500;
     static constexpr size_t kHaiThresh = 5;
 
     double rate_ = 0.0;  ///< The current sending rate

@@ -8,7 +8,7 @@
 
 #define CLOUDLAB_DEV
 
-#define STATS
+// #define STATS
 
 /// Interface configuration.
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
