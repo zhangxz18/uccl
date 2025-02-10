@@ -569,11 +569,12 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     }
 }
 
-uint64_t TXTracking::ack_transmitted_chunks(uint32_t num_acked_chunks)
+void TXTracking::ack_transmitted_chunks(uint32_t num_acked_chunks, uint64_t *timestamp, uint32_t *seg_size)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
-    uint64_t timestamp = 0;
+    *timestamp = 0;
+    *seg_size = 0;
     
     while (num_acked_chunks) {
         auto &chunk = unacked_chunks_.front();
@@ -587,13 +588,14 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t num_acked_chunks)
         // Free wr_ex here.
         rdma_ctx_->wr_ex_pool_->free_buff(reinterpret_cast<uint64_t>(chunk.wr_ex));
 
-        if (timestamp == 0)
-            timestamp = chunk.timestamp;
+        if (*timestamp == 0)
+            *timestamp = chunk.timestamp;
+
+        *seg_size += chunk.wr_ex->sge.length;
+
         unacked_chunks_.erase(unacked_chunks_.begin());
         num_acked_chunks--;
     }
-
-    return timestamp;
 }
 
 int RDMAContext::receiver_poll_uc_cq(void)
@@ -781,6 +783,9 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
 
     bool update_sackbitmap = false;
 
+    uint64_t t1;
+    uint32_t seg_size;
+
     if (UINT_CSN::uintcsn_seqno_lt(ackno, qpw->pcb.snd_una)) {
         VLOG(5) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
     } else if (UINT_CSN::uintcsn_seqno_gt(ackno, qpw->pcb.snd_nxt)) {
@@ -837,7 +842,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         update_sackbitmap = true;
         auto num_acked_chunks = UINT_CSN(ackno) - qpw->pcb.snd_una;
 
-        auto t1 = qpw->txtracking.ack_transmitted_chunks(num_acked_chunks.to_uint32());
+        qpw->txtracking.ack_transmitted_chunks(num_acked_chunks.to_uint32(), &t1, &seg_size);
         auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
         uint64_t t5;
         if constexpr (kTestNoHWTimestamp)
@@ -848,6 +853,8 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         /// TODO: Congestion control
         auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
         auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
+        auto serial_delay_tsc = us_to_cycles(seg_size * 1e6 / kLinkBandwidth, freq_ghz);
+        fabric_delay_tsc -= serial_delay_tsc;
 
         VLOG(5) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
             ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 

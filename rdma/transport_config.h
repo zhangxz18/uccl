@@ -26,7 +26,11 @@ static const uint8_t NUM_DEVICES = 8;
 static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
 #endif
 static const uint8_t IB_PORT_NUM = 1;
+#ifdef CLOUDLAB_DEV
+static const double kLinkBandwidth = 25.0 * 1e9 / 8; // 25Gbps
+#else
 static const double kLinkBandwidth = 400.0 * 1e9 / 8; // 400Gbps
+#endif
 /// Interface configuration.
 
 // # of engines per device.
