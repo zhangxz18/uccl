@@ -51,12 +51,17 @@ class Timely {
         false;  ///< Track per-packet RTT stats
 
     // Config
+    #ifdef CLOUDLAB_DEV
+    static constexpr double kMinRate = 60 * 1000 * 1000;
+    static constexpr double kAddRate = 60 * 1000 * 1000;
+    static constexpr double kTLow = 50;
+    #else
     static constexpr double kMinRate = 1.0 * 1000 * 1000 * 1000;
     static constexpr double kAddRate = 1.0 * 1000 * 1000 * 1000;
-
-    static constexpr double kMinRTT = 2;
     static constexpr double kTLow = 2.5;
+    #endif
     static constexpr double kTHigh = 500;
+    static constexpr double kMinRTT = 2;
     static constexpr size_t kHaiThresh = 5;
 
     double rate_ = 0.0;  ///< The current sending rate
