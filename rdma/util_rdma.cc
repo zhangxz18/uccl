@@ -767,7 +767,8 @@ void RDMAContext::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     inflight_retr_chunks_++;
 
     VLOG(5) << "successfully retransmit chunk for QP#" << (qpw - uc_qps_) 
-        << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
+        << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " 
+        << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
 }
 
 void RDMAContext::rx_ack(uint64_t pkt_addr)
@@ -1516,6 +1517,11 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
     /// Currently, we hard limit the number of inflight retransmission chunks.
     if (inflight_retr_chunks_ > kMaxInflightRetrChunks || qpw->txtracking.empty()) {
         VLOG(5) << inflight_retr_chunks_ << " inflight retransmission chunks. Skip retransmission.";
+        return;
+    }
+
+    if (qpw->pcb.rto_rexmits_consectutive >= kRTOAbortThreshold) {
+        LOG_FIRST_N(ERROR, 1) << "RTO retransmission threshold reached. Abort RTO for QP#" << qpw - uc_qps_;
         return;
     }
 

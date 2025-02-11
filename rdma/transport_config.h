@@ -92,6 +92,9 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
 static const std::size_t kFastRexmitDupAckThres = 0;
 
+// Maximum number of Retransmission Timeout (RTO) before aborting the flow.
+static const uint32_t kRTOAbortThreshold = 50;
+
 // Constant/Dynamic RTO.
 static const bool kConstRTO = false;
 // kConstRTO == true: Constant retransmission timeout in microseconds.
