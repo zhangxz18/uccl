@@ -446,7 +446,7 @@ class TXTracking {
             return unacked_chunks_.front();
         }
 
-        uint64_t ack_transmitted_chunks(uint32_t qpdix, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc);
+        uint64_t ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc);
 
         inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
             unacked_chunks_.push_back({ureq, csn, wr_ex, timestamp});
@@ -530,6 +530,8 @@ class RDMAContext {
         constexpr static int kCQSize = 4096;
         // 256-bit SACK bitmask => we can track up to 256 packets
         static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
+
+        uint32_t engine_offset_;
 
         // Track outstanding RECV requests.
         struct RecvRequest reqs_[kMaxReq];
@@ -828,7 +830,7 @@ class RDMAContext {
 
         std::string to_string();
 
-        RDMAContext(TimerManager *rto, int dev, union CtrlMeta meta);
+        RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta);
 
         ~RDMAContext(void);
         
@@ -883,7 +885,7 @@ class RDMAFactory {
          * @param meta 
          * @return RDMAContext* 
          */
-        static RDMAContext *CreateContext(TimerManager *rto, int dev, union CtrlMeta meta);
+        static RDMAContext *CreateContext(TimerManager *rto, int dev, uint32_t engine_offset_, union CtrlMeta meta);
         static inline struct FactoryDevice *get_factory_dev(int dev) {
             DCHECK(dev >= 0 && dev < rdma_ctl->devices_.size());
             return &rdma_ctl->devices_[dev];

@@ -25,7 +25,7 @@ static constexpr double kEwmaAlpha = 0.25;
 static constexpr double kBeta = 0.02;
 
 // EWMA alpha used for per-path CC states.
-static constexpr double kPPEwmaAlpha = 0.85;
+static constexpr double kPPEwmaAlpha = 0.35;
 
 namespace uccl {
 
@@ -62,7 +62,7 @@ class Timely {
     #else
     static constexpr double kMinRate = 1.0 * 1000 * 1000 * 1000;
     static constexpr double kAddRate = 1.0 * 1000 * 1000 * 1000;
-    static constexpr double kTLow = 2.5;
+    static constexpr double kTLow = 5;
     #endif
     static constexpr double kTHigh = 500;
     static constexpr double kMinRTT = 2;
@@ -108,10 +108,10 @@ class Timely {
     }
 
     // Last desired tx timestamp for timing wheel.
-    size_t prev_desired_tx_tsc_;
+    size_t prev_desired_tx_tsc_ = 0;
 
-    inline void update_rtt_scoreboard(uint64_t new_rtt) {
-        prev_rtt_ = (1 - kPPEwmaAlpha) * prev_rtt_ + kPPEwmaAlpha * new_rtt;
+    inline void update_rtt_scoreboard(uint64_t newrtt_tsc) {
+        prev_rtt_ = (1 - kPPEwmaAlpha) * prev_rtt_ + kPPEwmaAlpha * to_usec(newrtt_tsc, freq_ghz);
     }
 
     /**

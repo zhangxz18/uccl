@@ -157,13 +157,13 @@ error:
  * @param meta 
  * @return RDMAContext* 
  */
-RDMAContext *RDMAFactory::CreateContext(TimerManager *rto, int dev, union CtrlMeta meta)
+RDMAContext *RDMAFactory::CreateContext(TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta)
 {
-    RDMAContext *ctx = new RDMAContext(rto, dev, meta);
+    RDMAContext *ctx = new RDMAContext(rto, dev, engine_offset, meta);
     return ctx;
 }
 
-RDMAContext::RDMAContext(TimerManager *rto, int dev, union CtrlMeta meta): rto_(rto), dev_(dev), 
+RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta): rto_(rto), dev_(dev), engine_offset_(engine_offset),
     wheel_({freq_ghz, 
         us_to_cycles(kWheelSlotWidthUs, freq_ghz), 
             us_to_cycles(kWheelHorizonUs, freq_ghz), 
@@ -440,6 +440,8 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     uint64_t wr_addr;
     bool queued = false;
 
+    auto now = rdtsc();
+
     if (ureq->send.tx_events == 1) {
         // Size mismatch.
         nchunk = (size + kChunkSize - 1) / kChunkSize;
@@ -487,7 +489,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
 
             sent_offset += chunk_size;
             // Track this chunk.
-            qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+            qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
             // Arm timer for TX
             arm_timer_for_qp(qpw);
 
@@ -549,12 +551,13 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
             
             if constexpr (kPPCwnd) {
                 // Enforce per-path cwnd.
-                queued = wheel->queue_on_timing_wheel(flow->cc_pp_[qpidx].rate_, &flow->cc_pp_[qpidx].prev_desired_tx_tsc_, rdtsc(), 
+                auto g_qpidx = engine_offset_ * kPortEntropy + qpidx;
+                queued = wheel->queue_on_timing_wheel(flow->cc_pp_[g_qpidx].rate_, &flow->cc_pp_[g_qpidx].prev_desired_tx_tsc_, now, 
                     wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0);
 
             } else {
                 // Enforce global cwnd.
-                queued = wheel->queue_on_timing_wheel(flow->cc_.rate_, &flow->cc_.prev_desired_tx_tsc_, rdtsc(), 
+                queued = wheel->queue_on_timing_wheel(flow->cc_[engine_offset_].rate_, &flow->cc_[engine_offset_].prev_desired_tx_tsc_, now, 
                     wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0);
             }
 
@@ -570,7 +573,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
                 DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
                 // Track this chunk.
-                qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+                qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
                 // Arm timer for TX
                 arm_timer_for_qp(qpw);
 
@@ -582,7 +585,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     }
 }
 
-uint64_t TXTracking::ack_transmitted_chunks(uint32_t qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc)
+uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
@@ -625,16 +628,16 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t qpidx, uint32_t num_acked_c
     ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
         
     // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
-    //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz)) << ", Acked chunks: " << num_acked_chunks.to_uint32();
+    //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz));
 
     // Update CC states for all flows using the same RTT.
     for (auto &flow : flows) {
         if constexpr (kPPCwnd) {
             // Update per-path cwnd.
-            flow->cc_pp_[qpidx].update_rate(t6, fabric_delay_tsc, kPPEwmaAlpha);
+            flow->cc_pp_[g_qpidx].update_rate(t6, fabric_delay_tsc, kPPEwmaAlpha);
         } else {
             // Update global cwnd.
-            flow->cc_.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
+            flow->cc_[engine_offset].update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
         }
     }
     
@@ -887,11 +890,14 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             t5 = t6;
         else
             t5 = convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
-
-        auto new_rtt = qpw->txtracking.ack_transmitted_chunks(qpw - uc_qps_, 
+        
+        auto g_qpidx = engine_offset_ * kPortEntropy + qpw - uc_qps_;
+        DCHECK(engine_offset_ < NUM_ENGINES);
+        DCHECK(g_qpidx < kPortEntropy * NUM_ENGINES);
+        auto newrtt_tsc = qpw->txtracking.ack_transmitted_chunks(engine_offset_, g_qpidx, 
             num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc);
         
-        qpw->pcb.update_rtt_scoreboard(new_rtt);
+        qpw->pcb.update_rtt_scoreboard(newrtt_tsc);
 
         qpw->pcb.snd_una = ackno;
         qpw->pcb.duplicate_acks = 0;

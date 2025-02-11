@@ -349,7 +349,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
 
     {
         DCHECK(rdma_ctx_map_.find(info->peer_id) == rdma_ctx_map_.end());
-        rdma_ctx = RDMAFactory::CreateContext(&rto_tm_, dev, meta);
+        rdma_ctx = RDMAFactory::CreateContext(&rto_tm_, dev, engine_idx_ % NUM_ENGINES, meta);
         std::tie(std::ignore, ret) = rdma_ctx_map_.insert({info->peer_id, rdma_ctx});
         DCHECK(ret);
     }
