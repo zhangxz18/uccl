@@ -316,12 +316,12 @@ struct ucclRequest {
         } recv;
         struct {
             int data_len;
+            int tx_events;
             uint64_t laddr;
             uint64_t raddr;
             uint32_t lkey;
             uint32_t rkey;
             uint32_t rid;
-            int tx_events;
         } send;
     };
 };
@@ -446,7 +446,7 @@ class TXTracking {
             return unacked_chunks_.front();
         }
 
-        void ack_transmitted_chunks(uint32_t num_acked_chunks, uint64_t *timestamp, uint32_t *seg_size);
+        uint64_t ack_transmitted_chunks(uint32_t qpdix, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc);
 
         inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
             unacked_chunks_.push_back({ureq, csn, wr_ex, timestamp});
@@ -533,10 +533,6 @@ class RDMAContext {
 
         // Track outstanding RECV requests.
         struct RecvRequest reqs_[kMaxReq];
-
-        swift::Pcb g_pcb_;
-
-        size_t prev_desired_tx_tsc_;
 
         inline uint64_t get_recvreq_id(struct RecvRequest *req) {
             return req - reqs_;

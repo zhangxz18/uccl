@@ -20,8 +20,12 @@
  * @brief Timely parameters that need to be sweeped
  */
 static constexpr bool kPatched = true;  ///< Patch from ECN-vs-delay
+// EWMA alpha used for global CC state.
 static constexpr double kEwmaAlpha = 0.25;
 static constexpr double kBeta = 0.02;
+
+// EWMA alpha used for per-path CC states.
+static constexpr double kPPEwmaAlpha = 0.85;
 
 namespace uccl {
 
@@ -103,6 +107,13 @@ class Timely {
         return (2 * g + 0.5);
     }
 
+    // Last desired tx timestamp for timing wheel.
+    size_t prev_desired_tx_tsc_;
+
+    inline void update_rtt_scoreboard(uint64_t new_rtt) {
+        prev_rtt_ = (1 - kPPEwmaAlpha) * prev_rtt_ + kPPEwmaAlpha * new_rtt;
+    }
+
     /**
      * @brief Perform a rate update
      *
@@ -110,7 +121,7 @@ class Timely {
      * when the caller can reuse a sampled RDTSC.
      * @param sample_rtt_tsc The RTT sample in RDTSC cycles
      */
-    void update_rate(size_t _rdtsc, size_t sample_rtt_tsc) {
+    void update_rate(size_t _rdtsc, size_t sample_rtt_tsc, double ewma_alpha) {
         assert(_rdtsc >= 1000000000 &&
                _rdtsc >= last_update_tsc_);  // Sanity check
         static constexpr bool kCcOptTimelyBypass = true;
@@ -135,7 +146,7 @@ class Timely {
         double rtt_diff = sample_rtt - prev_rtt_;
         neg_gradient_count_ = (rtt_diff < 0) ? neg_gradient_count_ + 1 : 0;
         avg_rtt_diff_ =
-            ((1 - kEwmaAlpha) * avg_rtt_diff_) + (kEwmaAlpha * rtt_diff);
+            ((1 - ewma_alpha) * avg_rtt_diff_) + (ewma_alpha * rtt_diff);
 
         double delta_factor =
             (_rdtsc - last_update_tsc_) / min_rtt_tsc_;  // fdiv

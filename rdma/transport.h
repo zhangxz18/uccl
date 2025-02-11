@@ -464,10 +464,23 @@ class UcclFlow {
    
    public:
 
+    // Per-path cc states.
+    Timely cc_pp_[kPortEntropy];
+
+    // Global cc states.
+    Timely cc_;
+
     UcclFlow(RDMAEndpoint *ep, int bootstrap_fd, int dev, 
         PeerID peer_id, FlowID flow_id, struct RemoteRDMAContext remote_ctx, std::string remote_ip, int remote_dev, bool is_send) : 
         ep_(ep), dev_(dev), 
             peer_id_(peer_id), flow_id_(flow_id), remote_ctx_(remote_ctx), remote_ip_(remote_ip), remote_dev_(remote_dev), is_send_(is_send) {
+        
+        // Initialize cc states.
+        for (int i = 0; i < kPortEntropy; i++) {
+            cc_pp_[i] = Timely(freq_ghz, kLinkBandwidth);
+        }
+
+        cc_ = Timely(freq_ghz, kLinkBandwidth);
         
         memset(&send_comm_, 0, sizeof(send_comm_));
         memset(&recv_comm_, 0, sizeof(recv_comm_));

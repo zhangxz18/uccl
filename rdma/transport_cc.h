@@ -39,8 +39,8 @@ struct Pcb {
     size_t prev_desired_tx_tsc;
 
     // Called when receving an valid ACK to update rate according to RTT.
-    inline void update_rate(size_t _rdtsc, size_t sample_rtt_tsc) {
-        timely.update_rate(_rdtsc, sample_rtt_tsc);
+    inline void update_rtt_scoreboard(uint64_t new_rtt) {
+        timely.update_rtt_scoreboard(new_rtt);
     }
 
     void mutliplicative_decrease() { ecn_alpha /= 2; }

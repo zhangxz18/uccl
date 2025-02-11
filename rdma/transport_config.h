@@ -41,6 +41,9 @@ static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static const uint32_t kPortEntropy = 64;
 
+// Per-path cwnd or global cwnd.
+static const bool kPPCwnd = false;
+
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static const uint32_t kRCSize = 65536;
 // # of Tx work handled in one loop.

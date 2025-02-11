@@ -1,7 +1,6 @@
-# UCCL RDMA DEV PALYGROUND
+# UCCL-RDMA
 
-This is a playground for the UCCL RDMA DEV team to test and experiment with RDMA under UCCL's architecture.
-
+RDMA support for UCCL.
 
 ## Install dependencies
 ```

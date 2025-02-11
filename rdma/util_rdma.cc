@@ -429,6 +429,7 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
 
 void RDMAContext::tx_messages(struct ucclRequest *ureq)
 {
+    auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
     auto size = ureq->send.data_len;
     auto laddr = ureq->send.laddr;
     auto raddr = ureq->send.raddr;
@@ -437,6 +438,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     uint32_t sent_offset = 0;
     uint32_t nchunk = 0;
     uint64_t wr_addr;
+    bool queued = false;
 
     if (ureq->send.tx_events == 1) {
         // Size mismatch.
@@ -544,12 +546,23 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
                 auto num_mtu = (chunk_size + mtu_bytes_) / mtu_bytes_;
                 hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            if (wheel->queue_on_timing_wheel(g_pcb_.timely.rate_, &prev_desired_tx_tsc_, rdtsc(), 
-                wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0)) {
-                    qpw->in_wheel_cnt_++;
-                    // For future tracking.
-                    wr_ex->ureq = ureq;
-                    VLOG(5) << "Queue " << chunk_size << " bytes on QP#" << qpidx;
+            
+            if constexpr (kPPCwnd) {
+                // Enforce per-path cwnd.
+                queued = wheel->queue_on_timing_wheel(flow->cc_pp_[qpidx].rate_, &flow->cc_pp_[qpidx].prev_desired_tx_tsc_, rdtsc(), 
+                    wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0);
+
+            } else {
+                // Enforce global cwnd.
+                queued = wheel->queue_on_timing_wheel(flow->cc_.rate_, &flow->cc_.prev_desired_tx_tsc_, rdtsc(), 
+                    wr_ex, chunk_size + hdr_overhead, qpw->in_wheel_cnt_ == 0);
+            }
+
+            if (queued) {
+                qpw->in_wheel_cnt_++;
+                // For future tracking.
+                wr_ex->ureq = ureq;
+                VLOG(5) << "Queued " << chunk_size << " bytes to QP#" << qpidx;
             }
             else {
                 // Transmit this chunk directly.
@@ -561,7 +574,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
                 // Arm timer for TX
                 arm_timer_for_qp(qpw);
 
-                VLOG(5) << "Directly send " << chunk_size << " bytes to QP#" << qpidx;
+                VLOG(5) << "Directly sent " << chunk_size << " bytes to QP#" << qpidx;
             }
         }
 
@@ -569,12 +582,14 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     }
 }
 
-void TXTracking::ack_transmitted_chunks(uint32_t num_acked_chunks, uint64_t *timestamp, uint32_t *seg_size)
+uint64_t TXTracking::ack_transmitted_chunks(uint32_t qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
-    *timestamp = 0;
-    *seg_size = 0;
+    uint64_t t1 = 0;
+    uint32_t seg_size = 0;
+
+    std::set<UcclFlow *> flows;
     
     while (num_acked_chunks) {
         auto &chunk = unacked_chunks_.front();
@@ -588,14 +603,42 @@ void TXTracking::ack_transmitted_chunks(uint32_t num_acked_chunks, uint64_t *tim
         // Free wr_ex here.
         rdma_ctx_->wr_ex_pool_->free_buff(reinterpret_cast<uint64_t>(chunk.wr_ex));
 
-        if (*timestamp == 0)
-            *timestamp = chunk.timestamp;
+        // Record timestamp of the oldest unacked chunk.
+        if (t1 == 0)
+            t1 = chunk.timestamp;
 
-        *seg_size += chunk.wr_ex->sge.length;
+        seg_size += chunk.wr_ex->sge.length;
+        flows.insert(reinterpret_cast<UcclFlow *>(chunk.ureq->context));
 
         unacked_chunks_.erase(unacked_chunks_.begin());
         num_acked_chunks--;
     }
+
+    auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
+    auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
+    // Make RTT independent of segment size.
+    auto serial_delay_tsc = us_to_cycles(seg_size * 1e6 / kLinkBandwidth, freq_ghz);
+    fabric_delay_tsc -= serial_delay_tsc;
+
+    VLOG(5) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
+    ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
+    ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
+        
+    // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
+    //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz)) << ", Acked chunks: " << num_acked_chunks.to_uint32();
+
+    // Update CC states for all flows using the same RTT.
+    for (auto &flow : flows) {
+        if constexpr (kPPCwnd) {
+            // Update per-path cwnd.
+            flow->cc_pp_[qpidx].update_rate(t6, fabric_delay_tsc, kPPEwmaAlpha);
+        } else {
+            // Update global cwnd.
+            flow->cc_.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
+        }
+    }
+    
+    return fabric_delay_tsc;
 }
 
 int RDMAContext::receiver_poll_uc_cq(void)
@@ -774,7 +817,7 @@ void RDMAContext::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
 void RDMAContext::rx_ack(uint64_t pkt_addr)
 {
     auto cq_ex = ctrl_cq_ex_;
-    
+    uint64_t t5;
     auto t6 = rdtsc();
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr);
     
@@ -783,9 +826,6 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
     auto ackno = ucclsackh->ackno.value();
 
     bool update_sackbitmap = false;
-
-    uint64_t t1;
-    uint32_t seg_size;
 
     if (UINT_CSN::uintcsn_seqno_lt(ackno, qpw->pcb.snd_una)) {
         VLOG(5) << "Received old ACK " << ackno << " from QP#" << qpidx << " by Ctrl QP";
@@ -842,33 +882,16 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
 
         update_sackbitmap = true;
         auto num_acked_chunks = UINT_CSN(ackno) - qpw->pcb.snd_una;
-
-        qpw->txtracking.ack_transmitted_chunks(num_acked_chunks.to_uint32(), &t1, &seg_size);
         auto remote_queueing_tsc = us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
-        uint64_t t5;
         if constexpr (kTestNoHWTimestamp)
             t5 = t6;
         else
             t5 = convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
 
-        /// TODO: Congestion control
-        auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
-        auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
-        auto serial_delay_tsc = us_to_cycles(seg_size * 1e6 / kLinkBandwidth, freq_ghz);
-        fabric_delay_tsc -= serial_delay_tsc;
-
-        VLOG(5) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
-            ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
-            ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
+        auto new_rtt = qpw->txtracking.ack_transmitted_chunks(qpw - uc_qps_, 
+            num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc);
         
-        // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
-        //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz)) << ", Acked chunks: " << num_acked_chunks.to_uint32();
-        
-        qpw->pcb.update_rate(t6, fabric_delay_tsc);
-
-        g_pcb_.update_rate(t6, fabric_delay_tsc);
-
-        VLOG(5) << "CC rate: " << g_pcb_.timely.get_rate_gbps() << " Gbps";
+        qpw->pcb.update_rtt_scoreboard(new_rtt);
 
         qpw->pcb.snd_una = ackno;
         qpw->pcb.duplicate_acks = 0;
