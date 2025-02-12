@@ -39,7 +39,7 @@ static const uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
-static const uint32_t kPortEntropy = 64;
+static const uint32_t kPortEntropy = 256;
 
 // Per-path cwnd or global cwnd.
 static const bool kPPCwnd = false;
@@ -123,7 +123,7 @@ static const bool kTestConstantRate = false;
 static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
-static const bool kTestNoRTO = true;
+static const bool kTestNoRTO = false;
 // Always use the same engine for each flow.
 static const bool kBindEngine = false;
 /// Debugging and testing.
