@@ -527,7 +527,6 @@ class RDMAContext {
         constexpr static int kCtrlMRSize = CtrlChunkBuffPool::kChunkSize * CtrlChunkBuffPool::kNumChunk;
         /// TODO: How to determine the size of retransmission MR?
         constexpr static int kRetrMRSize = RetrChunkBuffPool::kRetrChunkSize * RetrChunkBuffPool::kNumChunk;
-        constexpr static int kCQSize = 4096;
         // 256-bit SACK bitmask => we can track up to 256 packets
         static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
 
@@ -692,6 +691,9 @@ class RDMAContext {
         double ratio_;
         double offset_;
 
+        // Pending signals need to be polled.
+        uint32_t pending_signal_poll_ = 0;
+
         inline void update_clock(double ratio, double offset) {
             ratio_ = ratio;
             offset_ = offset;
@@ -732,7 +734,13 @@ class RDMAContext {
          * @brief Poll the completion queues for all UC QPs.
          * SQ and RQ use separate completion queues.
          */
-        inline int poll_uc_cq(void) { int work = sender_poll_uc_cq(); work += receiver_poll_uc_cq(); return work;}
+        inline int poll_uc_cq(void) { 
+            int work = 0;
+            work += sender_poll_uc_cq();
+            work += receiver_poll_uc_cq();
+
+            return work;
+        }
         int sender_poll_uc_cq(void);
         int receiver_poll_uc_cq(void);
 
@@ -770,18 +778,21 @@ class RDMAContext {
         /**
          * @brief Receive a chunk from the flow.
          * @param ack_list If this QP needs ACK, add it to the list.
+         * @return true If the chunk is received successfully.
          */
         void rx_chunk(struct list_head *ack_list);
 
         /**
          * @brief Receive a retransmitted chunk from the flow.
          * @param ack_list If this QP needs ACK, add it to the list.
+         * @return true If the chunk is received successfully.
          */
         void rx_retr_chunk(struct list_head *ack_list);
 
         /**
          * @brief Receive a barrier from the flow.
          * @param ack_list If this QP needs ACK, add it to the list.
+         * @return true If the barrier is received successfully.
          */
         void rx_barrier(struct list_head *ack_list);
 
