@@ -55,7 +55,7 @@ class Timely {
         false;  ///< Track per-packet RTT stats
 
     // Config
-    #ifdef CLOUDLAB_DEV
+    #ifdef P4D
     static constexpr double kMinRate = 60 * 1000 * 1000;
     static constexpr double kAddRate = 60 * 1000 * 1000;
     static constexpr double kTLow = 50;

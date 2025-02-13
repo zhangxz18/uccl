@@ -4,7 +4,7 @@
 
 XDP_TARGETS  := af_xdp_kern af_xdp_kern_efa
 USER_TARGETS := af_xdp_user af_xdp_user_efa
-FI_FLAGS = -I /opt/amazon/efa/include -L /opt/amazon/efa/lib -lfabric -libverbs
+FI_FLAGS = -I /opt/amazon/efa/include -L /opt/amazon/efa/lib -lfabric -libverbs -lefa
 LDLIBS += -lpthread $(FI_FLAGS)
 
 all: fi efa cuda

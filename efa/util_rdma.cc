@@ -40,11 +40,8 @@ void RDMAFactory::init_dev(int gid_idx)
     // Get Infiniband name from GID index.
     DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
 
-    // Get IP address from Infiniband name.
-    if (!SINGLE_IP.empty())
-        dev.local_ip_str = SINGLE_IP;
-    else
-        DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) == 0);
+    // Get IP address from GID index.
+    DCHECK(util_rdma_get_ip_from_gididx(gid_idx, &dev.local_ip_str) == 0);
 
     // Get the list of RDMA devices.
     device_list = ibv_get_device_list(&nb_devices);
@@ -93,11 +90,8 @@ void RDMAFactory::init_dev(int gid_idx)
         goto close_device;
     }
 
-    if (USE_ROCE && port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
-        fprintf(stderr, "RoCE is not supported\n");
-        goto close_device;
-    } else if (!USE_ROCE && port_attr.link_layer != IBV_LINK_LAYER_INFINIBAND) {
-        fprintf(stderr, "IB is not supported\n");
+    if (port_attr.link_layer != IBV_LINK_LAYER_UNSPECIFIED) {
+        fprintf(stderr, "EFA link layer is not supported\n");
         goto close_device;
     }
 
@@ -176,7 +170,7 @@ RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, uni
     remote_ctx_.remote_gid = meta.install_ctx.remote_gid;
     remote_ctx_.remote_port_attr = meta.install_ctx.remote_port_attr;
     
-    mtu_bytes_ = util_rdma_get_mtu_from_ibv_mtu(factory_dev->port_attr.active_mtu);
+    mtu_bytes_ = EFA_MTU;
 
     // Create PD.
     pd_ = factory_dev->pd;
@@ -549,11 +543,11 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
         {
             auto wheel = &wheel_;
             uint32_t hdr_overhead;
-            if (likely(chunk_size == kChunkSize && mtu_bytes_ == 4096)) {
-                hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
+            if (likely(chunk_size == kChunkSize && mtu_bytes_ == EFA_MTU)) {
+                hdr_overhead = MAX_CHUNK_EFA_HDR_OVERHEAD;
             } else {
                 auto num_mtu = (chunk_size + mtu_bytes_) / mtu_bytes_;
-                hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
+                hdr_overhead = num_mtu * EFA_HDR_OVERHEAD;
             }
             
             if constexpr (kPPCwnd) {
@@ -1240,10 +1234,10 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     auto remote_addr = pending_retr_chunk->second.remote_addr;
 
     // Accept this retransmission chunk.
-    #ifdef CLOUDLAB_DEV
-        memcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
-    #else
+    #ifdef P4D
         cudaMemcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len, cudaMemcpyHostToDevice);
+    #else
+        memcpy(reinterpret_cast<void *>(remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
     #endif
 
     qpw->pcb.stats_accept_retr++;
@@ -1361,10 +1355,10 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
     } else {
         VLOG(5) << "This retransmission chunk is accepted!!!";
         // Accept this retransmission chunk.
-        #ifdef CLOUDLAB_DEV
-            memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
-        #else
+        #ifdef P4D
             cudaMemcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len, cudaMemcpyHostToDevice);
+        #else
+            memcpy(reinterpret_cast<void *>(hdr->remote_addr), reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)), chunk_len);
         #endif
         
         qpw->pcb.stats_accept_retr++;

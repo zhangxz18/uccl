@@ -28,19 +28,12 @@ class RDMAContext;
 class RDMAFactory;
 extern std::shared_ptr<RDMAFactory> rdma_ctl;
 
-// LRH (Local Routing Header) + GRH (Global Routing Header) + BTH (Base Transport Header)
-static constexpr uint32_t IB_HDR_OVERHEAD = (8 + 40 + 12);
-// Ethernet + IPv4 + UDP + BTH
-static constexpr uint32_t ROCE_IPV4_HDR_OVERHEAD = (14 + 20 + 8 + 12);
-// Ethernet + IPv6 + UDP + BTH
-static constexpr uint32_t ROCE_IPV6_HDR_OVERHEAD = (14 + 40 + 8 + 12);
+static constexpr uint32_t EFA_HDR_OVERHEAD = (9000 - EFA_MTU);
 
 static constexpr uint32_t BASE_PSN = 0;
 
-// For quick computation at MTU 4096
-static constexpr uint32_t MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV4_HDR_OVERHEAD;
-static constexpr uint32_t MAX_CHUNK_ROCE_IPV6_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV6_HDR_OVERHEAD;
-static constexpr uint32_t MAX_CHUNK_IB_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * IB_HDR_OVERHEAD;
+// For quick computation at EFA_MTU
+static constexpr uint32_t MAX_CHUNK_EFA_HDR_OVERHEAD = ((kChunkSize + EFA_MTU) / EFA_MTU) * EFA_HDR_OVERHEAD;
 
 /**
  * @brief A buffer pool with the following properties:
@@ -922,15 +915,10 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, int dev)
 
     attr.qp_state = IBV_QPS_RTR;
     attr.path_mtu = factory_dev->port_attr.active_mtu;
-    if (USE_ROCE) {
-        attr.ah_attr.is_global = 1;
-        attr.ah_attr.grh.dgid = factory_dev->gid;
-        attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
-        attr.ah_attr.grh.hop_limit = 0xff;
-    } else {
-        attr.ah_attr.is_global = 0;
-        attr.ah_attr.dlid = factory_dev->port_attr.lid;
-    }
+    attr.ah_attr.is_global = 1;
+    attr.ah_attr.grh.dgid = factory_dev->gid;
+    attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
+    attr.ah_attr.grh.hop_limit = 0xff;
 
     attr.ah_attr.port_num = IB_PORT_NUM;
     attr.dest_qp_num = qp->qp_num;
@@ -962,21 +950,11 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, int dev, struct RemoteRDMACon
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
     attr.path_mtu = factory_dev->port_attr.active_mtu;
-    if (USE_ROCE) {
-        attr.ah_attr.is_global = 1;
-        attr.ah_attr.port_num = IB_PORT_NUM;
-        attr.ah_attr.grh.dgid = remote_ctx->remote_gid;
-        attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
-        attr.ah_attr.grh.hop_limit = 0xff;
-    } else {
-        if (util_rdma_extract_local_subnet_prefix(factory_dev->gid.global.subnet_prefix) != 
-            util_rdma_extract_local_subnet_prefix(remote_ctx->remote_gid.global.subnet_prefix)) {
-                LOG(ERROR) << "Only support same subnet communication for now.";
-        }
-        attr.ah_attr.is_global = 0;
-        attr.ah_attr.port_num = IB_PORT_NUM;
-        attr.ah_attr.dlid = remote_ctx->remote_port_attr.lid;
-    }
+    attr.ah_attr.is_global = 1;
+    attr.ah_attr.port_num = IB_PORT_NUM;
+    attr.ah_attr.grh.dgid = remote_ctx->remote_gid;
+    attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
+    attr.ah_attr.grh.hop_limit = 0xff;
     attr.ah_attr.sl = sl;
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = remote_psn;
@@ -1094,30 +1072,6 @@ static inline void util_rdma_create_qp(struct ibv_context *context, struct ibv_q
 }
 
 /**
- * @brief This helper function converts an Infiniband name (e.g., mlx5_0) to an Ethernet name (e.g., eth0)
- * @return int -1 on error, 0 on success
- */
-static inline int util_rdma_ib2eth_name(const char *ib_name, char *ethernet_name)
-{
-    char command[512];
-    snprintf(command, sizeof(command), 
-        "ls -l /sys/class/infiniband/%s/device/net | sed -n '2p' | sed 's/.* //'", ib_name);
-    FILE *fp = popen(command, "r");
-    if (fp == nullptr) {
-        perror("popen");
-        return -1;
-    }
-    if (fgets(ethernet_name, 64, fp) == NULL) {
-        pclose(fp);
-        return -1;
-    }
-    pclose(fp);
-    // Remove newline character if present
-    ethernet_name[strcspn(ethernet_name, "\n")] = '\0';
-    return 0;
-}
-
-/**
  * @brief This helper function gets the Infiniband name from the GID index.
  * 
  * @param gid_idx 
@@ -1126,39 +1080,20 @@ static inline int util_rdma_ib2eth_name(const char *ib_name, char *ethernet_name
  */
 static inline int util_rdma_get_ib_name_from_gididx(int gid_idx, char *ib_name)
 {
-    sprintf(ib_name, "%s%d", IB_DEVICE_NAME_PREFIX, gid_idx);
+    sprintf(ib_name, "%s", EFA_DEVICE_NAME_LIST[gid_idx].c_str());
     return 0;
 }
 
 /**
- * @brief This helper function gets the IP address of the device from Infiniband name.
+ * @brief This helper function gets the IP address of the device from gid_index.
  * 
- * @param ib_name 
- * @param ip 
+ * @param gid_idx 
  * @return int 
  */
-static inline int util_rdma_get_ip_from_ib_name(const char *ib_name, std::string *ip)
+static inline int util_rdma_get_ip_from_gididx(int gid_idx, std::string *ip)
 {
-    char ethernet_name[64];
-    if (util_rdma_ib2eth_name(ib_name, ethernet_name)) {
-        return -1;
-    }
-
-    *ip = get_dev_ip(ethernet_name);
-
+    *ip = get_dev_ip(ENA_DEVICE_NAME_LIST[gid_idx].c_str());
     return *ip == "" ? -1 : 0;
-}
-
-static inline int util_rdma_get_mtu_from_ibv_mtu(ibv_mtu mtu)
-{
-    switch (mtu) {
-        case IBV_MTU_256: return 256;
-        case IBV_MTU_512: return 512;
-        case IBV_MTU_1024: return 1024;
-        case IBV_MTU_2048: return 2048;
-        case IBV_MTU_4096: return 4096;
-        default: return 0;
-    }
 }
 
 }// namespace uccl

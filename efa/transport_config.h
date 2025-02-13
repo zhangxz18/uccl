@@ -3,34 +3,26 @@
 #include <unistd.h>
 
 #include <cstdint>
-#include <thread>
 #include <string>
+#include <thread>
 
-#define CLOUDLAB_DEV
+#define P4D
 
 // #define STATS
 
 /// Interface configuration.
-static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
-#ifdef CLOUDLAB_DEV
-static const bool USE_ROCE = true;
-// If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("");
-static const uint8_t NUM_DEVICES = 2;
-static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {2,3};
-#else
-static const bool USE_ROCE = false;
-// If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("");
-static const uint8_t NUM_DEVICES = 8;
-static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
+#ifdef P4D
+static const uint8_t NUM_DEVICES = 4;
+static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3};
+static const std::string EFA_DEVICE_NAME_LIST[NUM_DEVICES] = {
+    "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
+static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
+    "ens32", "ens65", "ens130", "ens163"};
+static const double kLinkBandwidth = 100.0 * 1e9 / 8; // 100Gbps
 #endif
 static const uint8_t IB_PORT_NUM = 1;
-#ifdef CLOUDLAB_DEV
-static const double kLinkBandwidth = 25.0 * 1e9 / 8; // 25Gbps
-#else
-static const double kLinkBandwidth = 400.0 * 1e9 / 8; // 400Gbps
-#endif
+static const uint32_t EFA_MTU = 8928;
+static const uint32_t UD_ADDITION = 40;
 /// Interface configuration.
 
 // # of engines per device.
@@ -38,7 +30,8 @@ static const uint32_t NUM_ENGINES = 4;
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
-// PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
+// PortEntropy/Path/QP per engine. The total number is NUM_ENGINES *
+// kPortEntropy.
 static const uint32_t kPortEntropy = 256;
 
 // Per-path cwnd or global cwnd.
@@ -79,7 +72,8 @@ static const uint32_t kMaxSRQ = 64 * kMaxReq;
 static const uint32_t kMaxRetr = 16;
 // Maximum number of outstanding retransmission chunks on all QPs.
 static const uint32_t kMaxInflightRetrChunks = 8;
-static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
+static_assert(kMaxInflightRetrChunks <= kMaxRetr,
+              "kMaxInflightRetrChunks <= kMaxRetr");
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
 static const uint32_t kMaxBurstTW = 24;
 // Posting recv WQEs every kPostRQThreshold.
@@ -92,10 +86,11 @@ static constexpr uint32_t kMAXCumBytes = kMAXCumWQE * kChunkSize;
 
 // Sack bitmap size in bits.
 static const std::size_t kSackBitmapSize = 64 << 1;
-// kFastRexmitDupAckThres equals to 1 means all duplicate acks are caused by packet loss.
-// This is true for flow-level ECMP, which is the common case.
-// When the network supports adaptive routing, duplicate acks may be caused by adaptive routing.
-// In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
+// kFastRexmitDupAckThres equals to 1 means all duplicate acks are caused by
+// packet loss. This is true for flow-level ECMP, which is the common case. When
+// the network supports adaptive routing, duplicate acks may be caused by
+// adaptive routing. In this case, kFastRexmitDupAckThres should be set to a
+// value greater than 0.
 static const std::size_t kFastRexmitDupAckThres = 1;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
@@ -107,10 +102,10 @@ static const bool kConstRTO = false;
 static const double kRTOUSec = 1000; // 1ms
 // kConstRTO == false: Minimum retransmission timeout in microseconds.
 static const double kMinRTOUsec = 1000; // 1ms
-static const uint32_t kRTORTT = 5;     // RTO = kRTORTT RTTs
+static const uint32_t kRTORTT = 5;      // RTO = kRTORTT RTTs
 
 // Slow timer (periodic processing) interval in microseconds.
-static const size_t kSlowTimerIntervalUs = 1000;  // 1ms
+static const size_t kSlowTimerIntervalUs = 1000; // 1ms
 
 /// Debugging and testing.
 // Disable hardware timestamp.

@@ -4,7 +4,7 @@ from shared import *
 async def rsync(nodes):
     tasks = [
         run_command(
-            f"rsync -auv -e 'ssh -o StrictHostKeyChecking=no' /opt/uccl/ {node}:/opt/uccl/"
+            f"rsync -auv -e 'ssh -o StrictHostKeyChecking=no' /opt/uccl_rdma/ {node}:/opt/uccl_rdma/"
         )
         for node in nodes
     ]
