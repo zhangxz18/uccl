@@ -41,9 +41,11 @@ static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static const uint32_t kPortEntropy = 256;
 
+// Use RC rather than UC.
+static const bool kUSERC = false;
+constexpr static int kTotalQP = kUSERC ? kPortEntropy : kPortEntropy + 2;
 // Per-path cwnd or global cwnd.
 static const bool kPPCwnd = false;
-
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static const uint32_t kRCSize = 65536;
 // # of Tx work handled in one loop.
@@ -52,7 +54,7 @@ static const uint32_t kMaxTxWork = 1;
 static const uint32_t kMaxRxWork = 8;
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
-// CQ size for UC SQ and RQ.
+// Completion queue (CQ) size.
 static const int kCQSize = 16384;
 // Interval for posting a signal WQE.
 // static const uint32_t kSignalInterval = kCQSize >> 1;

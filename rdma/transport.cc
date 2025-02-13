@@ -176,7 +176,22 @@ struct FifoItem *UcclFlow::post_fifo(uint32_t engine_idx, void **data, int *size
     return elems;
 }
 
-void UcclRDMAEngine::handle_completion(void) 
+void UcclRDMAEngine::rc_handle_completion(void) 
+{
+    int work = 0;
+    for (auto& it : rdma_ctx_map_) {
+        // Update ratio and offset
+        it.second->update_clock(ratio_, offset_);
+
+        // Poll the CQ for data path QPs.
+        work += it.second->poll_rc_cq();
+
+        // Foce check when there is no work.
+        it.second->check_srq(!work);
+    }
+}
+
+void UcclRDMAEngine::uc_handle_completion(void) 
 {
     int work = 0;
     // First, poll the CQ for Ctrl QPs.
@@ -189,7 +204,7 @@ void UcclRDMAEngine::handle_completion(void)
     for (auto& it : rdma_ctx_map_) {
         // Poll the CQ for Retr QP
         work += it.second->poll_retr_cq();
-        // Poll the CQ for UC QPs.
+        // Poll the CQ for data path QPs.
         work += it.second->poll_uc_cq();
         // Foce check when there is no work.
         it.second->check_srq(!work);
@@ -296,8 +311,9 @@ void UcclRDMAEngine::run() {
  * main engine cycle (see method `Run`).
  */
 void UcclRDMAEngine::periodic_process() {
-    // Handle RTOs for all QPs.
-    handle_rto();
+    // Handle RTOs for all UC QPs.
+    if constexpr (!kUSERC)
+        handle_rto();
     // Handle control plane requests.
     process_ctl_reqs();
 }
@@ -361,54 +377,59 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         auto *poll_ctx = ctrl_work.poll_ctx;
         // Send PSN, QPN to remote peer.
         const int size = sizeof(uint32_t) + sizeof(uint32_t);
-        char buf[RDMAContext::kTotalQP * size];
+        char buf[kTotalQP * size];
         for (auto i = 0; i < kPortEntropy; i++) {
-            memcpy(buf + i * size, &rdma_ctx->uc_qps_[i].local_psn, sizeof(uint32_t));
-            memcpy(buf + i * size + sizeof(uint32_t), &rdma_ctx->uc_qps_[i].qp->qp_num, sizeof(uint32_t));
+            memcpy(buf + i * size, &rdma_ctx->dp_qps_[i].local_psn, sizeof(uint32_t));
+            memcpy(buf + i * size + sizeof(uint32_t), &rdma_ctx->dp_qps_[i].qp->qp_num, sizeof(uint32_t));
         }
-        memcpy(buf + kPortEntropy * size, &rdma_ctx->ctrl_local_psn_, sizeof(uint32_t));
-        memcpy(buf + kPortEntropy * size + sizeof(uint32_t), &rdma_ctx->ctrl_qp_->qp_num, sizeof(uint32_t));
+        if constexpr (!kUSERC) {
+            memcpy(buf + kPortEntropy * size, &rdma_ctx->ctrl_local_psn_, sizeof(uint32_t));
+            memcpy(buf + kPortEntropy * size + sizeof(uint32_t), &rdma_ctx->ctrl_qp_->qp_num, sizeof(uint32_t));
+    
+            memcpy(buf + (kPortEntropy+1) * size, &rdma_ctx->retr_local_psn_, sizeof(uint32_t));
+            memcpy(buf + (kPortEntropy+1) * size + sizeof(uint32_t), &rdma_ctx->retr_qp_->qp_num, sizeof(uint32_t));
+        }
 
-        memcpy(buf + (kPortEntropy+1) * size, &rdma_ctx->retr_local_psn_, sizeof(uint32_t));
-        memcpy(buf + (kPortEntropy+1) * size + sizeof(uint32_t), &rdma_ctx->retr_qp_->qp_num, sizeof(uint32_t));
-        int ret = send_message(bootstrap_fd, buf, RDMAContext::kTotalQP * size);
-        DCHECK(ret == RDMAContext::kTotalQP * size);
+        int ret = send_message(bootstrap_fd, buf, kTotalQP * size);
+        DCHECK(ret == kTotalQP * size);
 
         // Receive PSN, QPN from remote peer.
-        ret = receive_message(bootstrap_fd, buf, RDMAContext::kTotalQP * size);
-        DCHECK(ret == RDMAContext::kTotalQP * size);
+        ret = receive_message(bootstrap_fd, buf, kTotalQP * size);
+        DCHECK(ret == kTotalQP * size);
 
         // Modify QPs to RTR and RTS.
         for (auto i = 0; i < kPortEntropy; i++) {
             auto remote_psn = *reinterpret_cast<uint32_t*>(buf + i * size);
             auto remote_qpn = *reinterpret_cast<uint32_t*>(buf + i * size + sizeof(uint32_t));
-            auto qp = rdma_ctx->uc_qps_[i].qp;
+            auto qp = rdma_ctx->dp_qps_[i].qp;
 
             ret = modify_qp_rtr(qp, dev, &rdma_ctx->remote_ctx_, remote_qpn, remote_psn, 0);
-            DCHECK(ret == 0) << "Failed to modify UC QP to RTR";
+            DCHECK(ret == 0) << "Failed to modify data path QP to RTR";
 
-            ret = modify_qp_rts(qp, rdma_ctx->uc_qps_[i].local_psn, false);
-            DCHECK(ret == 0) << "Failed to modify UC QP to RTS";
+            ret = modify_qp_rts(qp, rdma_ctx->dp_qps_[i].local_psn, kUSERC);
+            DCHECK(ret == 0) << "Failed to modify data path QP to RTS";
         }
 
-        auto ctrl_rpsn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size);
-        auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
-        auto ctrl_qp = rdma_ctx->ctrl_qp_;
-
-        ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn, 1);
-        DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
-
-        ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
-
-        auto retr_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size);
-        auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
-        auto retr_qp = rdma_ctx->retr_qp_;
-
-        ret = modify_qp_rtr(retr_qp, dev, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn, 0);
-        DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
-
-        ret = modify_qp_rts(retr_qp, rdma_ctx->retr_local_psn_, false);
-        DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
+        if constexpr (!kUSERC) {
+            auto ctrl_rpsn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size);
+            auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
+            auto ctrl_qp = rdma_ctx->ctrl_qp_;
+    
+            ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn, 1);
+            DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
+    
+            ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
+    
+            auto retr_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size);
+            auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
+            auto retr_qp = rdma_ctx->retr_qp_;
+    
+            ret = modify_qp_rtr(retr_qp, dev, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn, 0);
+            DCHECK(ret == 0) << "Failed to modify Retr QP to RTR";
+    
+            ret = modify_qp_rts(retr_qp, rdma_ctx->retr_local_psn_, false);
+            DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
+        }
 
         uccl_wakeup(poll_ctx);
     });

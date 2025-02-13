@@ -517,13 +517,12 @@ class UcclEngine;
 
 /**
  * @brief RDMA context for a remote peer on an engine, which is produced by RDMAFactory. It contains:
- *   - (UC QP): Multiple Unreliable Connection QPs and a shared CQ. All UC QPs share the same SRQ.
+ *   - (Data path QP): Multiple UC/RC QPs and a shared CQ. All data path QPs share the same SRQ.
  *   - (Ctrl QP): A high-priority QP for control messages and a dedicated CQ, PD, and MR.
  *   - (Retr QP): A QP for retransmission and a dedicated CQ, PD, and MR.
  */
 class RDMAContext {
     public:
-        constexpr static int kTotalQP = kPortEntropy + 2;
         constexpr static int kCtrlMRSize = CtrlChunkBuffPool::kChunkSize * CtrlChunkBuffPool::kNumChunk;
         /// TODO: How to determine the size of retransmission MR?
         constexpr static int kRetrMRSize = RetrChunkBuffPool::kRetrChunkSize * RetrChunkBuffPool::kNumChunk;
@@ -609,12 +608,12 @@ class RDMAContext {
         // Protection domain for all RDMA resources.
         struct ibv_pd *pd_ = nullptr;
 
-        // QPs for data transfer based on Unreliable Connection (UC).
-        struct UCQPWrapper uc_qps_[kPortEntropy];
-        // UC QPN to index mapping.
+        // QPs for data transfer based on UC or RC.
+        struct UCQPWrapper dp_qps_[kPortEntropy];
+        // Data path QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;
         
-        // Shared CQ for all UC QPs.
+        // Shared CQ for all data path QPs.
         struct ibv_cq_ex *send_cq_ex_;
         struct ibv_cq_ex *recv_cq_ex_;
         struct ibv_srq *srq_;
@@ -643,7 +642,7 @@ class RDMAContext {
         struct ibv_mr *retr_hdr_mr_;
         uint32_t inflight_retr_chunks_ = 0;
 
-        // Global timing wheel for all UC QPs.
+        // Global timing wheel for all data path QPs.
         TimingWheel wheel_;
 
         // The device index that this context belongs to.
@@ -700,7 +699,7 @@ class RDMAContext {
         }
 
         // Convert NIC clock to host clock (TSC).
-        inline uint64_t convert_nic_to_host(uint64_t host_clock, uint64_t nic_clock) {
+        inline uint64_t convert_nic_to_host(uint64_t nic_clock) {
             return ratio_ * nic_clock + offset_;
         }
         
@@ -723,12 +722,26 @@ class RDMAContext {
             auto q2 = select_qpidx_rand();
 
             // Return the QP with lower RTT.
-            return uc_qps_[q1].pcb.timely.prev_rtt_ < uc_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
+            return dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
         }
 
         void tx_messages(struct ucclRequest *ureq);
 
         int supply_rx_buff(struct ucclRequest *ureq);
+
+        /**
+         * @brief Poll the completion queues for all RC QPs.
+         * SQ and RQ use separate completion queues.
+         */
+        inline int poll_rc_cq(void) {
+            int work = 0;
+            work += sender_poll_rc_cq();
+            work += receiver_poll_rc_cq();
+            
+            return work;
+        }
+        int sender_poll_rc_cq(void);
+        int receiver_poll_rc_cq(void);
 
         /**
          * @brief Poll the completion queues for all UC QPs.
@@ -743,6 +756,10 @@ class RDMAContext {
         }
         int sender_poll_uc_cq(void);
         int receiver_poll_uc_cq(void);
+
+        void rc_rx_ack(void);
+
+        void rc_rx_chunk(void);
 
         /**
          * @brief Poll the completion queue for the Ctrl QP.
@@ -769,7 +786,7 @@ class RDMAContext {
         void check_srq(bool force = false);
 
         /**
-         * @brief Retransmit a chunk for the given UC QP.
+         * @brief Retransmit a chunk for the given data path QP.
          * @param qpw 
          * @param wr_ex 
          */
@@ -803,7 +820,7 @@ class RDMAContext {
         void rx_ack(uint64_t pkt_addr);
 
         /**
-         * @brief Craft an ACK for a UC QP using the given WR index.
+         * @brief Craft an ACK for a data path QP using the given WR index.
          * 
          * @param qpidx 
          * @param chunk_addr
@@ -825,7 +842,7 @@ class RDMAContext {
         void burst_timing_wheel(void);
 
         /**
-         * @brief Try to update the CSN for the given UC QP.
+         * @brief Try to update the CSN for the given data path QP.
          * @param qpw 
          */
         void try_update_csn(struct UCQPWrapper *qpw);

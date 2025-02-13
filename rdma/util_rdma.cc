@@ -181,7 +181,7 @@ RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, uni
     // Create PD.
     pd_ = factory_dev->pd;
 
-    // Create a SRQ for all UC QPs.
+    // Create a SRQ for all data path QPs.
     struct ibv_srq_init_attr srq_init_attr;
     memset(&srq_init_attr, 0, sizeof(srq_init_attr));
     srq_init_attr.attr.max_sge = 1;
@@ -190,7 +190,7 @@ RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, uni
     srq_ = ibv_create_srq(pd_, &srq_init_attr);
     UCCL_INIT_CHECK(srq_ != nullptr, "ibv_create_srq failed");
 
-    // Create seperate send/recv CQ for UC QPs.
+    // Create seperate send/recv CQ for data path QPs.
     struct ibv_cq_init_attr_ex cq_ex_attr;
     cq_ex_attr.cqe = kCQSize;
     cq_ex_attr.cq_context = nullptr;
@@ -219,13 +219,16 @@ RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, uni
     UCCL_INIT_CHECK(ibv_modify_cq(ibv_cq_ex_to_cq(send_cq_ex_), &cq_attr) == 0, "ibv_modify_cq failed");
     UCCL_INIT_CHECK(ibv_modify_cq(ibv_cq_ex_to_cq(recv_cq_ex_), &cq_attr) == 0, "ibv_modify_cq failed");
     
-    // Create UC QPs.
+    // Create data path QPs. (UC/RC)
     struct ibv_qp_init_attr qp_init_attr;
     memset(&qp_init_attr, 0, sizeof(qp_init_attr));
     qp_init_attr.qp_context = this;
     qp_init_attr.send_cq = ibv_cq_ex_to_cq(send_cq_ex_);
     qp_init_attr.recv_cq = ibv_cq_ex_to_cq(recv_cq_ex_);
-    qp_init_attr.qp_type = IBV_QPT_UC;
+    if constexpr (!kUSERC)
+        qp_init_attr.qp_type = IBV_QPT_UC;
+    else
+        qp_init_attr.qp_type = IBV_QPT_RC;
     qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv + kMaxRetr;
     qp_init_attr.cap.max_send_sge = kMaxSge;
     qp_init_attr.cap.max_inline_data = 0;
@@ -240,53 +243,119 @@ RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, uni
     
     for (int i = 0; i < kPortEntropy; i++) {
         struct ibv_qp *qp = ibv_create_qp(pd_, &qp_init_attr);
-        UCCL_INIT_CHECK(qp != nullptr, "ibv_create_qp failed for UC");
+        UCCL_INIT_CHECK(qp != nullptr, "ibv_create_qp failed for data path QP");
     
         // Modify QP state to INIT.
         UCCL_INIT_CHECK(ibv_modify_qp(qp, &qpAttr, 
             IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) == 0, "ibv_modify_qp failed");
 
-        uc_qps_[i].local_psn = BASE_PSN;
-        uc_qps_[i].qp = qp;
-        uc_qps_[i].txtracking.set_rdma_ctx(this);
-        INIT_LIST_HEAD(&uc_qps_[i].ack.ack_link); 
-        uc_qps_[i].ack.qpidx = i;
+        dp_qps_[i].local_psn = BASE_PSN;
+        dp_qps_[i].qp = qp;
+        dp_qps_[i].txtracking.set_rdma_ctx(this);
+        INIT_LIST_HEAD(&dp_qps_[i].ack.ack_link); 
+        dp_qps_[i].ack.qpidx = i;
         qpn2idx_.insert({qp->qp_num, i});
     }
 
     // Initialize work request extension buffer pool.
     wr_ex_pool_.emplace();
 
-    // Create Ctrl QP, CQ, and MR.
-    ctrl_local_psn_ = BASE_PSN;
-    util_rdma_create_qp(context_, &ctrl_qp_, IBV_QPT_UC, true, true,
-        (struct ibv_cq **)&ctrl_cq_ex_, false, kCQSize, pd_, &ctrl_mr_, nullptr, kCtrlMRSize, 
-            CtrlChunkBuffPool::kNumChunk, CtrlChunkBuffPool::kNumChunk, 1, 1);
-    
-    // Initialize Control packet buffer pool.
-    ctrl_chunk_pool_.emplace(ctrl_mr_);
-
-    // Create Retr QP, CQ and MR.
-    retr_local_psn_ = BASE_PSN;
-    util_rdma_create_qp(context_, &retr_qp_, IBV_QPT_UC, true, false,
-        (struct ibv_cq **)&retr_cq_ex_, false, kCQSize, pd_, &retr_mr_, nullptr, kRetrMRSize, 
-            RetrChunkBuffPool::kNumChunk, RetrChunkBuffPool::kNumChunk, 2, 1);
-    void *retr_hdr = mmap(nullptr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (retr_hdr == MAP_FAILED)
-        throw std::runtime_error("mmap failed");
-    retr_hdr_mr_ = ibv_reg_mr(pd_, retr_hdr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, 
-        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    if (retr_hdr_mr_ == nullptr)
-        throw std::runtime_error("ibv_reg_mr failed");
-    
-    // Initialize retransmission chunk and header buffer pool.
-    {
-        retr_chunk_pool_.emplace(retr_mr_);
-        retr_hdr_pool_.emplace(retr_hdr_mr_);
-    }
-
     struct ibv_recv_wr wr;
     memset(&wr, 0, sizeof(wr));
+
+    // Initialize resources needed when using UC.
+    if constexpr (!kUSERC) {
+        // Create Ctrl QP, CQ, and MR.
+        ctrl_local_psn_ = BASE_PSN;
+        util_rdma_create_qp(context_, &ctrl_qp_, IBV_QPT_UC, true, true,
+            (struct ibv_cq **)&ctrl_cq_ex_, false, kCQSize, pd_, &ctrl_mr_, nullptr, kCtrlMRSize, 
+                CtrlChunkBuffPool::kNumChunk, CtrlChunkBuffPool::kNumChunk, 1, 1);
+
+                // Initialize Control packet buffer pool.
+        ctrl_chunk_pool_.emplace(ctrl_mr_);
+
+        // Create Retr QP, CQ and MR.
+        retr_local_psn_ = BASE_PSN;
+        util_rdma_create_qp(context_, &retr_qp_, IBV_QPT_UC, true, false,
+            (struct ibv_cq **)&retr_cq_ex_, false, kCQSize, pd_, &retr_mr_, nullptr, kRetrMRSize, 
+                RetrChunkBuffPool::kNumChunk, RetrChunkBuffPool::kNumChunk, 2, 1);
+        void *retr_hdr = mmap(nullptr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if (retr_hdr == MAP_FAILED)
+            throw std::runtime_error("mmap failed");
+        retr_hdr_mr_ = ibv_reg_mr(pd_, retr_hdr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize, 
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        if (retr_hdr_mr_ == nullptr)
+            throw std::runtime_error("ibv_reg_mr failed");
+
+        // Initialize retransmission chunk and header buffer pool.
+        {
+            retr_chunk_pool_.emplace(retr_mr_);
+            retr_hdr_pool_.emplace(retr_hdr_mr_);
+        }
+
+        // Populate recv work requests on Ctrl QP for consuming control packets.
+        {
+            struct ibv_sge sge;
+            for (int i = 0; i < (CtrlChunkBuffPool::kNumChunk - 1) / 2; i++) {
+                uint64_t chunk_addr;
+                if (ctrl_chunk_pool_->alloc_buff(&chunk_addr))
+                    throw std::runtime_error("Failed to allocate buffer for control packet");
+                sge.addr = chunk_addr;
+                sge.length = CtrlChunkBuffPool::kChunkSize;
+                sge.lkey = ctrl_chunk_pool_->get_lkey();
+                wr.wr_id = chunk_addr;
+                wr.next = nullptr;
+                wr.sg_list = &sge;
+                wr.num_sge = 1;
+                struct ibv_recv_wr *bad_wr;
+                if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
+                    throw std::runtime_error("ibv_post_recv failed");
+            }
+        }
+
+        // Populate recv work requestrs on Retr QP for consuming retransmission chunks.
+        {
+            struct ibv_sge sge;
+            for (int i = 0; i < kMaxRetr; i++) {
+                uint64_t chunk_addr;
+                if (retr_chunk_pool_->alloc_buff(&chunk_addr))
+                    throw std::runtime_error("Failed to allocate buffer for retransmission chunk");
+                sge.addr = chunk_addr;
+                sge.length = RetrChunkBuffPool::kRetrChunkSize;
+                sge.lkey = retr_chunk_pool_->get_lkey();
+                wr.wr_id = chunk_addr;
+                wr.next = nullptr;
+                wr.sg_list = &sge;
+                wr.num_sge = 1;
+                struct ibv_recv_wr *bad_wr;
+                if (ibv_post_recv(retr_qp_, &wr, &bad_wr))
+                    throw std::runtime_error("ibv_post_recv failed");
+            }
+        }
+
+        for (int i = 0; i < kMaxBatchCQ; i++) {
+            retr_wrs_[i].num_sge = 1;
+            retr_wrs_[i].sg_list = nullptr;
+            retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
+        }
+
+        for (int i = 0; i < kPostRQThreshold; i++) {
+            imm_wrs_[i].num_sge = 0;
+            imm_wrs_[i].sg_list = nullptr;
+            imm_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &imm_wrs_[i + 1];
+    
+            rx_ack_sges_[i].lkey = ctrl_chunk_pool_->get_lkey();
+            rx_ack_sges_[i].length = CtrlChunkBuffPool::kChunkSize;
+            rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
+            rx_ack_wrs_[i].num_sge = 1;
+            rx_ack_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &rx_ack_wrs_[i + 1];
+        }
+
+        tx_ack_wr_.num_sge = 1;
+        tx_ack_wr_.next = nullptr;
+        tx_ack_wr_.opcode = IBV_WR_SEND_WITH_IMM;
+        tx_ack_wr_.send_flags = IBV_SEND_SIGNALED;
+    }
 
     // Populate recv work requests to SRQ for consuming immediate data.
     for (int i = 0; i < kMaxSRQ; i++) {
@@ -294,97 +363,35 @@ RDMAContext::RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, uni
         DCHECK(ibv_post_srq_recv(srq_, &wr, &bad_wr) == 0);
     }
 
-    // Populate recv work requests on Ctrl QP for consuming control packets.
-    {
-        struct ibv_sge sge;
-        for (int i = 0; i < (CtrlChunkBuffPool::kNumChunk - 1) / 2; i++) {
-            uint64_t chunk_addr;
-            if (ctrl_chunk_pool_->alloc_buff(&chunk_addr))
-                throw std::runtime_error("Failed to allocate buffer for control packet");
-            sge.addr = chunk_addr;
-            sge.length = CtrlChunkBuffPool::kChunkSize;
-            sge.lkey = ctrl_chunk_pool_->get_lkey();
-            wr.wr_id = chunk_addr;
-            wr.next = nullptr;
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            struct ibv_recv_wr *bad_wr;
-            if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
-                throw std::runtime_error("ibv_post_recv failed");
-        }
-    }
-
-    // Populate recv work requestrs on Retr QP for consuming retransmission chunks.
-    {
-        struct ibv_sge sge;
-        for (int i = 0; i < kMaxRetr; i++) {
-            uint64_t chunk_addr;
-            if (retr_chunk_pool_->alloc_buff(&chunk_addr))
-                throw std::runtime_error("Failed to allocate buffer for retransmission chunk");
-            sge.addr = chunk_addr;
-            sge.length = RetrChunkBuffPool::kRetrChunkSize;
-            sge.lkey = retr_chunk_pool_->get_lkey();
-            wr.wr_id = chunk_addr;
-            wr.next = nullptr;
-            wr.sg_list = &sge;
-            wr.num_sge = 1;
-            struct ibv_recv_wr *bad_wr;
-            if (ibv_post_recv(retr_qp_, &wr, &bad_wr))
-                throw std::runtime_error("ibv_post_recv failed");
-        }
-    }
-
     // Timing wheel.
     wheel_.catchup();
-
-    for (int i = 0; i < kMaxBatchCQ; i++) {
-        retr_wrs_[i].num_sge = 1;
-        retr_wrs_[i].sg_list = nullptr;
-        retr_wrs_[i].next = (i == kMaxBatchCQ - 1) ? nullptr : &retr_wrs_[i + 1];
-    }
-
-    for (int i = 0; i < kPostRQThreshold; i++) {
-        imm_wrs_[i].num_sge = 0;
-        imm_wrs_[i].sg_list = nullptr;
-        imm_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &imm_wrs_[i + 1];
-
-        rx_ack_sges_[i].lkey = ctrl_chunk_pool_->get_lkey();
-        rx_ack_sges_[i].length = CtrlChunkBuffPool::kChunkSize;
-        rx_ack_wrs_[i].sg_list = &rx_ack_sges_[i];
-        rx_ack_wrs_[i].num_sge = 1;
-        rx_ack_wrs_[i].next = (i == kPostRQThreshold - 1) ? nullptr : &rx_ack_wrs_[i + 1];
-    }
-
-    tx_ack_wr_.num_sge = 1;
-    tx_ack_wr_.next = nullptr;
-    tx_ack_wr_.opcode = IBV_WR_SEND_WITH_IMM;
-    tx_ack_wr_.send_flags = IBV_SEND_SIGNALED;
 }
 
 RDMAContext::~RDMAContext()
 {    
-    if (ctrl_mr_ != nullptr) {
-        munmap(ctrl_mr_->addr, ctrl_mr_->length);
-        ibv_dereg_mr(ctrl_mr_);
-    }
-    if (ibv_cq_ex_to_cq(ctrl_cq_ex_) != nullptr) {
-        ibv_destroy_cq(ibv_cq_ex_to_cq(ctrl_cq_ex_));
-    }
-    if (ctrl_qp_ != nullptr) {
-        ibv_destroy_qp(ctrl_qp_);
-    }
-
-    if (retr_mr_ != nullptr) {
-        munmap(retr_mr_->addr, retr_mr_->length);
-        ibv_dereg_mr(retr_mr_);
-    }
-    if (retr_hdr_mr_ != nullptr) {
-        munmap(retr_hdr_mr_->addr, retr_hdr_mr_->length);
-        ibv_dereg_mr(retr_hdr_mr_);
+    if constexpr (!kUSERC) {
+        if (ctrl_mr_ != nullptr) {
+            munmap(ctrl_mr_->addr, ctrl_mr_->length);
+            ibv_dereg_mr(ctrl_mr_);
+        }
+        if (ibv_cq_ex_to_cq(ctrl_cq_ex_) != nullptr) {
+            ibv_destroy_cq(ibv_cq_ex_to_cq(ctrl_cq_ex_));
+        }
+        if (ctrl_qp_ != nullptr) {
+            ibv_destroy_qp(ctrl_qp_);
+        }
+        if (retr_mr_ != nullptr) {
+            munmap(retr_mr_->addr, retr_mr_->length);
+            ibv_dereg_mr(retr_mr_);
+        }
+        if (retr_hdr_mr_ != nullptr) {
+            munmap(retr_hdr_mr_->addr, retr_hdr_mr_->length);
+            ibv_dereg_mr(retr_hdr_mr_);
+        }
     }
 
     for (int i = 0; i < kPortEntropy; i++) {
-        ibv_destroy_qp(uc_qps_[i].qp);
+        ibv_destroy_qp(dp_qps_[i].qp);
     }
     if (srq_ != nullptr) {
         ibv_destroy_srq(srq_);
@@ -475,7 +482,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
             
             // Select QP.
             auto qpidx = select_qpidx_pow2();
-            auto qpw = &uc_qps_[qpidx];
+            auto qpw = &dp_qps_[qpidx];
 
             wr->send_flags = 0;
             if (qpw->signal_cnt_++ % kSignalInterval == 0) {
@@ -528,7 +535,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
         
         // Select QP.
         auto qpidx = select_qpidx_pow2();
-        auto qpw = &uc_qps_[qpidx];
+        auto qpw = &dp_qps_[qpidx];
         // There is no n(eed to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
         // See https://www.rdmamojo.com/2014/06/30/working-unsignaled-completions/.
@@ -654,6 +661,31 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_q
     return fabric_delay_tsc;
 }
 
+int RDMAContext::receiver_poll_rc_cq(void)
+{
+    auto cq_ex = recv_cq_ex_;
+    int cq_budget = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
+
+    while (1) {
+        if (cq_ex->status != IBV_WC_SUCCESS)
+            LOG(ERROR) << "data path CQ state error: " << cq_ex->status 
+            << " from QP:" << ibv_wc_read_qp_num(cq_ex);
+        
+        rc_rx_chunk();
+
+        post_srq_cnt_++;
+        
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+    
+    ibv_end_poll(cq_ex);
+
+    return cq_budget;
+}
+
 int RDMAContext::receiver_poll_uc_cq(void)
 {
     auto cq_ex = recv_cq_ex_;
@@ -686,7 +718,7 @@ int RDMAContext::receiver_poll_uc_cq(void)
             }
             post_srq_cnt_++;
         } else {
-            LOG(ERROR) << "UC CQ state error: " << cq_ex->status << " from QP:" << ibv_wc_read_qp_num(cq_ex);
+            LOG(ERROR) << "data path CQ state error: " << cq_ex->status << " from QP:" << ibv_wc_read_qp_num(cq_ex);
         }
         
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
@@ -711,6 +743,54 @@ int RDMAContext::receiver_poll_uc_cq(void)
     return cq_budget;
 }
 
+void RDMAContext::rc_rx_ack(void)
+{
+    auto cq_ex = send_cq_ex_;
+    uint64_t t5;
+    auto t6 = rdtsc();
+
+    auto qpidx = qpn2idx_[ibv_wc_read_qp_num(cq_ex)];
+    auto qpw = &dp_qps_[qpidx];
+
+    if constexpr (kTestNoHWTimestamp)
+        t5 = t6;
+    else
+        t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
+
+    auto g_qpidx = engine_offset_ * kPortEntropy + qpw - dp_qps_;
+    DCHECK(engine_offset_ < NUM_ENGINES);
+    DCHECK(g_qpidx < kPortEntropy * NUM_ENGINES);
+
+    // We assume that there is no workaround time for HW ACK.
+    auto newrtt_tsc = qpw->txtracking.ack_transmitted_chunks(engine_offset_, g_qpidx, 
+        1 /* num_acked_chunks */, t5, t6, 0 /* remote_queueing_tsc */);
+    
+    qpw->pcb.update_rtt_scoreboard(newrtt_tsc);
+}
+
+int RDMAContext::sender_poll_rc_cq(void)
+{
+    auto cq_ex = send_cq_ex_;
+    int cq_budget = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
+
+    while (1) {
+        if (cq_ex->status != IBV_WC_SUCCESS)
+            LOG(ERROR) << "data path CQ state error: " << cq_ex->status 
+            << " from QP:" << ibv_wc_read_qp_num(cq_ex);
+
+        rc_rx_ack();
+
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+
+    ibv_end_poll(cq_ex);
+
+    return cq_budget;
+}
+
 int RDMAContext::sender_poll_uc_cq(void)
 {
     auto cq_ex = send_cq_ex_;
@@ -723,7 +803,8 @@ int RDMAContext::sender_poll_uc_cq(void)
     
     while (1) {
         if (cq_ex->status != IBV_WC_SUCCESS)
-            LOG(ERROR) << "UC CQ state error: " << cq_ex->status << " from QP:" << ibv_wc_read_qp_num(cq_ex);
+            LOG(ERROR) << "data path CQ state error: " << cq_ex->status 
+            << " from QP:" << ibv_wc_read_qp_num(cq_ex);
         DCHECK(pending_signal_poll_ > 0);
         pending_signal_poll_--;
 
@@ -810,7 +891,7 @@ void RDMAContext::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     uint64_t retr_hdr;
     DCHECK(retr_hdr_pool_->alloc_buff(&retr_hdr) == 0);
     struct retr_chunk_hdr *hdr = reinterpret_cast<struct retr_chunk_hdr *>(retr_hdr);
-    hdr->qidx = (uint32_t)(qpw - uc_qps_);
+    hdr->qidx = (uint32_t)(qpw - dp_qps_);
     hdr->remote_addr = wr_ex->wr.wr.rdma.remote_addr;
 
     retr_sge[0].addr = retr_hdr;
@@ -828,7 +909,7 @@ void RDMAContext::retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex)
     DCHECK(ibv_post_send(retr_qp_, &retr_wr, &bad_wr) == 0);
     inflight_retr_chunks_++;
 
-    VLOG(5) << "successfully retransmit chunk for QP#" << (qpw - uc_qps_) 
+    VLOG(5) << "successfully retransmit chunk for QP#" << (qpw - dp_qps_) 
         << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " 
         << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN();
 }
@@ -841,7 +922,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr);
     
     auto qpidx = ucclsackh->qpidx.value();
-    auto qpw = &uc_qps_[qpidx];
+    auto qpw = &dp_qps_[qpidx];
     auto ackno = ucclsackh->ackno.value();
 
     bool update_sackbitmap = false;
@@ -906,9 +987,9 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         if constexpr (kTestNoHWTimestamp)
             t5 = t6;
         else
-            t5 = convert_nic_to_host(t6, ibv_wc_read_completion_ts(cq_ex));
+            t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
         
-        auto g_qpidx = engine_offset_ * kPortEntropy + qpw - uc_qps_;
+        auto g_qpidx = engine_offset_ * kPortEntropy + qpw - dp_qps_;
         DCHECK(engine_offset_ < NUM_ENGINES);
         DCHECK(g_qpidx < kPortEntropy * NUM_ENGINES);
         auto newrtt_tsc = qpw->txtracking.ack_transmitted_chunks(engine_offset_, g_qpidx, 
@@ -1105,7 +1186,7 @@ void RDMAContext::burst_timing_wheel(void)
     
     for (auto i = 0; i < num_chunks; i++) {
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wheel->ready_queue_.front().sslot_);
-        auto qpw = &uc_qps_[wr_ex->qpidx];
+        auto qpw = &dp_qps_[wr_ex->qpidx];
         auto ret = ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr);
         DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
@@ -1134,7 +1215,7 @@ void RDMAContext::try_update_csn(struct UCQPWrapper *qpw)
         // Nothing more to do.
 
         qpw->pcb.advance_rcv_nxt();
-        VLOG(5) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt.to_uint32() << " from QP#" << qpw - uc_qps_;
+        VLOG(5) << "try_update_csn:" << " rcv_nxt: " << qpw->pcb.rcv_nxt.to_uint32() << " from QP#" << qpw - dp_qps_;
         qpw->pcb.sack_bitmap_shift_left_one();
         qpw->pcb.barrier_bitmap_shift_left_one();
     }
@@ -1148,7 +1229,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
     auto qp_num = ibv_wc_read_qp_num(cq_ex);
     auto qpidx = qpn2idx_[qp_num];
-    auto qpw = &uc_qps_[qpidx];
+    auto qpw = &dp_qps_[qpidx];
 
     auto nchunks = imm_data.GetNCHUNK();
     auto csn = imm_data.GetCSN();
@@ -1310,7 +1391,7 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
 
     struct retr_chunk_hdr *hdr = reinterpret_cast<struct retr_chunk_hdr *>(chunk_addr);
     
-    auto qpw = &uc_qps_[hdr->qidx];
+    auto qpw = &dp_qps_[hdr->qidx];
     auto pcb = &qpw->pcb;
 
     // Compare CSN with the expected CSN.
@@ -1408,6 +1489,48 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
     }
 }
 
+void RDMAContext::rc_rx_chunk(void)
+{
+    auto cq_ex = recv_cq_ex_;
+
+    auto now = rdtsc();
+     
+    auto byte_len = ibv_wc_read_byte_len(cq_ex);
+    auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
+    auto qp_num = ibv_wc_read_qp_num(cq_ex);
+    auto qpidx = qpn2idx_[qp_num];
+    auto qpw = &dp_qps_[qpidx];
+
+    auto nchunks = imm_data.GetNCHUNK();
+    auto csn = imm_data.GetCSN();
+    auto rid = imm_data.GetRID();
+    auto mid = imm_data.GetMID();
+
+    // Locate request by rid
+    auto req = get_recvreq_by_id(rid);
+
+    auto *msg_size = &req->ureq->recv.elems[mid].size;
+    uint32_t *received_bytes = req->received_bytes;
+    received_bytes[mid] += byte_len;
+
+    if (nchunks) {
+        // Tx size < Rx size, adjust the meesage size using the information carried by the last chunk.
+        auto actual_size = kChunkSize * (nchunks - 1) + byte_len;
+        *msg_size = actual_size;
+        req->ureq->recv.data_len[mid] = actual_size;
+    }
+
+    if (*msg_size == received_bytes[mid]) req->fin_msg++;
+    if (req->fin_msg == req->ureq->n) { // This request (may contain multiple messages) is complete.
+        VLOG(3) << "Request complete (" << req->ureq->n << " messages)";
+        auto poll_ctx = req->ureq->poll_ctx;
+        // Wakeup app thread.
+        uccl_wakeup(poll_ctx);
+        // Free the request.
+        free_recvreq(req);
+    }
+}
+
 void RDMAContext::rx_chunk(struct list_head *ack_list)
 {
     VLOG(5) << "rx_chunk";
@@ -1419,7 +1542,7 @@ void RDMAContext::rx_chunk(struct list_head *ack_list)
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
     auto qp_num = ibv_wc_read_qp_num(cq_ex);
     auto qpidx = qpn2idx_[qp_num];
-    auto qpw = &uc_qps_[qpidx];
+    auto qpw = &dp_qps_[qpidx];
 
     auto nchunks = imm_data.GetNCHUNK();
     auto csn = imm_data.GetCSN();
@@ -1541,7 +1664,7 @@ void RDMAContext::flush_acks(int num_ack, uint64_t chunk_addr)
 void RDMAContext::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
 {
     uint64_t pkt_addr = chunk_addr + CtrlChunkBuffPool::kPktSize * num_sge;
-    auto qpw = &uc_qps_[qpidx];
+    auto qpw = &dp_qps_[qpidx];
     auto *ucclsackh = reinterpret_cast<UcclSackHdr* >(pkt_addr);
 
     ucclsackh->ackno = be32_t(qpw->pcb.ackno().to_uint32());
@@ -1552,7 +1675,7 @@ void RDMAContext::craft_ack(int qpidx, uint64_t chunk_addr, int num_sge)
     if constexpr (kTestNoHWTimestamp)
         t2 = qpw->pcb.t_remote_nic_rx;
     else
-        t2 = convert_nic_to_host(t4, uc_qps_[qpidx].pcb.t_remote_nic_rx);
+        t2 = convert_nic_to_host(dp_qps_[qpidx].pcb.t_remote_nic_rx);
 
     ucclsackh->remote_queueing = be64_t(to_usec(t4 - t2, freq_ghz));
 
@@ -1576,7 +1699,7 @@ void RDMAContext::__retransmit(struct UCQPWrapper *qpw, bool rto)
     }
 
     if (qpw->pcb.rto_rexmits_consectutive >= kRTOAbortThreshold) {
-        LOG_FIRST_N(ERROR, 1) << "RTO retransmission threshold reached. Abort RTO for QP#" << qpw - uc_qps_;
+        LOG_FIRST_N(ERROR, 1) << "RTO retransmission threshold reached. Abort RTO for QP#" << qpw - dp_qps_;
         return;
     }
 
@@ -1653,7 +1776,7 @@ std::string RDMAContext::to_string()
     uint32_t stats_ooo = 0;
 
     for (int qpidx = 0; qpidx < kPortEntropy; qpidx++) {
-        auto *qpw = &uc_qps_[qpidx];
+        auto *qpw = &dp_qps_[qpidx];
         stats_rto_rexmits += qpw->pcb.stats_rto_rexmits;
         stats_fast_rexmits += qpw->pcb.stats_fast_rexmits;
         stats_accept_retr += qpw->pcb.stats_accept_retr;
@@ -1664,7 +1787,7 @@ std::string RDMAContext::to_string()
         stats_retr_chunk_drop += qpw->pcb.stats_retr_chunk_drop;
         stats_ooo += qpw->pcb.stats_ooo;
 
-        // s += "\n\t[UC] QP#" + std::to_string(qpidx);
+        // s += "\n\t QP#" + std::to_string(qpidx);
         // s += qpw.pcb.to_string();
     }
 

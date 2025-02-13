@@ -148,10 +148,19 @@ class UcclRDMAEngine {
     /**
      * @brief Handling all completion events for all RDMAContexts, including:
      * High-priority completion events from all Ctrl QPs.
-     * Datapath completion events from all UC QPs.
+     * Datapath completion events from all data path QPs.
      * Occasinal completion events from all Retr CQs.
      */
-    void handle_completion(void);
+    void uc_handle_completion(void);
+
+    void rc_handle_completion(void);
+
+    inline void handle_completion(void) {
+        if constexpr (!kUSERC)
+            uc_handle_completion();
+        else
+            rc_handle_completion();
+    }
 
     /**
      * @brief Handle all timing wheel events for all RDMAContexts.
@@ -185,7 +194,7 @@ class UcclRDMAEngine {
     }
 
     /**
-     * @brief Synchronize the clock between host and NIC.
+     * @brief Synchronize the clock between host and NIC every kSyncClockIntervalNS according to Flor[OSDI'23]
      */
     inline void handle_clock_synchronization(void) {
         auto host_clock = rdtsc();
