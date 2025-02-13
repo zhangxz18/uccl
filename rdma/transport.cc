@@ -254,6 +254,7 @@ void UcclRDMAEngine::handle_tx_work(void)
 {
     Channel::Msg tx_work;
     int budget = kMaxTxWork;
+    uint32_t bytes = 0;
 
     while (budget--) {
         if (jring_sc_dequeue_bulk(channel_->tx_cmdq_, &tx_work, 1, nullptr) == 0) break;
@@ -268,6 +269,10 @@ void UcclRDMAEngine::handle_tx_work(void)
         auto rdma_ctx = it->second;
 
         rdma_ctx->tx_messages(tx_work.ureq);
+
+        bytes += tx_work.ureq->send.data_len;
+
+        if (bytes >= kMaxTxBytesThres) break;
     }
 }
 
