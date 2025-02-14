@@ -21,7 +21,8 @@ static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
 static const double kLinkBandwidth = 100.0 * 1e9 / 8; // 100Gbps
 #endif
 static const uint8_t IB_PORT_NUM = 1;
-static const uint32_t EFA_MTU = 8928;
+static const uint32_t EFA_MTU = 9000;
+static const uint32_t EFA_MAX_PAYLOAD = 8928;
 static const uint32_t UD_ADDITION = 40;
 /// Interface configuration.
 
@@ -59,15 +60,15 @@ static const uint32_t kCQMODCount = 32;
 // CQ moderation period in microsecond.
 static const uint32_t kCQMODPeriod = 100;
 // Maximum size of inline data.
-static const uint32_t kMaxInline = 512;
+static const uint32_t kMaxInline = 0;
 // Maximum number of SGEs in one WQE.
-static const uint32_t kMaxSge = 1;
+static const uint32_t kMaxSge = 2;
 // Maximum number of outstanding receive messages in one recv request.
 static const uint32_t kMaxRecv = 8;
 // Maximum number of outstanding receive requests in one engine.
 static const uint32_t kMaxReq = 32 * kMaxRecv;
-// Maximum number of WQEs in SRQ (Shared Receive Queue).
-static const uint32_t kMaxSRQ = 64 * kMaxReq;
+// Maximum number of WQEs in RQ.
+static const uint32_t kMaxRQ = kMaxReq;
 // Maximum number of WQEs in Retr RQ.
 static const uint32_t kMaxRetr = 16;
 // Maximum number of outstanding retransmission chunks on all QPs.
