@@ -254,6 +254,7 @@ void run_server(struct rdma_context *rdma, int gid_index) {
     struct ibv_wc wc;
     printf("Server waiting for message...\n");
     while (ibv_poll_cq(rdma->cq, 1, &wc) < 1);
+    
     // Only the first message is attached a hdr.
 #if USE_GDR == 0
     printf("Server received: %s | %s\n", rdma->buf1 + UD_ADDITION, rdma->buf2);
