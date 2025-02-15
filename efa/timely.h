@@ -9,8 +9,6 @@
 
 #include <iomanip>
 
-#include <infiniband/verbs.h>
-
 #include "util.h"
 #include "util_latency.h"
 #include "util_timer.h"
@@ -19,16 +17,11 @@
  * @file timely-sweep-params.h
  * @brief Timely parameters that need to be sweeped
  */
-static constexpr bool kPatched = true;  ///< Patch from ECN-vs-delay
-// EWMA alpha used for global CC state.
-static constexpr double kEwmaAlpha = 0.9;
-static constexpr double kBeta = 0.008;
-
-// EWMA alpha used for per-path CC states.
-static constexpr double kPPEwmaAlpha = 0.9;
+static constexpr bool kPatched = true;     ///< Patch from ECN-vs-delay
+static constexpr double kEwmaAlpha = 0.1;  ///< Was 0.46 in eRPC
+static constexpr double kBeta = 0.25;       ///< Was 0.26 in eRPC
 
 namespace uccl {
-
 struct timely_record_t {
     double rtt_;
     double rate_;
@@ -55,18 +48,12 @@ class Timely {
         false;  ///< Track per-packet RTT stats
 
     // Config
-    #ifdef P4D
-    static constexpr double kMinRate = 60 * 1000 * 1000;
-    static constexpr double kAddRate = 60 * 1000 * 1000;
-    static constexpr double kTLow = 50;
-    static constexpr double kTHigh = 500;
-    #else
-    static constexpr double kMinRate = 0.1 * 1000 * 1000 * 1000;
-    static constexpr double kAddRate = 0.5 * 1000 * 1000 * 1000;
-    static constexpr double kTLow = 35;
-    static constexpr double kTHigh = 350;
-    #endif
+    static constexpr double kMinRate = 15.0 * 1000 * 1000;
+    static constexpr double kAddRate = 5.0 * 1000 * 1000;
+
     static constexpr double kMinRTT = 2;
+    static constexpr double kTLow = 100;
+    static constexpr double kTHigh = 1000;
     static constexpr size_t kHaiThresh = 5;
 
     double rate_ = 0.0;  ///< The current sending rate
@@ -108,13 +95,6 @@ class Timely {
         return (2 * g + 0.5);
     }
 
-    // Last desired tx timestamp for timing wheel.
-    size_t prev_desired_tx_tsc_ = 0;
-
-    inline void update_rtt_scoreboard(uint64_t newrtt_tsc) {
-        prev_rtt_ = (1 - kPPEwmaAlpha) * prev_rtt_ + kPPEwmaAlpha * to_usec(newrtt_tsc, freq_ghz);
-    }
-
     /**
      * @brief Perform a rate update
      *
@@ -122,10 +102,11 @@ class Timely {
      * when the caller can reuse a sampled RDTSC.
      * @param sample_rtt_tsc The RTT sample in RDTSC cycles
      */
-    void update_rate(size_t _rdtsc, size_t sample_rtt_tsc, double ewma_alpha) {
+    void update_rate(size_t _rdtsc, size_t sample_rtt_tsc) {
         assert(_rdtsc >= 1000000000 &&
                _rdtsc >= last_update_tsc_);  // Sanity check
         static constexpr bool kCcOptTimelyBypass = true;
+
         if (kCcOptTimelyBypass &&
             (rate_ == link_bandwidth_ && sample_rtt_tsc <= t_low_tsc_)) {
             // Bypass expensive computation, but include the latency sample in
@@ -147,7 +128,7 @@ class Timely {
         double rtt_diff = sample_rtt - prev_rtt_;
         neg_gradient_count_ = (rtt_diff < 0) ? neg_gradient_count_ + 1 : 0;
         avg_rtt_diff_ =
-            ((1 - ewma_alpha) * avg_rtt_diff_) + (ewma_alpha * rtt_diff);
+            ((1 - kEwmaAlpha) * avg_rtt_diff_) + (kEwmaAlpha * rtt_diff);
 
         double delta_factor =
             (_rdtsc - last_update_tsc_) / min_rtt_tsc_;  // fdiv
@@ -220,7 +201,7 @@ class Timely {
     }
 
     /// Get RTT percentile if latency stats are enabled, and reset latency stats
-    double get_rtt_perc(double perc) const {
+    double get_rtt_perc(double perc) {
         if (!kLatencyStats || latency_.count() == 0) return -1.0;
         double ret = latency_.perc(perc);
         return ret;
@@ -228,7 +209,6 @@ class Timely {
 
     void reset_rtt_stats() { latency_.reset(); }
 
-    double get_avg_rtt() const {return prev_rtt_; }
     double get_avg_rtt_diff() const { return avg_rtt_diff_; }
     double get_rate_gbps() const { return rate_to_gbps(rate_); }
 
@@ -242,5 +222,4 @@ class Timely {
         return (r / 8) * (1000 * 1000 * 1000);
     }
 };
-
 }  // namespace uccl
