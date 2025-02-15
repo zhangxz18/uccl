@@ -154,7 +154,7 @@ class WrExBuffPool : public BuffPool {
               wr->sg_list = &wr_ex->sge;
               wr->num_sge = 1;
               wr->next = nullptr;
-              wr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+              wr->opcode = IBV_WR_SEND;
           }) {}
 
     ~WrExBuffPool() = default;
@@ -713,15 +713,15 @@ class RDMAContext {
      * @brief Poll the completion queues for all UC QPs.
      * SQ and RQ use separate completion queues.
      */
-    inline int poll_uc_cq(void) {
+    inline int poll_ud_cq(void) {
         int work = 0;
-        work += sender_poll_uc_cq();
-        work += receiver_poll_uc_cq();
+        work += sender_poll_ud_cq();
+        work += receiver_poll_ud_cq();
 
         return work;
     }
-    int sender_poll_uc_cq(void);
-    int receiver_poll_uc_cq(void);
+    int sender_poll_ud_cq(void);
+    int receiver_poll_ud_cq(void);
 
     /**
      * @brief Poll the completion queue for the Ctrl QP.
@@ -749,7 +749,7 @@ class RDMAContext {
     void check_rq(int ud_idx, bool force = false);
 
     /**
-     * @brief Retransmit a chunk for the given UC QP.
+     * @brief Retransmit a chunk for the given UD QP.
      * @param qpw
      * @param wr_ex
      */

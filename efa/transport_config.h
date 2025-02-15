@@ -18,7 +18,7 @@ static const std::string EFA_DEVICE_NAME_LIST[NUM_DEVICES] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
 static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
     "ens32", "ens65", "ens130", "ens163"};
-static const double kLinkBandwidth = 100.0 * 1e9 / 8; // 100Gbps
+static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
 static const uint8_t IB_PORT_NUM = 1;
 static const uint32_t EFA_MTU = 9000;
@@ -27,13 +27,14 @@ static const uint32_t UD_ADDITION = 40;
 /// Interface configuration.
 
 // # of engines per device.
-static const uint32_t NUM_ENGINES = 4;
+static const uint32_t NUM_ENGINES = 1;
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES *
 // kPortEntropy.
-static const uint32_t kPortEntropy = 256;
+static const uint32_t kPortEntropy = 256 - 1;  // We need to reserve one for
+                                               // the control path.
 
 // Per-path cwnd or global cwnd.
 static const bool kPPCwnd = false;
@@ -100,13 +101,13 @@ static const uint32_t kRTOAbortThreshold = 50;
 // Constant/Dynamic RTO.
 static const bool kConstRTO = false;
 // kConstRTO == true: Constant retransmission timeout in microseconds.
-static const double kRTOUSec = 1000; // 1ms
+static const double kRTOUSec = 1000;  // 1ms
 // kConstRTO == false: Minimum retransmission timeout in microseconds.
-static const double kMinRTOUsec = 1000; // 1ms
-static const uint32_t kRTORTT = 5;      // RTO = kRTORTT RTTs
+static const double kMinRTOUsec = 1000;  // 1ms
+static const uint32_t kRTORTT = 5;       // RTO = kRTORTT RTTs
 
 // Slow timer (periodic processing) interval in microseconds.
-static const size_t kSlowTimerIntervalUs = 1000; // 1ms
+static const size_t kSlowTimerIntervalUs = 1000;  // 1ms
 
 /// Debugging and testing.
 // Disable hardware timestamp.

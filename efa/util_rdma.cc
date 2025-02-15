@@ -511,6 +511,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq) {
 
         // wr->sg_list/num_sge/next/opcode are already set.
 
+        // TODO(yang): removing this but use RDMA send.
         wr->wr.rdma.remote_addr = raddr + sent_offset;
         wr->wr.rdma.rkey = rkey;
 
@@ -529,7 +530,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq) {
         // Select QP.
         auto qpidx = select_qpidx_pow2();
         auto qpw = &ud_qps_[qpidx];
-        // There is no n(eed to signal every WQE since we don't handle TX
+        // There is no need to signal every WQE since we don't handle TX
         // completions. But we still need occasionally post a request with the
         // IBV_SEND_SIGNALED flag. See
         // https://www.rdmamojo.com/2014/06/30/working-unsignaled-completions/.
@@ -667,7 +668,7 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset,
     return fabric_delay_tsc;
 }
 
-int RDMAContext::receiver_poll_uc_cq(void) {
+int RDMAContext::receiver_poll_ud_cq(void) {
     auto cq_ex = recv_cq_ex_;
     LIST_HEAD(ack_list);
     int cq_budget = 0;
@@ -678,6 +679,7 @@ int RDMAContext::receiver_poll_uc_cq(void) {
     while (1) {
         if (cq_ex->status == IBV_WC_SUCCESS) {
             auto opcode = ibv_wc_read_opcode(cq_ex);
+            // TODO(yang): detecting loss via packet hdr. 
             if (likely(opcode == IBV_WC_RECV_RDMA_WITH_IMM)) {
                 if constexpr (!kTestLoss)
                     rx_chunk(&ack_list);
@@ -723,7 +725,7 @@ int RDMAContext::receiver_poll_uc_cq(void) {
     return cq_budget;
 }
 
-int RDMAContext::sender_poll_uc_cq(void) {
+int RDMAContext::sender_poll_ud_cq(void) {
     auto cq_ex = send_cq_ex_;
     int cq_budget = 0;
 

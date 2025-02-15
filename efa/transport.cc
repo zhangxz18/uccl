@@ -195,7 +195,7 @@ void UcclRDMAEngine::handle_completion(void) {
         // Poll the CQ for Retr QP
         work += it.second->poll_retr_cq();
         // Poll the CQ for UC QPs.
-        work += it.second->poll_uc_cq();
+        work += it.second->poll_ud_cq();
         // Force check when there is no work.
         it.second->check_srq(!work);
         it.second->check_ctrl_rq(!work);
