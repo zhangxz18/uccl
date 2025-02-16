@@ -704,7 +704,8 @@ class RDMAContext {
         inline bool can_use_last_choice(uint32_t msize) {
             bool cond1 = msize <= kMAXUseCacheQPSize;
             bool cond2 = consecutive_same_choice_bytes_ + msize <= kMAXConsecutiveSameChoiceBytes;
-            if (cond1 && cond2) {
+            bool cond3 = dp_qps_[last_qp_choice_].in_wheel_cnt_ == 0;
+            if (cond1 && cond2 && cond3) {
                 consecutive_same_choice_bytes_ += msize;
                 return true;
             }
@@ -745,6 +746,12 @@ class RDMAContext {
 
             // Return the QP with lower RTT.
             auto qpidx = dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
+            if (msize <= kBypassTimingWheelThres) {
+                if (dp_qps_[q1].in_wheel_cnt_ != 0 && dp_qps_[q2].in_wheel_cnt_ == 0) {
+                    // For small messages, we prefer the QP with no in-wheel chunks.
+                    qpidx = q2;
+                }
+            }
             last_qp_choice_ = qpidx;
             return qpidx;
         }
