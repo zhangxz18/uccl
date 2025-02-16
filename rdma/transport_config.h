@@ -38,6 +38,8 @@ static const uint32_t NUM_ENGINES = 4;
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
+// Minimum post receive size in NCCL.
+static const uint32_t NCCL_MIN_POST_RECV = 65536;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static const uint32_t kPortEntropy = 256;
 
@@ -47,7 +49,7 @@ constexpr static int kTotalQP = kUSERC ? kPortEntropy : kPortEntropy + 2;
 // Per-path cwnd or global cwnd.
 static const bool kPPCwnd = false;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
-static const uint32_t kRCSize = 65536;
+static const uint32_t kRCSize = 8192;
 
 // Limit the bytes of consecutive cached QP uses.
 static constexpr uint32_t kMAXConsecutiveSameChoiceBytes = 16384;

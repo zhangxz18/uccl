@@ -688,6 +688,14 @@ class UcclFlow {
         outstanding_reqs_--;
     }
 
+    inline uint32_t get_last_rc_size(void) {
+        return last_rc_recv_;
+    }
+
+    inline void set_last_rc_size(uint32_t size) {
+        last_rc_recv_ = size;
+    }
+
     RDMAEndpoint *ep_;
     
     PeerID peer_id_;
@@ -720,6 +728,8 @@ class UcclFlow {
     };
 
     uint32_t outstanding_reqs_ = 0;
+
+    uint32_t last_rc_recv_ = 0;
 
     // Whether this context is for sending or receiving.
     bool is_send_;

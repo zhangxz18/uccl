@@ -38,6 +38,10 @@ void UcclFlow::poll_flow_cq(void)
             auto ureq = (struct ucclRequest *)wcs[i].wr_id;
             ureq->recv.data_len[0] = ntohl(wcs[i].imm_data);
             ureq->rc_or_flush_done = true;
+            if (ureq->recv.data_len[0] <= NCCL_MIN_POST_RECV) {
+                auto *flow = (UcclFlow *)ureq->context;
+                flow->set_last_rc_size(ureq->recv.data_len[0]);
+            }
         } else if (opcode == IBV_WC_RDMA_READ) {
             // GPU flush completion.
             auto *rc_or_flush_done = (uint64_t *)wcs[i].wr_id;
@@ -1002,7 +1006,16 @@ bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq)
     } else {
         ret = uccl_poll_once(ureq->poll_ctx);
     }
-    if ((ureq->type == ReqRx || ureq->type == ReqRxRC) && ret) {flow->dec_outstanding_reqs();}
+    if ((ureq->type == ReqRx || ureq->type == ReqRxRC) && ret) {
+        flow->dec_outstanding_reqs();
+        
+        if (ureq->recv.data_len[0] <= kRCSize && ureq->n == 1) {
+            // This message should have used RC.
+            // Give subsequent messages a chance to use RC.
+            flow->set_last_rc_size(0);
+        }
+
+    }
     return ret;
 }
 
@@ -1028,14 +1041,18 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
 
     flow->inc_outstanding_reqs();
 
-    if (size[0] <= kRCSize && n == 1) {
+    if (size[0] <= NCCL_MIN_POST_RECV && n == 1 && flow->get_last_rc_size() <= kRCSize) {
+        // set/get_last_rc_size is a workaround for NCCL using 65536 as the minimum post recv size.
+        // Therefore, the receiver cannot determine in advance whether the actual size of the message 
+        // is <= kRCSize (and thus use RC for the message). This workaround is based on the fact that 
+        // if a message <= kRCSize was sent previously, then the subsequent message with post recv size == 65536 
+        // is also likely to be <= kRCSize.
         flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
         ureq->type = ReqRxRC;
         ureq->context = flow;
         ureq->rc_or_flush_done = false;
 
         flow->poll_flow_cq();
-
         return 0;
     }
 
