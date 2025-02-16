@@ -448,7 +448,8 @@ class TXTracking {
             return unacked_chunks_.front();
         }
 
-        uint64_t ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc);
+        uint64_t ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, 
+                uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc, uint32_t *outstanding_bytes);
 
         inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
             unacked_chunks_.push_back({ureq, csn, wr_ex, timestamp});
@@ -697,6 +698,8 @@ class RDMAContext {
 
         uint32_t consecutive_same_choice_bytes_ = 0;
         uint32_t last_qp_choice_ = 0;
+
+        uint32_t outstanding_bytes_ = 0;
 
         inline bool can_use_last_choice(uint32_t msize) {
             bool cond1 = msize <= kMAXUseCacheQPSize;

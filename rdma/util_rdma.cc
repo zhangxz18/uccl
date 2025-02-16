@@ -458,7 +458,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
 
     while (*sent_offset < size) {
 
-        if (flow->cc_[engine_offset_].outstanding_bytes_ >= kMaxOutstandingBytes) {
+        if (outstanding_bytes_ >= kMaxOutstandingBytes) {
             // Push the message to the pending transmit queue.
             return false;
         }
@@ -511,7 +511,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
 
             VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", mid: " << ureq->n << " with QP#" << qpidx;
 
-            flow->cc_[engine_offset_].outstanding_bytes_ += chunk_size;
+            outstanding_bytes_ += chunk_size;
 
             continue;
         }
@@ -609,13 +609,15 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
 
         VLOG(5) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", mid: " << ureq->n << " with QP#" << qpidx;
 
-        flow->cc_[engine_offset_].outstanding_bytes_ += chunk_size;
+        outstanding_bytes_ += chunk_size;
     }
 
     return true;
 }
 
-uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc)
+uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, 
+        uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc, 
+        uint32_t *outstanding_bytes)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
@@ -643,7 +645,7 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_q
         seg_size += chunk.wr_ex->sge.length;
 
         auto *flow = reinterpret_cast<UcclFlow *>(chunk.ureq->context);
-        flow->cc_[engine_offset].outstanding_bytes_ -= chunk.wr_ex->sge.length;
+        *outstanding_bytes -= chunk.wr_ex->sge.length;
         flows.insert(flow);
 
         unacked_chunks_.erase(unacked_chunks_.begin());
@@ -779,7 +781,7 @@ void RDMAContext::rc_rx_ack(void)
 
     // We assume that there is no workaround time for HW ACK.
     auto newrtt_tsc = qpw->txtracking.ack_transmitted_chunks(engine_offset_, g_qpidx, 
-        1 /* num_acked_chunks */, t5, t6, 0 /* remote_queueing_tsc */);
+        1 /* num_acked_chunks */, t5, t6, 0 /* remote_queueing_tsc */, &outstanding_bytes_);
     
     qpw->pcb.update_rtt_scoreboard(newrtt_tsc);
 }
@@ -1009,7 +1011,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         DCHECK(engine_offset_ < NUM_ENGINES);
         DCHECK(g_qpidx < kPortEntropy * NUM_ENGINES);
         auto newrtt_tsc = qpw->txtracking.ack_transmitted_chunks(engine_offset_, g_qpidx, 
-            num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc);
+            num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc, &outstanding_bytes_);
         
         qpw->pcb.update_rtt_scoreboard(newrtt_tsc);
 
