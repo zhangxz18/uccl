@@ -36,7 +36,7 @@ volatile bool quit = false;
 void interrupt_handler(int signal) {
     (void)signal;
     quit = true;
-    AFXDPFactory::shutdown();
+    EFAFactory::Shutdown();
 }
 
 int main(int argc, char* argv[]) {

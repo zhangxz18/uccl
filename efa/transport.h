@@ -30,7 +30,7 @@
 #include "transport_cc.h"
 #include "transport_config.h"
 #include "util.h"
-#include "util_afxdp.h"
+#include "util_efa.h"
 #include "util_endian.h"
 #include "util_latency.h"
 #include "util_rss.h"
@@ -94,8 +94,8 @@ class Channel {
         void *data;
         size_t len;
         size_t *len_p;
-        // A list of FrameBuf bw deser_th and engine_th.
-        FrameBuf *deser_msgs;
+        // A list of FrameDesc bw deser_th and engine_th.
+        FrameDesc *deser_msgs;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -172,7 +172,7 @@ struct __attribute__((packed)) UcclPktHdr {
         kAckRttProbe = 0b100000,  // RTT probing packet.
     };
     UcclFlags net_flags;  // Network flags.
-    uint8_t msg_flags;    // Field to reflect the `FrameBuf' flags.
+    uint8_t msg_flags;    // Field to reflect the `FrameDesc' flags.
     be16_t frame_len;     // Length of the frame.
     be64_t flow_id;       // Flow ID to denote the connection.
     be32_t seqno;  // Sequence number to denote the packet counter in the flow.
@@ -223,7 +223,7 @@ class TXTracking {
 
    public:
     TXTracking() = delete;
-    TXTracking(AFXDPSocket *socket, Channel *channel)
+    TXTracking(EFASocket *socket, Channel *channel)
         : socket_(socket),
           channel_(channel),
           oldest_unacked_msgbuf_(nullptr),
@@ -237,9 +237,9 @@ class TXTracking {
     }
 
     void receive_acks(uint32_t num_acked_pkts);
-    void append(FrameBuf *msgbuf_head, FrameBuf *msgbuf_tail,
+    void append(FrameDesc *msgbuf_head, FrameDesc *msgbuf_tail,
                 uint32_t num_frames, PollCtx *poll_ctx);
-    std::optional<FrameBuf *> get_and_update_oldest_unsent();
+    std::optional<FrameDesc *> get_and_update_oldest_unsent();
 
     inline const uint32_t num_unacked_msgbufs() const {
         return num_unacked_msgbufs_;
@@ -247,7 +247,7 @@ class TXTracking {
     inline const uint32_t num_unsent_msgbufs() const {
         return num_unsent_msgbufs_;
     }
-    inline FrameBuf *get_oldest_unacked_msgbuf() const {
+    inline FrameDesc *get_oldest_unacked_msgbuf() const {
         return oldest_unacked_msgbuf_;
     }
 
@@ -255,11 +255,11 @@ class TXTracking {
     friend class UcclEngine;
 
    private:
-    AFXDPSocket *socket_;
+    EFASocket *socket_;
     Channel *channel_;
 
     /**
-     * For the linked list of FrameBufs in the channel (chain going
+     * For the linked list of FrameDescs in the channel (chain going
      * downwards), we track 3 pointers
      *
      * B   -> oldest sent but unacknowledged MsgBuf
@@ -269,9 +269,9 @@ class TXTracking {
      * B   -> last MsgBuf, among all active messages in this flow
      */
 
-    FrameBuf *oldest_unacked_msgbuf_;
-    FrameBuf *oldest_unsent_msgbuf_;
-    FrameBuf *last_msgbuf_;
+    FrameDesc *oldest_unacked_msgbuf_;
+    FrameDesc *oldest_unsent_msgbuf_;
+    FrameDesc *last_msgbuf_;
 
     uint32_t num_unacked_msgbufs_;
     uint32_t num_unsent_msgbufs_;
@@ -322,7 +322,7 @@ class RXTracking {
                   "kReassemblyMaxSeqnoDistance must be a power of two");
 
     RXTracking(const RXTracking &) = delete;
-    RXTracking(AFXDPSocket *socket, Channel *channel)
+    RXTracking(EFASocket *socket, Channel *channel)
         : socket_(socket), channel_(channel) {}
 
     friend class UcclFlow;
@@ -335,7 +335,7 @@ class RXTracking {
         kOOOTrackableExpectedOrInOrder = 3,
     };
 
-    ConsumeRet consume(swift::Pcb *pcb, FrameBuf *msgbuf);
+    ConsumeRet consume(swift::Pcb *pcb, FrameDesc *msgbuf);
 
    private:
     void push_inorder_msgbuf_to_app(swift::Pcb *pcb);
@@ -349,20 +349,20 @@ class RXTracking {
     void try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work);
 
    private:
-    AFXDPSocket *socket_;
+    EFASocket *socket_;
     Channel *channel_;
 
     // Intentionally using int for uint32_t seqno to handle integer wrapping.
-    std::map<int, FrameBuf *> reass_q_;
+    std::map<int, FrameDesc *> reass_q_;
 
     // FIFO queue for ready messages that wait for app to claim.
-    std::deque<FrameBuf *> ready_msg_queue_;
+    std::deque<FrameDesc *> ready_msg_queue_;
     struct app_buf_t {
         Channel::Msg rx_work;
     };
     std::deque<app_buf_t> app_buf_queue_;
-    FrameBuf *deser_msgs_head_ = nullptr;
-    FrameBuf *deser_msgs_tail_ = nullptr;
+    FrameDesc *deser_msgs_head_ = nullptr;
+    FrameDesc *deser_msgs_tail_ = nullptr;
 };
 
 /**
@@ -391,13 +391,13 @@ class UcclFlow {
      * @param remote_addr Remote IP address.
      * @param local_l2_addr Local L2 address.
      * @param remote_l2_addr Remote L2 address.
-     * @param AFXDPSocket object for packet IOs.
+     * @param EFASocket object for packet IOs.
      * @param FlowID Connection ID for the flow.
      */
     UcclFlow(const uint32_t local_addr, const uint32_t remote_addr,
              const char local_l2_addr[ETH_ALEN],
              const char remote_l2_addr[ETH_ALEN], uint32_t local_engine_idx,
-             uint32_t remote_engine_idx, AFXDPSocket *socket, Channel *channel,
+             uint32_t remote_engine_idx, EFASocket *socket, Channel *channel,
              FlowID flow_id)
         : local_addr_(local_addr),
           remote_addr_(remote_addr),
@@ -485,7 +485,7 @@ class UcclFlow {
     void process_ack(const UcclPktHdr *ucclh);
 
     void fast_retransmit();
-    void rto_retransmit(FrameBuf *msgbuf, uint32_t seqno);
+    void rto_retransmit(FrameDesc *msgbuf, uint32_t seqno);
 
     /**
      * @brief Helper function to transmit a number of packets from the queue
@@ -511,13 +511,13 @@ class UcclFlow {
     void prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
                           uint16_t dst_port) const;
 
-    void prepare_datapacket(FrameBuf *msgbuf, uint32_t path_id, uint32_t seqno,
+    void prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id, uint32_t seqno,
                             const UcclPktHdr::UcclFlags net_flags);
-    AFXDPSocket::frame_desc craft_ackpacket(
+    EFASocket::frame_desc craft_ackpacket(
         uint32_t path_id, uint16_t dst_port, uint32_t seqno, uint32_t ackno,
         const UcclPktHdr::UcclFlags net_flags, uint64_t ts1, uint64_t ts2);
-    AFXDPSocket::frame_desc craft_rssprobe_packet(uint16_t dst_port);
-    void reverse_packet_l2l3(FrameBuf *msgbuf);
+    EFASocket::frame_desc craft_rssprobe_packet(uint16_t dst_port);
+    void reverse_packet_l2l3(FrameDesc *msgbuf);
 
     // The following is used to fill packet headers.
     uint32_t local_addr_;
@@ -528,18 +528,18 @@ class UcclFlow {
     uint32_t local_engine_idx_;
     uint32_t remote_engine_idx_;
 
-    // The underlying AFXDPSocket.
-    AFXDPSocket *socket_;
+    // The underlying EFASocket.
+    EFASocket *socket_;
     // The channel this flow belongs to.
     Channel *channel_;
     // FlowID of this flow.
     FlowID flow_id_;
     // Accumulated data frames to be sent.
-    std::vector<AFXDPSocket::frame_desc> pending_tx_frames_;
+    std::vector<EFASocket::frame_desc> pending_tx_frames_;
     // Missing data frames to be sent.
-    std::vector<AFXDPSocket::frame_desc> missing_frames_;
+    std::vector<EFASocket::frame_desc> missing_frames_;
     // Frames that are pending rx processing in a batch.
-    std::deque<FrameBuf *> pending_rx_msgbufs_;
+    std::deque<FrameDesc *> pending_rx_msgbufs_;
 
     TXTracking tx_tracking_;
     RXTracking rx_tracking_;
@@ -611,7 +611,7 @@ class UcclEngine {
                const std::string local_l2_addr)
         : local_addr_(htonl(str_to_ip(local_addr))),
           local_engine_idx_(queue_id),
-          socket_(AFXDPFactory::CreateSocket(queue_id)),
+          socket_(EFAFactory::CreateSocket(queue_id)),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
@@ -650,7 +650,7 @@ class UcclEngine {
      *
      * @param pkt_msgs Pointer to a list of packets.
      */
-    void process_rx_msg(std::vector<AFXDPSocket::frame_desc> &pkt_msgs);
+    void process_rx_msg(std::vector<EFASocket::frame_desc> &pkt_msgs);
 
     /**
      * @brief Iterate throught the list of flows, check and handle RTOs.
@@ -669,7 +669,7 @@ class UcclEngine {
     // Engine index, also NIC queue ID and xsk index.
     uint32_t local_engine_idx_;
     // AFXDP socket used for send/recv packets.
-    AFXDPSocket *socket_;
+    EFASocket *socket_;
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
     // Control plane channel with Endpoint.

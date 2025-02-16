@@ -1,4 +1,4 @@
-#include "util_afxdp.h"
+#include "util_efa.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -52,7 +52,7 @@ const bool busy_poll = true;
 #define INVALID_FRAME UINT64_MAX
 
 struct socket_t {
-    AFXDPSocket* afxdp_socket;
+    EFASocket* efa_socket;
     std::atomic<uint64_t> sent_packets;
     uint64_t last_stall_time;
     uint32_t counter;
@@ -77,12 +77,12 @@ static void* send_thread(void* arg);
 static void* recv_thread(void* arg);
 
 int client_init(struct client_t* client, const char* interface_name) {
-    AFXDPFactory::init(interface_name, NUM_FRAMES, "ebpf_afxdp_test.o",
+    EFAFactory::init(interface_name, NUM_FRAMES, "ebpf_afxdp_test.o",
                        "ebpf_afxdp_test");
 
     // per-CPU socket setup
     for (int i = 0; i < MY_NUM_QUEUES; i++) {
-        client->socket[i].afxdp_socket = AFXDPFactory::CreateSocket(i);
+        client->socket[i].efa_socket = EFAFactory::CreateSocket(i);
     }
 
     int ret;
@@ -123,7 +123,7 @@ void client_shutdown(struct client_t* client) {
     }
     pthread_join(client->stats_thread, NULL);
 
-    AFXDPFactory::shutdown();
+    EFAFactory::Shutdown();
 }
 
 void interrupt_handler(int signal) {
@@ -206,20 +206,20 @@ void socket_send(struct socket_t* socket, int queue_id) {
     }
     socket->last_stall_time = 0;
 
-    std::vector<AFXDPSocket::frame_desc> frames;
+    std::vector<EFASocket::frame_desc> frames;
     for (int i = 0; i < MY_SEND_BATCH_SIZE; i++) {
         // the 256B before frame_offset is xdp metedata
-        uint64_t frame_offset = socket->afxdp_socket->pop_frame();
+        uint64_t frame_offset = socket->efa_socket->pop_frame();
         uint8_t* packet =
-            (uint8_t*)socket->afxdp_socket->umem_buffer_ + frame_offset;
+            (uint8_t*)socket->efa_socket->umem_buffer_ + frame_offset;
         uint32_t frame_len = client_generate_packet(
             packet, PAYLOAD_BYTES, socket->counter + i, queue_id);
-        FrameBuf::mark_txpulltime_free(frame_offset,
-                                       socket->afxdp_socket->umem_buffer_);
-        frames.emplace_back(AFXDPSocket::frame_desc({frame_offset, frame_len}));
+        FrameDesc::mark_txpulltime_free(frame_offset,
+                                       socket->efa_socket->umem_buffer_);
+        frames.emplace_back(EFASocket::frame_desc({frame_offset, frame_len}));
     }
     inflight_pkts += MY_SEND_BATCH_SIZE;
-    auto completed = socket->afxdp_socket->send_packets(frames);
+    auto completed = socket->efa_socket->send_packets(frames);
     socket->sent_packets += completed;
     socket->counter += completed;
 }
@@ -227,7 +227,7 @@ void socket_send(struct socket_t* socket, int queue_id) {
 void socket_recv(struct socket_t* socket, int queue_id) {
     // Check any packet received, in order to drive packet receiving path for
     // other kernel transport.
-    auto frames = socket->afxdp_socket->recv_packets(MY_RECV_BATCH_SIZE);
+    auto frames = socket->efa_socket->recv_packets(MY_RECV_BATCH_SIZE);
     uint32_t rcvd = frames.size();
     inflight_pkts -= rcvd;
 
@@ -238,7 +238,7 @@ void socket_recv(struct socket_t* socket, int queue_id) {
         uint64_t frame_offset = frames[i].frame_offset;
         uint32_t len = frames[i].frame_len;
         uint8_t* pkt =
-            (uint8_t*)socket->afxdp_socket->umem_buffer_ + frame_offset;
+            (uint8_t*)socket->efa_socket->umem_buffer_ + frame_offset;
         VLOG(3) << "recv: " << std::hex << frame_offset << " " << std::dec
                 << len;
 
@@ -259,14 +259,14 @@ void socket_recv(struct socket_t* socket, int queue_id) {
             std::lock_guard<std::mutex> lock(socket->rtts_lock);
             socket->rtts.push_back(rtt);
         }
-        socket->afxdp_socket->push_frame(frame_offset);
+        socket->efa_socket->push_frame(frame_offset);
     }
 }
 
 static void* send_thread(void* arg) {
     struct socket_t* socket = (struct socket_t*)arg;
 
-    int queue_id = socket->afxdp_socket->queue_id_;
+    int queue_id = socket->efa_socket->queue_id_;
 
     printf("started socket send thread for queue #%d\n", queue_id);
 
@@ -281,7 +281,7 @@ static void* send_thread(void* arg) {
 
 static void* recv_thread(void* arg) {
     struct socket_t* socket = (struct socket_t*)arg;
-    int queue_id = socket->afxdp_socket->queue_id_;
+    int queue_id = socket->efa_socket->queue_id_;
     printf("started socket recv thread for queue #%d\n", queue_id);
 
     pin_thread_to_cpu(MY_NUM_QUEUES + queue_id);
@@ -290,7 +290,7 @@ static void* recv_thread(void* arg) {
     int nfds = 1;
 
     memset(fds, 0, sizeof(fds));
-    fds[0].fd = socket->afxdp_socket->get_xsk_fd();
+    fds[0].fd = socket->efa_socket->get_xsk_fd();
     fds[0].events = POLLIN;
 
     int ret;

@@ -21,54 +21,35 @@ enum class CCType {
 };
 static constexpr CCType kCCType = CCType::kCubicPP;
 
-#if !defined(AWS_C5) && !defined(AWS_G4) && !defined(AWS_G4METAL) && \
-    !defined(CLAB_XL170) && !defined(CLAB_D6515)
-#define AWS_C5
-#endif
+#define P4D
 
-#if defined(AWS_C5)
-static const uint32_t AFXDP_MTU = 3498;
-static const char* DEV_DEFAULT = "ens6";
-static const double kLinkBandwidth = 100.0 * 1e9 / 8;
-static const uint32_t NUM_QUEUES = 12;  // 5/12 for uni/dual.
-static const uint32_t kMaxPath = 200;  // 256/200 for uni/dual.
-static const uint32_t kMaxUnackedPktsPP = 1u;
-#elif defined(AWS_G4)
-static const uint32_t AFXDP_MTU = 3498;
-static const char* DEV_DEFAULT = "ens6";
-static const double kLinkBandwidth = 50.0 * 1e9 / 8;
-static const uint32_t NUM_QUEUES = 8;
-static const uint32_t kMaxPath = 256;
-static const uint32_t kMaxUnackedPktsPP = 1u;
-#elif defined(AWS_G4METAL)
-static const uint32_t AFXDP_MTU = 3498;
-static const char* DEV_DEFAULT = "enp199s0";
-static const double kLinkBandwidth = 100.0 * 1e9 / 8;
-static const uint32_t NUM_QUEUES = 12;
-static const uint32_t kMaxPath = 128;
-static const uint32_t kMaxUnackedPktsPP = 3u;
-#elif defined(CLAB_XL170)
-static const uint32_t AFXDP_MTU = 1500;
-static const char* DEV_DEFAULT = "ens1f1np1";
-static const double kLinkBandwidth = 25.0 * 1e9 / 8;
-static const uint32_t NUM_QUEUES = 2;
-static const uint32_t kMaxPath = 64;
-static const uint32_t kMaxUnackedPktsPP = 8u;
-#elif defined(CLAB_D6515)
-static const uint32_t AFXDP_MTU = 3498;
-static const char* DEV_DEFAULT = "enp65s0f0np0";
-static const double kLinkBandwidth = 100.0 * 1e9 / 8;
-static const uint32_t NUM_QUEUES = 4;
-static const uint32_t kMaxPath = 64;
-static const uint32_t kMaxUnackedPktsPP = 16u;
+/// Interface configuration.
+#ifdef P4D
+static const uint8_t NUM_DEVICES = 4;
+static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3};
+static const std::string EFA_DEVICE_NAME_LIST[NUM_DEVICES] = {
+    "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
+static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
+    "ens32", "ens65", "ens130", "ens163"};
+static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
+static const uint8_t IB_PORT_NUM = 1;
+static const uint32_t EFA_MTU = 9000;
+static const uint32_t EFA_MAX_PAYLOAD = 8928;
+static const uint32_t UD_ADDITION = 40;
+/// Interface configuration.
+
+static const uint32_t NUM_ENGINES = 1;      // # of engines per device.
+static const uint32_t kNumPktPerChunk = 4;  // # of 9KB packets per chunk.
+static const uint32_t kMaxPath = 256 - 1;   // We need to reserve one for
+                                            // the control QP.
+static const uint32_t kMaxUnackedPktsPP = 1u;
 
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 static const uint16_t BASE_PORT = 10000;
-// 4GB frame pool in total; exceeding will cause crash.
-static const uint64_t NUM_FRAMES = 1024 * 1024;
+static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 32;
 
@@ -87,14 +68,3 @@ static_assert(kMaxUnackedPktsPerEngine <= kMaxPathHistoryPerEngine,
               "kMaxUnackedPktsPerEngine too large");
 static_assert(is_power_of_two(kMaxPathHistoryPerEngine),
               "kMaxPathHistoryPerEngine must be power of 2");
-
-#ifdef CLAB_XL170
-// TODO(yang): why XL170 would crash with 1x fill ring size?
-#define FILL_RING_SIZE (XSK_RING_PROD__DEFAULT_NUM_DESCS * 2)
-#else
-// TODO(yang): why C5 would crash with 2x fill ring size?
-#define FILL_RING_SIZE XSK_RING_PROD__DEFAULT_NUM_DESCS
-#endif
-#define COMP_RING_SIZE XSK_RING_CONS__DEFAULT_NUM_DESCS
-#define TX_RING_SIZE XSK_RING_PROD__DEFAULT_NUM_DESCS
-#define RX_RING_SIZE XSK_RING_CONS__DEFAULT_NUM_DESCS

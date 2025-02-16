@@ -2,8 +2,6 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
-#include <bpf/bpf.h>
-#include <bpf/libbpf.h>
 #include <errno.h>
 #include <glog/logging.h>
 #include <ifaddrs.h>
@@ -21,8 +19,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <xdp/libxdp.h>
-#include <xdp/xsk.h>
 
 #include <atomic>
 #include <bitset>
@@ -32,53 +28,157 @@
 #include <set>
 
 #include "transport_config.h"
+#include "util_list.h"
 #include "util_shared_pool.h"
 #include "util_timer.h"
 
 namespace uccl {
 
-constexpr static uint64_t FRAME_SIZE = XSK_UMEM__DEFAULT_FRAME_SIZE;
+/**
+ * @brief A buffer pool with the following properties:
+ * - Constructed with a memory region provided by the caller or mmap by itself.
+ * - Not thread-safe, single producer, single consumer.
+ * - Fixed size elements.
+ * - Size must be power of 2.
+ * - Actual size is num_elements - 1.
+ */
+class BuffPool {
+   public:
+    BuffPool(uint32_t num_elements, size_t element_size,
+             struct ibv_mr *mr = nullptr,
+             void (*init_cb)(uint64_t buff) = nullptr)
+        : num_elements_(num_elements), element_size_(element_size), mr_(mr) {
+        if (mr_) {
+            base_addr_ = mr->addr;
+        } else {
+            base_addr_ = mmap(nullptr, num_elements_ * element_size_,
+                              PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (base_addr_ == MAP_FAILED)
+                throw std::runtime_error(
+                    "Failed to allocate memory for BuffPool.");
+        }
+        buffer_pool_ = new uint64_t[num_elements_];
+        head_ = tail_ = 0;
+        // Reserve one element for distinguished empty/full state.
+        for (uint32_t i = 0; i < num_elements_ - 1; i++) {
+            if (init_cb) init_cb((uint64_t)base_addr_ + i * element_size_);
+            free_buff((uint64_t)base_addr_ + i * element_size_);
+        }
+    }
 
-class FrameBuf {
-    // Pointing to the next message buffer in the chain.
-    FrameBuf *next_;
+    ~BuffPool() {
+        if (!mr_) {
+            munmap(base_addr_, num_elements_ * element_size_);
+        }
+        delete[] buffer_pool_;
+    }
+
+    inline bool full(void) {
+        return ((tail_ + 1) & (num_elements_ - 1)) == head_;
+    }
+
+    inline bool empty(void) { return head_ == tail_; }
+
+    inline uint32_t get_lkey(void) {
+        if (!mr_) return 0;
+        return mr_->lkey;
+    }
+
+    inline int alloc_buff(uint64_t *buff_addr) {
+        if (empty()) return -1;
+
+        *buff_addr = (uint64_t)base_addr_ + buffer_pool_[head_];
+        head_ = (head_ + 1) & (num_elements_ - 1);
+        return 0;
+    }
+
+    inline void free_buff(uint64_t buff_addr) {
+        if (full()) return;
+        buff_addr -= (uint64_t)base_addr_;
+        buffer_pool_[tail_] = buff_addr;
+        tail_ = (tail_ + 1) & (num_elements_ - 1);
+    }
+
+   protected:
+    void *base_addr_;
+    uint32_t head_;
+    uint32_t tail_;
+    uint32_t num_elements_;
+    size_t element_size_;
+    struct ibv_mr *mr_;
+    uint64_t *buffer_pool_;
+};
+
+class UDPktHdrBuffPool : public BuffPool {
+   public:
+    static constexpr uint32_t kPktHdrSize = 64 + UD_ADDITION;
+    static constexpr uint32_t kNumPktHdr = NUM_FRAMES;
+    static_assert((kNumPktHdr & (kNumPktHdr - 1)) == 0,
+                  "kNumPktHdr must be power of 2");
+
+    UDPktHdrBuffPool(struct ibv_mr *mr)
+        : BuffPool(kNumPktHdr, kPktHdrSize, mr) {}
+
+    ~UDPktHdrBuffPool() = default;
+};
+
+class UDPktDataBuffPool : public BuffPool {
+   public:
+    static constexpr uint32_t kPktDataSize =
+        EFA_MAX_PAYLOAD - UDPktHdrBuffPool::kPktHdrSize;
+    static constexpr uint32_t kNumPktData = NUM_FRAMES;
+    static_assert((kNumPktData & (kNumPktData - 1)) == 0,
+                  "kNumPkt must be power of 2");
+
+    UDPktDataBuffPool(struct ibv_mr *mr)
+        : BuffPool(kNumPktData, kPktDataSize, mr) {}
+
+    ~UDPktDataBuffPool() = default;
+};
+
+class FrameDesc {
     // Describing the packet frame address and length.
-    uint64_t frame_offset_;
-    void *umem_buffer_;
-    uint32_t frame_len_;
+    uint64_t pkt_data_addr_;  // in GPU memory.
+    uint64_t pkt_hdr_addr_;   // in CPU memory.
+    uint32_t pkt_data_len_;
+    uint16_t dest_qp_;  // dest QP to use for this frame.
+
     // Flags to denote the message buffer state.
-#define UCCL_MSGBUF_FLAGS_SYN (1 << 0)
-#define UCCL_MSGBUF_FLAGS_FIN (1 << 1)
-#define UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE (1 << 2)
+    static const uint8_t UCCL_MSGBUF_FLAGS_SYN = (1 << 0);
+    static const uint8_t UCCL_MSGBUF_FLAGS_FIN = (1 << 1);
+    static const uint8_t UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE = (1 << 2);
     uint8_t msg_flags_;
 
-    FrameBuf(uint64_t frame_offset, void *umem_buffer, uint32_t frame_len)
-        : frame_offset_(frame_offset),
-          umem_buffer_(umem_buffer),
-          frame_len_(frame_len) {
-        next_ = nullptr;
-        msg_flags_ = 0;
+    struct list_head frame_link_;
+
+    FrameDesc(uint64_t pkt_data_addr, uint64_t pkt_hdr_addr,
+              uint32_t pkt_data_len, uint8_t msg_flags_)
+        : pkt_data_addr_(pkt_data_addr),
+          pkt_hdr_addr_(pkt_hdr_addr),
+          pkt_data_len_(pkt_data_len),
+          msg_flags_(msg_flags) {
+        INIT_LIST_HEAD(&frame_link_);
+        dest_qp_ = UINT16_MAX;
     }
 
    public:
-    static FrameBuf *Create(uint64_t frame_offset, void *umem_buffer,
-                            uint32_t frame_len) {
-        /*
-         * The XDP_PACKET_HEADROOM bytes before frame_offset is xdp metedata,
-         * and we reuse it to chain Framebufs.
-         */
-        return new (reinterpret_cast<void *>(
-            frame_offset + (uint64_t)umem_buffer - XDP_PACKET_HEADROOM))
-            FrameBuf(frame_offset, umem_buffer, frame_len);
+    static FrameDesc *Create(uint64_t frame_desc_addr, uint64_t pkt_data_addr,
+                             uint64_t pkt_hdr_addr, uint32_t pkt_data_len,
+                             uint8_t msg_flags_ = 0) {
+        return new (reinterpret_cast<void *>(frame_desc_addr)
+            FrameDesc(pkt_data_addr, pkt_hdr_addr, pkt_data_len, msg_flags);
     }
-    uint64_t get_frame_offset() const { return frame_offset_; }
-    void *get_umem_buffer() const { return umem_buffer_; }
-    uint32_t get_frame_len() const { return frame_len_; }
-    uint8_t *get_pkt_addr() const {
-        return (uint8_t *)umem_buffer_ + frame_offset_;
-    }
+    uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
+    uint32_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
+    uint8_t *get_pkt_data_len() const { return pkt_data_len_; }
+
+    uint16_t get_dest_qp() const { return dest_qp_; }
+    void set_dest_qp(uint16_t dest_qp) const { dest_qp_ = dest_qp; }
 
     uint16_t msg_flags() const { return msg_flags_; }
+    void set_msg_flags(uint16_t flags) { msg_flags_ = flags; }
+    void add_msg_flags(uint16_t flags) { msg_flags_ |= flags; }
 
     // Returns true if this is the first in a message.
     bool is_first() const { return (msg_flags_ & UCCL_MSGBUF_FLAGS_SYN) != 0; }
@@ -86,20 +186,16 @@ class FrameBuf {
     bool is_last() const { return (msg_flags_ & UCCL_MSGBUF_FLAGS_FIN) != 0; }
 
     // Returns the next message buffer index in the chain.
-    FrameBuf *next() const { return next_; }
+    FrameDesc *next() const {
+        return reinterpret_cast<FrameDesc *>(frame_link_.next);
+    }
     // Set the next message buffer index in the chain.
-    void set_next(FrameBuf *next) { next_ = next; }
+    void set_next(FrameDesc *next) {
+        list_add(&next->frame_link_, &frame_link_);
+    }
 
     void mark_first() { add_msg_flags(UCCL_MSGBUF_FLAGS_SYN); }
     void mark_last() { add_msg_flags(UCCL_MSGBUF_FLAGS_FIN); }
-
-#define GET_FRAMEBUF_PTR(frame_offset, umem_buffer)                     \
-    reinterpret_cast<FrameBuf *>(frame_offset + (uint64_t)umem_buffer - \
-                                 XDP_PACKET_HEADROOM)
-
-    static FrameBuf *get_msgbuf_ptr(uint64_t frame_offset, void *umem_buffer) {
-        return GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-    }
 
     void mark_txpulltime_free() {
         add_msg_flags(UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE);
@@ -111,33 +207,6 @@ class FrameBuf {
         return (msg_flags_ & UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE) != 0;
     }
 
-    static void mark_txpulltime_free(uint64_t frame_offset, void *umem_buffer) {
-        auto msgbuf = GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-        msgbuf->add_msg_flags(UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE);
-    }
-    static void mark_not_txpulltime_free(uint64_t frame_offset,
-                                         void *umem_buffer) {
-        auto msgbuf = GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-        msgbuf->msg_flags_ &= ~UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE;
-    }
-    static bool is_txpulltime_free(uint64_t frame_offset, void *umem_buffer) {
-        auto msgbuf = GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-        return (msgbuf->msg_flags_ & UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE) != 0;
-    }
-
-    static uint32_t get_frame_len(uint64_t frame_offset, void *umem_buffer) {
-        auto msgbuf = GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-        return msgbuf->get_frame_len();
-    }
-
-    static uint32_t get_uccl_frame_len(uint64_t frame_offset,
-                                       void *umem_buffer) {
-        auto msgbuf = GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-        auto pktaddr = msgbuf->get_pkt_addr();
-        return htons(*(uint16_t *)(pktaddr + sizeof(ethhdr) + sizeof(iphdr) +
-                                   sizeof(udphdr) + 6));
-    }
-
     void clear_fields() {
         next_ = nullptr;
         frame_offset_ = 0;
@@ -145,137 +214,79 @@ class FrameBuf {
         frame_len_ = 0;
         msg_flags_ = 0;
     }
-    static void clear_fields(uint64_t frame_offset, void *umem_buffer) {
-        auto msgbuf = GET_FRAMEBUF_PTR(frame_offset, umem_buffer);
-        msgbuf->clear_fields();
-    }
-
-    void set_msg_flags(uint16_t flags) { msg_flags_ = flags; }
-    void add_msg_flags(uint16_t flags) { msg_flags_ |= flags; }
 
     std::string to_string() {
         std::stringstream s;
-        s << "frame_offset: 0x" << std::hex << frame_len_
-          << " frame_len: " << std::dec << frame_len_ << " umem_buffer: 0x"
-          << std::hex << umem_buffer_ << " msg_flags: " << std::dec
-          << std::bitset<8>(msg_flags_);
+        s << "pkt_data_addr: 0x" << std::hex << pkt_data_addr_
+          << " pkt_data_len: " << std::dec << pkt_data_len_
+          << " pkt_hdr_addr: 0x" << std::hex << pkt_hdr_addr_
+          << " msg_flags: " << std::dec << std::bitset<8>(msg_flags_);
         return s.str();
     }
 
     std::string print_chain() {
         std::stringstream s;
-        auto *cur = this;
-        while (cur && !cur->is_last()) {
-            s << cur->to_string();
-            cur = cur->next_;
+        struct list_head *pos, *n;
+        list_for_each_safe(pos, n, &frame_link_) {
+            auto *cur_desc = list_entry(pos, struct FrameDesc, frame_link_);
+            s << cur_desc->to_string() << "\n";
         }
         return s.str();
     }
 };
 
-class AFXDPSocket;
-class AFXDPFactory;
-extern AFXDPFactory afxdp_ctl;
-
-class AFXDPFactory {
+class FrameDescBuffPool : public BuffPool {
    public:
-    constexpr static char *SHM_NAME = (char *)"UMEM_SHM";
-    constexpr static char *SOCKET_PATH = (char *)"/tmp/privileged_socket";
+    static constexpr uint32_t kFrameDescSize = sizeof(FrameDesc);
+    static constexpr uint32_t kNumFrameDesc = NUM_FRAMES;
+    static_assert((kNumFrameDesc & (kNumFrameDesc - 1)) == 0,
+                  "kNumFrameDesc must be power of 2");
 
-    char interface_name_[256];
+    FrameDescBuffPool(struct ibv_mr *mr)
+        : BuffPool(kNumFrameDesc, kFrameDescSize, mr) {}
 
-    // UDS socket to connect to the afxdp daemon.
-    int client_sock_;
-
-    // umem shared by all afxdp sockets.
-    int umem_fd_;
-    int xsk_fds_[NUM_QUEUES];
-    void *umem_buffer_;
-    size_t umem_size_;
-    uint64_t num_frames_;
-
-    std::mutex socket_q_lock_;
-    std::deque<AFXDPSocket *> socket_q_;
-
-    static void init(const char *interface_name, uint64_t num_frames,
-                     const char *ebpf_filename, const char *section_name);
-    static AFXDPSocket *CreateSocket(int queue_id);
-    static void shutdown();
+    ~FrameDescBuffPool() = default;
 };
 
-class AFXDPSocket {
-    static_assert(XDP_PACKET_HEADROOM == 0x100, "XDP_PACKET_HEADROOM is 256");
-    static const uint64_t XDP_PACKET_HEADROOM_MASK = 0x1FF;
+class EFASocket;
+class EFAFactory;
+extern EFAFactory efa_ctl;
 
-    int xsk_fd_;
-    int umem_fd_;
+class EFAFactory {
+   public:
+    std::mutex socket_q_lock_;
+    std::deque<EFASocket *> socket_q_;
 
-    void *fill_map_;
-    size_t fill_map_size_;
-    void *comp_map_;
-    size_t comp_map_size_;
-    void *rx_map_;
-    size_t rx_map_size_;
-    void *tx_map_;
-    size_t tx_map_size_;
+    static void Init();
+    static EFASocket *CreateSocket(int queue_id);
+    static void Shutdown();
+};
 
+class EFASocket {
     // queue_id starts from 0, equal to socket_id.
-    AFXDPSocket(int queue_id);
+    EFASocket(int queue_id);
 
-    // For manually mapping umem struct from the afxdp daemon.
-    typedef __u64 u64;
-    typedef __u32 u32;
-    typedef __u16 u16;
-    typedef __u8 u8;
-
-    /* Up until and including Linux 5.3 */
-    struct xdp_ring_offset_v1 {
-        __u64 producer;
-        __u64 consumer;
-        __u64 desc;
-    };
-
-    /* Up until and including Linux 5.3 */
-    struct xdp_mmap_offsets_v1 {
-        struct xdp_ring_offset_v1 rx;
-        struct xdp_ring_offset_v1 tx;
-        struct xdp_ring_offset_v1 fr;
-        struct xdp_ring_offset_v1 cr;
-    };
-
-    void xsk_mmap_offsets_v1(struct xdp_mmap_offsets *off);
-    int xsk_get_mmap_offsets(int fd, struct xdp_mmap_offsets *off);
-    void destroy_afxdp_socket();
-    int create_afxdp_socket();
+    void destroy_efa_socket();
+    int create_efa_socket();
 
    public:
     uint32_t queue_id_;
-    void *umem_buffer_;
-    size_t umem_size_;
-    struct xsk_ring_cons recv_queue_;
-    struct xsk_ring_prod send_queue_;
-    struct xsk_ring_cons complete_queue_;
-    struct xsk_ring_prod fill_queue_;
-
     SharedPool<uint64_t, /*Sync=*/true> *frame_pool_;
 
-    struct frame_desc {
-        uint64_t frame_offset;
-        uint32_t frame_len;
-    };
-
     inline uint32_t get_queue_id() const { return queue_id_; }
-    uint32_t send_packet(frame_desc frame);
-    uint32_t send_packets(std::vector<frame_desc> &frames);
+    // dest_qp is specified in the FrameDesc; src_qp is determined by EFASocket
+    // internally to evenly spread the load
+    uint32_t send_packet(FrameDesc *frame);
+    uint32_t send_packets(std::vector<FrameDesc *> &frames);
+    std::vector<FrameDesc *> recv_packets(uint32_t budget);
+
     uint32_t pull_complete_queue();
-    inline uint32_t kick_tx_and_pull() {
-        uint32_t pull_tx_pkts = 0;
-        do {
-            kick_tx();
-            pull_tx_pkts += pull_complete_queue();
-        } while (unpulled_tx_pkts_ > FILL_RING_SIZE / 2);
-        return pull_tx_pkts;
+
+    void populate_recv_queue(uint32_t nb_frames);
+    inline void populate_recv_queue_to_full() {
+        populate_recv_queue(FILL_RING_SIZE - fill_queue_entries_);
     }
+
     inline uint32_t send_queue_free_entries(uint32_t nb = UINT32_MAX) {
         return xsk_prod_nb_free(&send_queue_, nb);
     }
@@ -285,20 +296,12 @@ class AFXDPSocket {
         return send_queue_pending_entries * AFXDP_MTU * 1000000000UL /
                kLinkBandwidth;
     }
-    std::vector<frame_desc> recv_packets(uint32_t nb_frames);
-    void populate_fill_queue(uint32_t nb_frames);
-    inline void populate_fill_queue_to_full() {
-        populate_fill_queue(FILL_RING_SIZE - fill_queue_entries_);
-    }
-
-    inline int get_xsk_fd() const { return xsk_fd_; }
-    inline int get_umem_fd() const { return umem_fd_; }
 
     std::string to_string();
     void shutdown();
-    ~AFXDPSocket();
+    ~EFASocket();
 
-    friend class AFXDPFactory;
+    friend class EFAFactory;
 
     // #define FRAME_POOL_DEBUG
 
@@ -310,11 +313,11 @@ class AFXDPSocket {
 #ifdef FRAME_POOL_DEBUG
         auto frame_offset = frame_pool_->pop();
         CHECK(free_frames_.erase(frame_offset) == 1);
-        FrameBuf::clear_fields(frame_offset, umem_buffer_);
+        FrameDesc::clear_fields(frame_offset, umem_buffer_);
         return frame_offset;
 #else
         auto frame_offset = frame_pool_->pop();
-        FrameBuf::clear_fields(frame_offset, afxdp_ctl.umem_buffer_);
+        FrameDesc::clear_fields(frame_offset, efa_ctl.umem_buffer_);
         return frame_offset;
 #endif
     }
@@ -322,18 +325,19 @@ class AFXDPSocket {
     inline void push_frame(uint64_t frame_offset) {
 #ifdef FRAME_POOL_DEBUG
         if (free_frames_.find(frame_offset) == free_frames_.end()) {
-            FrameBuf::clear_fields(frame_offset, umem_buffer_);
+            FrameDesc::clear_fields(frame_offset, umem_buffer_);
             free_frames_.insert(frame_offset);
             frame_pool_->push(frame_offset);
         } else {
             CHECK(false) << "Frame offset " << std::hex << frame_offset
                          << " size " << std::dec
-                         << FrameBuf::get_msgbuf_ptr(frame_offset, umem_buffer_)
+                         << FrameDesc::get_msgbuf_ptr(frame_offset,
+                                                      umem_buffer_)
                                 ->get_frame_len()
                          << " already in free_frames_";
         }
 #else
-        FrameBuf::clear_fields(frame_offset, afxdp_ctl.umem_buffer_);
+        FrameDesc::clear_fields(frame_offset, efa_ctl.umem_buffer_);
         frame_pool_->push(frame_offset);
 #endif
     }
@@ -347,18 +351,6 @@ class AFXDPSocket {
     inline static std::atomic<uint64_t> out_bytes_ = 0;
     inline static std::atomic<uint64_t> in_packets_ = 0;
     inline static std::atomic<uint64_t> in_bytes_ = 0;
-
-    inline void kick_tx() {
-        if (xsk_ring_prod__needs_wakeup(&send_queue_)) {
-            sendto(xsk_fd_, NULL, 0, MSG_DONTWAIT, NULL, 0);
-        }
-    }
-
-    inline void kick_rx() {
-        if (xsk_ring_prod__needs_wakeup(&fill_queue_)) {
-            recvfrom(xsk_fd_, NULL, 0, MSG_DONTWAIT, NULL, 0);
-        }
-    }
 };
 
 }  // namespace uccl

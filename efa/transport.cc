@@ -46,7 +46,7 @@ void TXTracking::receive_acks(uint32_t num_acked_pkts) {
     }
 }
 
-void TXTracking::append(FrameBuf *msgbuf_head, FrameBuf *msgbuf_tail,
+void TXTracking::append(FrameDesc *msgbuf_head, FrameDesc *msgbuf_tail,
                         uint32_t num_frames, PollCtx *poll_ctx) {
     VLOG(3) << "Appending " << num_frames << " frames :"
             << " num_unsent_msgbufs_ " << num_unsent_msgbufs_
@@ -82,7 +82,7 @@ void TXTracking::append(FrameBuf *msgbuf_head, FrameBuf *msgbuf_tail,
     num_tracked_msgbufs_ += num_frames;
 }
 
-std::optional<FrameBuf *> TXTracking::get_and_update_oldest_unsent() {
+std::optional<FrameDesc *> TXTracking::get_and_update_oldest_unsent() {
     if (num_unsent_msgbufs_)
         VLOG(3) << "Getting: num_unsent_msgbufs_ " << num_unsent_msgbufs_
                 << " last_msgbuf_ " << last_msgbuf_ << " oldest_unsent_msgbuf "
@@ -108,7 +108,7 @@ std::optional<FrameBuf *> TXTracking::get_and_update_oldest_unsent() {
     return msgbuf;
 }
 
-RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameBuf *msgbuf) {
+RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameDesc *msgbuf) {
     uint8_t *pkt_addr = msgbuf->get_pkt_addr();
     auto frame_len = msgbuf->get_frame_len();
     const auto *ucclh =
@@ -152,7 +152,7 @@ RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameBuf *msgbuf) {
 
     // Buffer the packet in the frame pool. It may be out-of-order.
     reass_q_.insert(
-        it, std::pair<int, FrameBuf *>(static_cast<int>(seqno), msgbuf));
+        it, std::pair<int, FrameDesc *>(static_cast<int>(seqno), msgbuf));
 
     // Update the SACK bitmap for the newly received packet.
     pcb->sack_bitmap_bit_set(distance);
@@ -187,7 +187,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
     }
 
     while (!ready_msg_queue_.empty() && !app_buf_queue_.empty()) {
-        FrameBuf *ready_msg = ready_msg_queue_.front();
+        FrameDesc *ready_msg = ready_msg_queue_.front();
         ready_msg_queue_.pop_front();
         DCHECK(ready_msg) << ready_msg->print_chain();
 
@@ -315,7 +315,7 @@ void UcclFlow::rx_messages() {
             auto dst_port_reverse =
                 received_rtt_probe ? dst_port_rtt_probe : dst_port;
 
-            AFXDPSocket::frame_desc ack_frame = craft_ackpacket(
+            EFASocket::frame_desc ack_frame = craft_ackpacket(
                 path_id, dst_port_reverse, pcb_.seqno(), pcb_.ackno(),
                 net_flags, timestamp1, timestamp2);
             socket_->send_packet(ack_frame);
@@ -387,7 +387,7 @@ bool UcclFlow::periodic_check() {
         auto [msgbuf, seqno] = ready_wheel.front();
         ready_wheel.pop_front();
         if (swift::seqno_ge(seqno, pcb_.snd_una)) {
-            rto_retransmit((FrameBuf *)msgbuf, seqno);
+            rto_retransmit((FrameDesc *)msgbuf, seqno);
         }
     }
 
@@ -560,7 +560,7 @@ void UcclFlow::fast_retransmit() {
     }
 }
 
-void UcclFlow::rto_retransmit(FrameBuf *msgbuf, uint32_t seqno) {
+void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
     VLOG(3) << "RTO retransmitting oldest unacked packet " << seqno;
     auto path_id = get_path_id_with_lowest_rtt();
 #ifdef REXMIT_SET_PATH
@@ -705,9 +705,9 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
     auto deser_budget = kMaxTwPkts - tx_tracking_.num_unsent_msgbufs();
 
     auto &[tx_work, cur_offset] = pending_tx_msgs_.front();
-    FrameBuf *cur_msgbuf = tx_work.deser_msgs;
-    FrameBuf *tx_msgbuf_head = cur_msgbuf;
-    FrameBuf *tx_msgbuf_tail = nullptr;
+    FrameDesc *cur_msgbuf = tx_work.deser_msgs;
+    FrameDesc *tx_msgbuf_head = cur_msgbuf;
+    FrameDesc *tx_msgbuf_tail = nullptr;
     uint32_t num_tx_frames = 0;
     size_t remaining_bytes = tx_work.len - cur_offset;
 
@@ -849,7 +849,7 @@ void UcclFlow::prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
 #endif
 }
 
-void UcclFlow::prepare_datapacket(FrameBuf *msgbuf, uint32_t path_id,
+void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
                                   uint32_t seqno,
                                   const UcclPktHdr::UcclFlags net_flags) {
     // Header length after before the payload.
@@ -869,7 +869,7 @@ void UcclFlow::prepare_datapacket(FrameBuf *msgbuf, uint32_t path_id,
     ucclh->path_id = (uint16_t)path_id;
     ucclh->net_flags = net_flags;
     ucclh->ackno = be32_t(UINT32_MAX);
-    // This fills the FrameBuf flags into the outgoing packet msg_flags.
+    // This fills the FrameDesc flags into the outgoing packet msg_flags.
     ucclh->msg_flags = msgbuf->msg_flags();
     ucclh->frame_len = be16_t(frame_len);
 
@@ -883,14 +883,14 @@ void UcclFlow::prepare_datapacket(FrameBuf *msgbuf, uint32_t path_id,
     ucclh->timestamp2 = 0;  // let the receiver ebpf fill this in.
 }
 
-AFXDPSocket::frame_desc UcclFlow::craft_ackpacket(
+EFASocket::frame_desc UcclFlow::craft_ackpacket(
     uint32_t path_id, uint16_t dst_port, uint32_t seqno, uint32_t ackno,
     const UcclPktHdr::UcclFlags net_flags, uint64_t ts1, uint64_t ts2) {
     const size_t kControlPayloadBytes = kUcclHdrLen + kUcclSackHdrLen;
     auto frame_offset = socket_->pop_frame();
-    auto msgbuf = FrameBuf::Create(frame_offset, socket_->umem_buffer_,
+    auto msgbuf = FrameDesc::Create(frame_offset, socket_->umem_buffer_,
                                    kNetHdrLen + kControlPayloadBytes);
-    // Let AFXDPSocket::pull_complete_queue() free control frames.
+    // Let EFASocket::pull_complete_queue() free control frames.
     msgbuf->mark_txpulltime_free();
 
     uint8_t *pkt_addr = (uint8_t *)socket_->umem_buffer_ + frame_offset;
@@ -929,12 +929,12 @@ AFXDPSocket::frame_desc UcclFlow::craft_ackpacket(
     return {frame_offset, kNetHdrLen + kControlPayloadBytes};
 }
 
-AFXDPSocket::frame_desc UcclFlow::craft_rssprobe_packet(uint16_t dst_port) {
+EFASocket::frame_desc UcclFlow::craft_rssprobe_packet(uint16_t dst_port) {
     const size_t kRssProbePayloadBytes = kUcclHdrLen;
     auto frame_offset = socket_->pop_frame();
-    auto msgbuf = FrameBuf::Create(frame_offset, socket_->umem_buffer_,
+    auto msgbuf = FrameDesc::Create(frame_offset, socket_->umem_buffer_,
                                    kNetHdrLen + kRssProbePayloadBytes);
-    // Let AFXDPSocket::pull_complete_queue() free control frames.
+    // Let EFASocket::pull_complete_queue() free control frames.
     msgbuf->mark_txpulltime_free();
 
     uint8_t *pkt_addr = (uint8_t *)socket_->umem_buffer_ + frame_offset;
@@ -961,7 +961,7 @@ AFXDPSocket::frame_desc UcclFlow::craft_rssprobe_packet(uint16_t dst_port) {
     return {frame_offset, kNetHdrLen + kRssProbePayloadBytes};
 }
 
-void UcclFlow::reverse_packet_l2l3(FrameBuf *msgbuf) {
+void UcclFlow::reverse_packet_l2l3(FrameDesc *msgbuf) {
     auto *pkt_addr = msgbuf->get_pkt_addr();
     auto *eth = (ethhdr *)pkt_addr;
     auto *ipv4h = (iphdr *)(pkt_addr + sizeof(ethhdr));
@@ -1048,9 +1048,9 @@ void UcclEngine::deser_th_func(std::vector<UcclEngine *> engines) {
                 tx_deser_work.poll_ctx->read_barrier();
                 VLOG(3) << "Tx jring dequeue";
 
-                // deser tx_work into a framebuf chain, then pass to deser_th.
-                FrameBuf *deser_msgs_head = nullptr;
-                FrameBuf *deser_msgs_tail = nullptr;
+                // deser tx_work into a FrameDesc chain, then pass to deser_th.
+                FrameDesc *deser_msgs_head = nullptr;
+                FrameDesc *deser_msgs_tail = nullptr;
                 auto *app_buf_cursor = tx_deser_work.data;
                 auto remaining_bytes = tx_deser_work.len;
                 while (remaining_bytes > 0) {
@@ -1058,7 +1058,7 @@ void UcclEngine::deser_th_func(std::vector<UcclEngine *> engines) {
                         std::min(remaining_bytes,
                                  (size_t)AFXDP_MTU - kNetHdrLen - kUcclHdrLen);
                     auto frame_offset = engine->socket_->pop_frame();
-                    auto *msgbuf = FrameBuf::Create(
+                    auto *msgbuf = FrameDesc::Create(
                         frame_offset, engine->socket_->umem_buffer_,
                         kNetHdrLen + kUcclHdrLen + payload_len);
 #ifndef EMULATE_ZC
@@ -1093,7 +1093,7 @@ void UcclEngine::deser_th_func(std::vector<UcclEngine *> engines) {
                 rx_deser_work.poll_ctx->read_barrier();
                 VLOG(3) << "Rx ser jring dequeue";
 
-                FrameBuf *ready_msg = rx_deser_work.deser_msgs;
+                FrameDesc *ready_msg = rx_deser_work.deser_msgs;
                 auto *app_buf = rx_deser_work.data;
                 auto *app_buf_len_p = rx_deser_work.len_p;
                 auto *poll_ctx = rx_deser_work.poll_ctx;
@@ -1147,15 +1147,15 @@ void UcclEngine::deser_th_func(std::vector<UcclEngine *> engines) {
 }
 
 void UcclEngine::process_rx_msg(
-    std::vector<AFXDPSocket::frame_desc> &pkt_msgs) {
+    std::vector<EFASocket::frame_desc> &pkt_msgs) {
     for (auto &frame : pkt_msgs) {
-        auto *msgbuf = FrameBuf::Create(frame.frame_offset,
+        auto *msgbuf = FrameDesc::Create(frame.frame_offset,
                                         socket_->umem_buffer_, frame.frame_len);
         auto *pkt_addr = msgbuf->get_pkt_addr();
         auto *ucclh = reinterpret_cast<UcclPktHdr *>(pkt_addr + kNetHdrLen);
 
         // Record the incoming packet UcclPktHdr.msg_flags in
-        // FrameBuf.
+        // FrameDesc.
         msgbuf->set_msg_flags(ucclh->msg_flags);
 
         /**
@@ -1262,7 +1262,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
 
         auto frames = socket_->recv_packets(RECV_BATCH_SIZE);
         for (auto &frame : frames) {
-            auto *msgbuf = FrameBuf::Create(
+            auto *msgbuf = FrameDesc::Create(
                 frame.frame_offset, socket_->umem_buffer_, frame.frame_len);
             auto *pkt_addr = msgbuf->get_pkt_addr();
             auto *udph = reinterpret_cast<udphdr *>(pkt_addr + sizeof(ethhdr) +
@@ -1335,11 +1335,11 @@ std::string UcclEngine::status_to_string() {
 Endpoint::Endpoint(const char *interface_name, int num_queues,
                    uint64_t num_frames, int engine_cpu_start)
     : num_queues_(num_queues), stats_thread_([this]() { stats_thread_fn(); }) {
-    LOG(INFO) << "Creating AFXDPFactory";
+    LOG(INFO) << "Creating EFAFactory";
     // Create UDS socket and get umem_fd and xsk_ids.
     static std::once_flag flag_once;
     std::call_once(flag_once, [interface_name, num_frames]() {
-        AFXDPFactory::init(interface_name, num_frames, "ebpf_transport.o",
+        EFAFactory::Init(interface_name, num_frames, "ebpf_transport.o",
                            "ebpf_transport");
     });
 
@@ -1448,7 +1448,7 @@ Endpoint::~Endpoint() {
     }
 
     static std::once_flag flag_once;
-    std::call_once(flag_once, []() { AFXDPFactory::shutdown(); });
+    std::call_once(flag_once, []() { EFAFactory::Shutdown(); });
 
     {
         std::lock_guard<std::mutex> lock(stats_mu_);
