@@ -566,7 +566,7 @@ class UcclFlow {
     uint64_t rtt_probe_count_ = 0;
 
     /****** Maintaining per-path RTT for entropy-based path selection ******/
-    // Destination ports with remote_engine_idx_ as the target queue_id.
+    // Destination ports with remote_engine_idx_ as the target socket_id.
     std::vector<uint16_t> dst_ports_;
     // RTT in tsc, indexed by path_id.
     size_t port_path_rtt_[kMaxPath] = {0};
@@ -602,16 +602,16 @@ class UcclEngine {
     /**
      * @brief Construct a new UcclEngine object.
      *
-     * @param queue_id      RX/TX queue index to be used by the engine.
+     * @param socket_id      RX/TX queue index to be used by the engine.
      * @param channel       Uccl channel the engine will be responsible for.
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclEngine(int queue_id, Channel *channel, const std::string local_addr,
+    UcclEngine(int socket_id, Channel *channel, const std::string local_addr,
                const std::string local_l2_addr)
         : local_addr_(htonl(str_to_ip(local_addr))),
-          local_engine_idx_(queue_id),
-          socket_(EFAFactory::CreateSocket(queue_id)),
+          local_engine_idx_(socket_id),
+          socket_(EFAFactory::CreateSocket(socket_id)),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),

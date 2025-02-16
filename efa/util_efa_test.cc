@@ -142,7 +142,7 @@ static void cleanup() {
 }
 
 int client_generate_packet(void* data, int payload_bytes, uint32_t counter,
-                           int queue_id) {
+                           int socket_id) {
     struct ethhdr* eth = (struct ethhdr*)data;
     struct iphdr* ip = (struct iphdr*)((char*)data + sizeof(struct ethhdr));
     struct udphdr* udp = (struct udphdr*)((char*)ip + sizeof(struct iphdr));
@@ -189,7 +189,7 @@ int client_generate_packet(void* data, int payload_bytes, uint32_t counter,
            sizeof(struct udphdr) + payload_bytes;
 }
 
-void socket_send(struct socket_t* socket, int queue_id) {
+void socket_send(struct socket_t* socket, int socket_id) {
     if (inflight_pkts >= MAX_INFLIGHT_PKTS) {
         auto now_us =
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -199,7 +199,7 @@ void socket_send(struct socket_t* socket, int queue_id) {
             socket->last_stall_time = now_us;
         } else if (now_us - socket->last_stall_time > RTO_US) {
             // These inflight packets get lost, we just ignore them
-            printf("queue %d tx stall detected, forcing tx...\n", queue_id);
+            printf("queue %d tx stall detected, forcing tx...\n", socket_id);
             inflight_pkts = 0;
         }
         return;
@@ -213,7 +213,7 @@ void socket_send(struct socket_t* socket, int queue_id) {
         uint8_t* packet =
             (uint8_t*)socket->efa_socket->umem_buffer_ + frame_offset;
         uint32_t frame_len = client_generate_packet(
-            packet, PAYLOAD_BYTES, socket->counter + i, queue_id);
+            packet, PAYLOAD_BYTES, socket->counter + i, socket_id);
         FrameDesc::mark_txpulltime_free(frame_offset,
                                        socket->efa_socket->umem_buffer_);
         frames.emplace_back(EFASocket::frame_desc({frame_offset, frame_len}));
@@ -224,7 +224,7 @@ void socket_send(struct socket_t* socket, int queue_id) {
     socket->counter += completed;
 }
 
-void socket_recv(struct socket_t* socket, int queue_id) {
+void socket_recv(struct socket_t* socket, int socket_id) {
     // Check any packet received, in order to drive packet receiving path for
     // other kernel transport.
     auto frames = socket->efa_socket->recv_packets(MY_RECV_BATCH_SIZE);
@@ -266,14 +266,14 @@ void socket_recv(struct socket_t* socket, int queue_id) {
 static void* send_thread(void* arg) {
     struct socket_t* socket = (struct socket_t*)arg;
 
-    int queue_id = socket->efa_socket->queue_id_;
+    int socket_id = socket->efa_socket->socket_id_;
 
-    printf("started socket send thread for queue #%d\n", queue_id);
+    printf("started socket send thread for queue #%d\n", socket_id);
 
-    pin_thread_to_cpu(queue_id);
+    pin_thread_to_cpu(socket_id);
 
     while (!quit) {
-        socket_send(socket, queue_id);
+        socket_send(socket, socket_id);
         if (SEND_INTV_US) usleep(SEND_INTV_US);
     }
     return NULL;
@@ -281,10 +281,10 @@ static void* send_thread(void* arg) {
 
 static void* recv_thread(void* arg) {
     struct socket_t* socket = (struct socket_t*)arg;
-    int queue_id = socket->efa_socket->queue_id_;
-    printf("started socket recv thread for queue #%d\n", queue_id);
+    int socket_id = socket->efa_socket->socket_id_;
+    printf("started socket recv thread for queue #%d\n", socket_id);
 
-    pin_thread_to_cpu(MY_NUM_QUEUES + queue_id);
+    pin_thread_to_cpu(MY_NUM_QUEUES + socket_id);
 
     struct pollfd fds[2];
     int nfds = 1;
@@ -299,7 +299,7 @@ static void* recv_thread(void* arg) {
             ret = poll(fds, nfds, 1000);
             if (ret <= 0 || ret > 1) continue;
         }
-        socket_recv(socket, queue_id);
+        socket_recv(socket, socket_id);
     }
     return NULL;
 }

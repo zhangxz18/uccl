@@ -8,8 +8,8 @@ EFAFactory efa_ctl;
 
 void EFAFactory::Init() {}
 
-EFASocket *EFAFactory::CreateSocket(int queue_id) {
-    auto socket = new EFASocket(queue_id);
+EFASocket *EFAFactory::CreateSocket(int socket_id) {
+    auto socket = new EFASocket(socket_id);
     std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
     efa_ctl.socket_q_.push_back(socket);
     return socket;
@@ -25,11 +25,11 @@ void EFAFactory::Shutdown() {
     efa_ctl.socket_q_.clear();
 }
 
-EFASocket::EFASocket(int queue_id)
+EFASocket::EFASocket(int socket_id)
     : unpulled_tx_pkts_(0), fill_queue_entries_(0) {
-    // TODO(yang): negotiate with afxdp daemon for queue_id and num_frames.
+    // TODO(yang): negotiate with afxdp daemon for socket_id and num_frames.
 
-    queue_id_ = queue_id;
+    socket_id_ = socket_id;
 
     // initialize queues, or misterious queue sync problems will happen
     memset(&recv_queue_, 0, sizeof(recv_queue_));
@@ -38,13 +38,13 @@ EFASocket::EFASocket(int queue_id)
     memset(&fill_queue_, 0, sizeof(fill_queue_));
 
     // Step1: retrieve the file descriptors for AF_XDP socket
-    xsk_fd_ = efa_ctl.xsk_fds_[queue_id_];
+    xsk_fd_ = efa_ctl.xsk_fds_[socket_id_];
 
     // Step2: map UMEM and build four rings for the AF_XDP socket
     int ret = create_efa_socket();
     CHECK_EQ(ret, 0) << "xsk_socket__create_shared failed, " << ret;
 
-    LOG(INFO) << "[AF_XDP] socket " << queue_id << " successfully shared";
+    LOG(INFO) << "[AF_XDP] socket " << socket_id << " successfully shared";
 
     // apply_setsockopt(xsk_fd_);
 
@@ -68,8 +68,8 @@ int EFASocket::create_efa_socket() {
     /* initialize frame allocator */
     uint64_t frame_pool_size = efa_ctl.num_frames_ / NUM_QUEUES;
     frame_pool_ = new SharedPool<uint64_t, /*Sync=*/true>(frame_pool_size);
-    uint64_t frame_pool_offset = FRAME_SIZE * frame_pool_size * queue_id_;
-    LOG(INFO) << "[AF_XDP] frame pool " << queue_id_
+    uint64_t frame_pool_offset = FRAME_SIZE * frame_pool_size * socket_id_;
+    LOG(INFO) << "[AF_XDP] frame pool " << socket_id_
               << " initialized: frame_pool_size = " << frame_pool_size
               << " frame_pool_offset = " << std::hex << "0x"
               << frame_pool_offset;
@@ -179,12 +179,12 @@ uint32_t EFASocket::send_packets(std::vector<frame_desc> &frames) {
     return kick_tx_and_pull();
 }
 
-void EFASocket::populate_fill_queue(uint32_t nb_frames) {
+void EFASocket::populate_fill_queue(uint32_t budget) {
     // TODO(yang): figure out why cloudlab needs xsk_prod_nb_free().
 #if defined(AWS_C5) || defined(AWS_G4) || defined(AWS_G4METAL)
-    auto stock_frames = nb_frames;
+    auto stock_frames = budget;
 #else
-    auto stock_frames = xsk_prod_nb_free(&fill_queue_, nb_frames);
+    auto stock_frames = xsk_prod_nb_free(&fill_queue_, budget);
 #endif
     if (stock_frames <= 0) return;
 
@@ -202,11 +202,11 @@ void EFASocket::populate_fill_queue(uint32_t nb_frames) {
     xsk_ring_prod__submit(&fill_queue_, ret);
 }
 
-std::vector<EFASocket::frame_desc> EFASocket::recv_packets(uint32_t nb_frames) {
+std::vector<EFASocket::frame_desc> EFASocket::recv_packets(uint32_t budget) {
     std::vector<EFASocket::frame_desc> frames;
-    frames.reserve(nb_frames);
+    frames.reserve(budget);
     uint32_t idx_rx, rcvd;
-    rcvd = xsk_ring_cons__peek(&recv_queue_, nb_frames, &idx_rx);
+    rcvd = xsk_ring_cons__peek(&recv_queue_, budget, &idx_rx);
     if (!rcvd) {
         kick_rx();
         return frames;
@@ -253,7 +253,7 @@ std::string EFASocket::to_string() {
     std::string s;
     s += Format("free frames: %u, unpulled tx pkts: %u, fill queue entries: %u",
                 frame_pool_->size(), unpulled_tx_pkts_, fill_queue_entries_);
-    if (queue_id_ == 0) {
+    if (socket_id_ == 0) {
         auto now = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                            now - last_stat_)

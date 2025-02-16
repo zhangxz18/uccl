@@ -258,22 +258,24 @@ class EFAFactory {
     std::deque<EFASocket *> socket_q_;
 
     static void Init();
-    static EFASocket *CreateSocket(int queue_id);
+    static EFASocket *CreateSocket(int socket_id);
     static void Shutdown();
 };
 
 class EFASocket {
-    // queue_id starts from 0, equal to socket_id.
-    EFASocket(int queue_id);
+    // socket_id starts from 0, equal to socket_id.
+    EFASocket(int socket_id);
 
     void destroy_efa_socket();
     int create_efa_socket();
 
    public:
-    uint32_t queue_id_;
-    SharedPool<uint64_t, /*Sync=*/true> *frame_pool_;
+    uint32_t socket_id_;
+    UDPktDataBuffPool *pkt_data_pool_;
+    UDPktHdrBuffPool *pkt_hdr_pool_;
+    FrameDescBuffPool *frame_desc_pool_;
 
-    inline uint32_t get_queue_id() const { return queue_id_; }
+    inline uint32_t socket_id() const { return socket_id_; }
     // dest_qp is specified in the FrameDesc; src_qp is determined by EFASocket
     // internally to evenly spread the load
     uint32_t send_packet(FrameDesc *frame);
@@ -282,7 +284,7 @@ class EFASocket {
 
     uint32_t pull_complete_queue();
 
-    void populate_recv_queue(uint32_t nb_frames);
+    void populate_recv_queue(uint32_t budget);
     inline void populate_recv_queue_to_full() {
         populate_recv_queue(FILL_RING_SIZE - fill_queue_entries_);
     }
