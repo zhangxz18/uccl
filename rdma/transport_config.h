@@ -47,7 +47,7 @@ constexpr static int kTotalQP = kUSERC ? kPortEntropy : kPortEntropy + 2;
 // Per-path cwnd or global cwnd.
 static const bool kPPCwnd = false;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
-static const uint32_t kRCSize = 0;
+static const uint32_t kRCSize = 65536;
 
 // Limit the bytes of consecutive cached QP uses.
 static constexpr uint32_t kMAXConsecutiveSameChoiceBytes = 16384;

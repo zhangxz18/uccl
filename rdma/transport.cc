@@ -30,27 +30,27 @@ void UcclFlow::poll_flow_cq(void)
         if (opcode == IBV_WC_RDMA_WRITE) {
             // RC send completion.
             if (wcs[i].qp_num == comm_base->rc_qp->qp_num) {
-                auto poll_ctx = (PollCtx *)wcs[i].wr_id;
-                uccl_wakeup(poll_ctx);
+                auto *rc_or_flush_done = (uint64_t *)wcs[i].wr_id;
+                *rc_or_flush_done = true;
             }
         } else if (opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
             // RC recv completion.
             auto ureq = (struct ucclRequest *)wcs[i].wr_id;
             ureq->recv.data_len[0] = ntohl(wcs[i].imm_data);
-            uccl_wakeup(ureq->poll_ctx);
+            ureq->rc_or_flush_done = true;
         } else if (opcode == IBV_WC_RDMA_READ) {
             // GPU flush completion.
-            auto *poll_ctx = reinterpret_cast<PollCtx *>(wcs[i].wr_id);
-            uccl_wakeup(poll_ctx);
+            auto *rc_or_flush_done = (uint64_t *)wcs[i].wr_id;
+            *rc_or_flush_done = true;
         }  
     }
     flow_cq_cnt_ -= nb_cqe;
 }
 
-void UcclFlow::post_flush(struct Mhandle **mhandles, void **data, int *size, int n, PollCtx *poll_ctx, int last)
+void UcclFlow::post_flush(struct Mhandle **mhandles, void **data, int *size, int n, uint64_t *flush_done, int last)
 {
     struct ibv_send_wr wr = {};
-    wr.wr_id = (uint64_t)poll_ctx;
+    wr.wr_id = (uint64_t)flush_done;
     wr.wr.rdma.remote_addr = reinterpret_cast<uint64_t>(data[last]);
     wr.wr.rdma.rkey = mhandles[last]->mr->rkey;
     wr.sg_list = &recv_comm_.gpu_flush_sge;
@@ -897,7 +897,7 @@ void UcclFlow::rc_send(struct ucclRequest *ureq)
 
     wr.send_flags = IBV_SEND_SIGNALED;
 
-    wr.wr_id = (uint64_t)ureq->poll_ctx;
+    wr.wr_id = (uint64_t)&ureq->rc_or_flush_done;
 
     DCHECK(ibv_post_send(qp, &wr, &bad_wr) == 0) << "Failed to post send";
     flow_cq_cnt_++;
@@ -942,8 +942,6 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
     auto rem_fifo = send_comm->base.fifo;
     volatile struct FifoItem *slots = rem_fifo->elems[slot];
 
-    auto *poll_ctx = ctx_pool_->pop();
-
     for (int i = 0; i < nmsg; i++) {
         if (ureqs[i] != nullptr) continue;
         DCHECK(!(slots[i].size < 0 || slots[i].addr == 0 || slots[i].rkey == 0));
@@ -961,7 +959,10 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
         ureq->n = nmsg;
         ureq->send.rid = slots[i].rid;
         ureq->send.sent_offset = 0;
-        ureq->poll_ctx = poll_ctx;
+        if (slots[i].engine_offset == RDMAEndpoint::RC_MAGIC)
+            ureq->rc_or_flush_done = false;
+        else
+            ureq->poll_ctx = ctx_pool_->pop();
         ureq->context = flow;
         ureq->send.nchunk = size < slots[i].size ? 1 : 0;
         ureq->send.tx_events = 0;
@@ -991,10 +992,16 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
     return 0;
 }
 
-bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq) {
+bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq) 
+{
+    bool ret;
     UcclFlow *flow = reinterpret_cast<UcclFlow *>(ureq->context);
-    if (ureq->type == ReqTxRC || ureq->type == ReqRxRC) {flow->poll_flow_cq();} 
-    auto ret = uccl_poll_once(ureq->poll_ctx);
+    if (ureq->type == ReqTxRC || ureq->type == ReqRxRC || ureq->type == ReqFlush) {
+        flow->poll_flow_cq();
+        ret = ureq->rc_or_flush_done;
+    } else {
+        ret = uccl_poll_once(ureq->poll_ctx);
+    }
     if ((ureq->type == ReqRx || ureq->type == ReqRxRC) && ret) {flow->dec_outstanding_reqs();}
     return ret;
 }
@@ -1006,11 +1013,9 @@ int RDMAEndpoint::uccl_flush(UcclFlow *flow, struct Mhandle **mhandles, void **d
     int last = flow->check_need_flush(size, n);
     if (last == -1) return 0;
 
-    auto *poll_ctx = ctx_pool_->pop();
-    flow->post_flush(mhandles, data, size, n, poll_ctx, last);
+    flow->post_flush(mhandles, data, size, n, &ureq->rc_or_flush_done, last);
 
     ureq->type = ReqFlush;
-    ureq->poll_ctx = poll_ctx;
 
     return 0;
 }
@@ -1027,7 +1032,7 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
         flow->rc_recv(data[0], size[0], mhandles[0], &ureq->recv.wr, &ureq->recv.sge, ureq);
         ureq->type = ReqRxRC;
         ureq->context = flow;
-        ureq->poll_ctx = ctx_pool_->pop();
+        ureq->rc_or_flush_done = false;
 
         flow->poll_flow_cq();
 

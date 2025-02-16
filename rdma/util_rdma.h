@@ -302,7 +302,11 @@ enum ReqType {
 struct ucclRequest {
     enum ReqType type;
     int n;
-    PollCtx *poll_ctx;
+    union {
+        PollCtx *poll_ctx;
+        // For reducing overhead of PollCtx for RC and Flush operation.
+        uint64_t rc_or_flush_done;
+    };
     void *context;
     void *req_pool;
     union {

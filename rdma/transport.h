@@ -643,7 +643,7 @@ class UcclFlow {
     /**
      * @brief Post a RDMA READ operation to GPU flush QP. This operation bypasses the UcclEngine.
      */
-    void post_flush(struct Mhandle **mhandles, void **data, int *size, int n, PollCtx *poll_ctx, int last);
+    void post_flush(struct Mhandle **mhandles, void **data, int *size, int n, uint64_t *flush_done, int last);
 
     /**
      * @brief Post multiple recv requests to a FIFO queue for remote peer to use RDMA WRITE.
