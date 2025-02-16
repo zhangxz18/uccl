@@ -50,10 +50,12 @@ static const bool kPPCwnd = false;
 static const uint32_t kRCSize = 65536;
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
+// Limit the per-flow outstanding bytes on each engine.
+static const uint32_t kMaxOutstandingBytes = 16 * kChunkSize;
 // # of Tx work handled in one loop.
 static const uint32_t kMaxTxWork = 4;
 // Maximum number of Tx bytes to be transmitted in one loop.
-static const uint32_t kMaxTxBytesThres = 16 * kChunkSize;
+static const uint32_t kMaxTxBytesThres = 32 * kChunkSize;
 // # of Rx work handled in one loop.
 static const uint32_t kMaxRxWork = 8;
 // Completion queue (CQ) size.

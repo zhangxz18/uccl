@@ -75,6 +75,8 @@ class Timely {
     double avg_rtt_diff_ = 0.0;
     size_t last_update_tsc_ = 0;
 
+    uint32_t outstanding_bytes_ = 0;
+
     // Const
     double min_rtt_tsc_ = 0.0;
     double t_low_tsc_ = 0.0;

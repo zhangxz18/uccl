@@ -246,6 +246,8 @@ class UcclRDMAEngine {
     Channel *channel_;
     // Pending rx work due to no available request.
     std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_rx_works_;
+    // Pending tx work due to reaching the max outstanding bytes.
+    std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_tx_works_;
     // Timestamp of last periodic process execution.
     uint64_t last_periodic_tsc_;
     // Slow timer interval in TSC.

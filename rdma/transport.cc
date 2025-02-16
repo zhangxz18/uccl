@@ -253,9 +253,24 @@ void UcclRDMAEngine::handle_rx_work(void)
 void UcclRDMAEngine::handle_tx_work(void)
 {
     Channel::Msg tx_work;
-    int budget = kMaxTxWork;
+    int budget;
     uint32_t bytes = 0;
 
+    // Process pending tx works.
+    budget = pending_tx_works_.size();
+    while (!pending_tx_works_.empty() && budget--) {
+        auto it = pending_tx_works_.front();
+        pending_tx_works_.pop_front();
+        auto rdma_ctx = it.first;
+        auto ureq = it.second;
+        
+        if (!rdma_ctx->tx_messages(ureq)) {
+            // Push the message to the pending transmit queue.
+            pending_tx_works_.push_back(std::make_pair(rdma_ctx, ureq));
+        }
+    }
+
+    budget = kMaxTxWork;
     while (budget--) {
         if (jring_sc_dequeue_bulk(channel_->tx_cmdq_, &tx_work, 1, nullptr) == 0) break;
         // Make data written by the app thread visible to the engine.
@@ -268,7 +283,10 @@ void UcclRDMAEngine::handle_tx_work(void)
         DCHECK(it != rdma_ctx_map_.end());
         auto rdma_ctx = it->second;
 
-        rdma_ctx->tx_messages(tx_work.ureq);
+        if (!rdma_ctx->tx_messages(tx_work.ureq)) {
+            // Push the message to the pending transmit queue.
+            pending_tx_works_.push_back(std::make_pair(rdma_ctx, tx_work.ureq));
+        }
 
         bytes += tx_work.ureq->send.data_len;
 
@@ -942,10 +960,11 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
         ureq->send.rkey = slots[i].rkey;
         ureq->n = nmsg;
         ureq->send.rid = slots[i].rid;
+        ureq->send.sent_offset = 0;
         ureq->poll_ctx = poll_ctx;
         ureq->context = flow;
-        // Temporarily set tx_events to 1 to indicate size mismatch.
-        ureq->send.tx_events = size < slots[i].size ? 1 : 0;
+        ureq->send.nchunk = size < slots[i].size ? 1 : 0;
+        ureq->send.tx_events = 0;
         // Track this request.
         ureqs[i] = ureq;
 

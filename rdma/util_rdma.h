@@ -322,6 +322,8 @@ struct ucclRequest {
             uint32_t lkey;
             uint32_t rkey;
             uint32_t rid;
+            uint32_t sent_offset;
+            uint32_t nchunk;
         } send;
     };
 };
@@ -724,8 +726,9 @@ class RDMAContext {
             // Return the QP with lower RTT.
             return dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
         }
-
-        void tx_messages(struct ucclRequest *ureq);
+        
+        // Return true if this message is transmitted completely.
+        bool tx_messages(struct ucclRequest *ureq);
 
         int supply_rx_buff(struct ucclRequest *ureq);
 

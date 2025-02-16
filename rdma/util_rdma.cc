@@ -434,7 +434,7 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
     return 0;
 }
 
-void RDMAContext::tx_messages(struct ucclRequest *ureq)
+bool RDMAContext::tx_messages(struct ucclRequest *ureq)
 {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
     auto size = ureq->send.data_len;
@@ -442,40 +442,46 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
     auto raddr = ureq->send.raddr;
     auto lkey = ureq->send.lkey;
     auto rkey = ureq->send.rkey;
-    uint32_t sent_offset = 0;
-    uint32_t nchunk = 0;
+    auto *sent_offset = &ureq->send.sent_offset;
     uint64_t wr_addr;
     bool queued = false;
 
     auto now = rdtsc();
 
-    if (ureq->send.tx_events == 1) {
-        // Size mismatch.
-        nchunk = (size + kChunkSize - 1) / kChunkSize;
-        ureq->send.tx_events = 0;
+    if (*sent_offset == 0 /* Not yet transmitted for this message */) {
+        ureq->send.tx_events = (size + kChunkSize - 1) / kChunkSize;
+        if (ureq->send.nchunk == 1) {
+            // Size mismatch.
+            ureq->send.nchunk = ureq->send.tx_events;
+        }
     }
 
-    while (sent_offset < size) {
-        ureq->send.tx_events++;
+    while (*sent_offset < size) {
+
+        if (flow->cc_[engine_offset_].outstanding_bytes_ >= kMaxOutstandingBytes) {
+            // Push the message to the pending transmit queue.
+            return false;
+        }
+
         if constexpr (kTestNoTimingWheel) {
             DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
             auto wr = &wr_ex->wr;
 
-            wr_ex->sge.addr = laddr + sent_offset;
+            wr_ex->sge.addr = laddr + *sent_offset;
             wr_ex->sge.lkey = lkey;
-            wr_ex->sge.length = std::min(size - sent_offset, kChunkSize);
+            wr_ex->sge.length = std::min(size - *sent_offset, kChunkSize);
 
             auto chunk_size = wr_ex->sge.length;
 
-            wr->wr.rdma.remote_addr = raddr + sent_offset;
+            wr->wr.rdma.remote_addr = raddr + *sent_offset;
             wr->wr.rdma.rkey = rkey;
 
             IMMData imm_data(0);
 
             imm_data.SetNCHUNK(0);
-            if (nchunk && (sent_offset + chunk_size == size)) {
-                imm_data.SetNCHUNK(nchunk);
+            if ((*sent_offset + chunk_size == size) && ureq->send.nchunk) {
+                imm_data.SetNCHUNK(ureq->send.nchunk);
             }
             imm_data.SetRID(ureq->send.rid);
             imm_data.SetMID(ureq->n);
@@ -497,13 +503,15 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
             struct ibv_send_wr *bad_wr;
             DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
-            sent_offset += chunk_size;
+            *sent_offset += chunk_size;
             // Track this chunk.
             qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
             // Arm timer for TX
             arm_timer_for_qp(qpw);
 
             VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", mid: " << ureq->n << " with QP#" << qpidx;
+
+            flow->cc_[engine_offset_].outstanding_bytes_ += chunk_size;
 
             continue;
         }
@@ -512,14 +520,14 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
         DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
         auto wr = &wr_ex->wr;
-        wr_ex->sge.addr = laddr + sent_offset;
+        wr_ex->sge.addr = laddr + *sent_offset;
         wr_ex->sge.lkey = lkey;
-        wr_ex->sge.length = std::min(size - sent_offset, kChunkSize);
+        wr_ex->sge.length = std::min(size - *sent_offset, kChunkSize);
         auto chunk_size = wr_ex->sge.length;
 
         // wr->sg_list/num_sge/next/opcode are already set.
 
-        wr->wr.rdma.remote_addr = raddr + sent_offset;
+        wr->wr.rdma.remote_addr = raddr + *sent_offset;
         wr->wr.rdma.rkey = rkey;
 
         VLOG(5) << "remote_addr: " << wr->wr.rdma.remote_addr << ", rkey: " << wr->wr.rdma.rkey;
@@ -527,8 +535,8 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
         IMMData imm_data(0);
 
         imm_data.SetNCHUNK(0);
-        if (nchunk && (sent_offset + chunk_size == size)) {
-            imm_data.SetNCHUNK(nchunk);
+        if ((*sent_offset + chunk_size == size) && ureq->send.nchunk) {
+            imm_data.SetNCHUNK(ureq->send.nchunk);
         }
         imm_data.SetRID(ureq->send.rid);
         imm_data.SetMID(ureq->n);
@@ -551,7 +559,7 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
 
         wr_ex->qpidx = qpidx;
 
-        sent_offset += chunk_size;
+        *sent_offset += chunk_size;
         // Queue the SGE on the timing wheel.
         {
             auto wheel = &wheel_;
@@ -599,7 +607,11 @@ void RDMAContext::tx_messages(struct ucclRequest *ureq)
         }
 
         VLOG(5) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", mid: " << ureq->n << " with QP#" << qpidx;
+
+        flow->cc_[engine_offset_].outstanding_bytes_ += chunk_size;
     }
+
+    return true;
 }
 
 uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc)
@@ -628,7 +640,10 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_q
             t1 = chunk.timestamp;
 
         seg_size += chunk.wr_ex->sge.length;
-        flows.insert(reinterpret_cast<UcclFlow *>(chunk.ureq->context));
+
+        auto *flow = reinterpret_cast<UcclFlow *>(chunk.ureq->context);
+        flow->cc_[engine_offset].outstanding_bytes_ -= chunk.wr_ex->sge.length;
+        flows.insert(flow);
 
         unacked_chunks_.erase(unacked_chunks_.begin());
         num_acked_chunks--;
