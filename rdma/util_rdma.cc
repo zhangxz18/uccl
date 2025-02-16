@@ -11,6 +11,7 @@
 
 #include <cuda_runtime.h>
 
+#include "eqds.h"
 #include "transport.h"
 #include "transport_config.h"
 #include "util.h"

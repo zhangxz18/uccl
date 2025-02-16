@@ -21,6 +21,7 @@
 
 #include <glog/logging.h>
 
+#include "eqds.h"
 #include "transport_config.h"
 #include "util.h"
 #include "util_shared_pool.h"
@@ -118,14 +119,16 @@ class UcclRDMAEngine {
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclRDMAEngine(int dev, int engine_id, Channel *channel)
+    UcclRDMAEngine(int dev, int engine_id, Channel *channel, EQDSChannel *eqds_channel)
         : engine_idx_(engine_id),
           dev_(dev),
           channel_(channel),
+          eqds_channel_(eqds_channel),
           last_periodic_tsc_(rdtsc()),
           last_sync_clock_tsc_(rdtsc()),
           rto_tm_(kRTOUSec),
-          kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
+          kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz))
+          {
             auto context = RDMAFactory::get_factory_dev(dev_)->context;
             struct ibv_values_ex values;
             values.comp_mask = IBV_VALUES_MASK_RAW_CLOCK;
@@ -244,6 +247,9 @@ class UcclRDMAEngine {
     std::unordered_map<PeerID, RDMAContext *> rdma_ctx_map_;
     // Control plane channel with RDMAEndpoint.
     Channel *channel_;
+    // Channel for receiver-driven congestion control.
+    EQDSChannel *eqds_channel_;
+
     // Pending rx work due to no available request.
     std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_rx_works_;
     // Pending tx work due to reaching the max outstanding bytes.
@@ -325,6 +331,9 @@ class RDMAEndpoint {
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
     std::array<int, NUM_ENGINES * NUM_DEVICES> engine_load_vec_ = {};
+
+    // Receiver-driven congestion control.
+    EQDS *eqds_[NUM_DEVICES];
 
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
@@ -474,6 +483,8 @@ class UcclFlow {
     static constexpr int kFifoCQSize = 4096;
    
    public:
+
+    EQDSFlowCC eqds_flowcc;
 
     // Per-path cc states.
     Timely cc_pp_[kPortEntropy * NUM_ENGINES];

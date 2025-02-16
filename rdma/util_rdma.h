@@ -12,6 +12,7 @@
 
 #include <glog/logging.h>
 
+#include "eqds.h"
 #include "transport_config.h"
 #include "transport_cc.h"
 

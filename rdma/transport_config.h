@@ -43,6 +43,22 @@ static const uint32_t NCCL_MIN_POST_RECV = 65536;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static const uint32_t kPortEntropy = 256;
 
+// Congestion control algorithm.
+enum SenderCCA {
+    kSenderNone,
+    // Timely [SIGCOMM'15]
+    kSenderTimely,
+};
+enum ReceiverCCA {
+    kReceiverNone,
+    // EQDS [NSDI'22]
+    kReceiverEQDS,
+};
+static const enum SenderCCA kSenderCCA = kSenderNone;
+static const enum ReceiverCCA kReceiverCCA = kReceiverEQDS;
+
+static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
+
 // Use RC rather than UC.
 static const bool kUSERC = false;
 constexpr static int kTotalQP = kUSERC ? kPortEntropy : kPortEntropy + 2;
