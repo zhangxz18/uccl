@@ -159,6 +159,10 @@ class TimingWheel {
         size_t ref_tsc, void *wr, size_t chunk_size, bool allow_bypass) {
         if constexpr (kTestConstantRate)
             target_rate = Timely::gbps_to_rate(kLinkBandwidth);
+        
+        if (chunk_size < kBypassTimingWheelThres && allow_bypass)
+            return false;
+
         double ns_delta = 1000000000 * (chunk_size / target_rate);
         double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
 

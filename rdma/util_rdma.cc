@@ -487,7 +487,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
             imm_data.SetMID(ureq->n);
             
             // Select QP.
-            auto qpidx = select_qpidx_pow2();
+            auto qpidx = select_qpidx_pow2(size);
             auto qpw = &dp_qps_[qpidx];
 
             wr->send_flags = 0;
@@ -542,7 +542,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
         imm_data.SetMID(ureq->n);
         
         // Select QP.
-        auto qpidx = select_qpidx_pow2();
+        auto qpidx = select_qpidx_pow2(size);
         auto qpw = &dp_qps_[qpidx];
         // There is no n(eed to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
@@ -560,7 +560,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
         wr_ex->qpidx = qpidx;
 
         *sent_offset += chunk_size;
-        // Queue the SGE on the timing wheel.
+
         {
             auto wheel = &wheel_;
             uint32_t hdr_overhead;
@@ -570,7 +570,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
                 auto num_mtu = (chunk_size + mtu_bytes_) / mtu_bytes_;
                 hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD : IB_HDR_OVERHEAD);
             }
-            
+
             if constexpr (kPPCwnd) {
                 // Enforce per-path cwnd.
                 auto g_qpidx = engine_offset_ * kPortEntropy + qpidx;
@@ -586,6 +586,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
             }
 
             if (queued) {
+                // Queue the SGE on the timing wheel.
                 qpw->in_wheel_cnt_++;
                 // For future tracking.
                 wr_ex->ureq = ureq;

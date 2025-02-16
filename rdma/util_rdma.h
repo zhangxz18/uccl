@@ -695,6 +695,20 @@ class RDMAContext {
         // Pending signals need to be polled.
         uint32_t pending_signal_poll_ = 0;
 
+        uint32_t consecutive_same_choice_bytes_ = 0;
+        uint32_t last_qp_choice_ = 0;
+
+        inline bool can_use_last_choice(uint32_t msize) {
+            bool cond1 = msize <= kMAXUseCacheQPSize;
+            bool cond2 = consecutive_same_choice_bytes_ + msize <= kMAXConsecutiveSameChoiceBytes;
+            if (cond1 && cond2) {
+                consecutive_same_choice_bytes_ += msize;
+                return true;
+            }
+            consecutive_same_choice_bytes_ = 0;
+            return false;
+        }
+
         inline void update_clock(double ratio, double offset) {
             ratio_ = ratio;
             offset_ = offset;
@@ -719,12 +733,17 @@ class RDMAContext {
         }
 
         // Select a QP index in a power-of-two manner.
-        inline uint32_t select_qpidx_pow2(void) {
+        inline uint32_t select_qpidx_pow2(uint32_t msize) {
+            if (can_use_last_choice(msize))
+                return last_qp_choice_;
+
             auto q1 = select_qpidx_rand();
             auto q2 = select_qpidx_rand();
 
             // Return the QP with lower RTT.
-            return dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
+            auto qpidx = dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
+            last_qp_choice_ = qpidx;
+            return qpidx;
         }
         
         // Return true if this message is transmitted completely.

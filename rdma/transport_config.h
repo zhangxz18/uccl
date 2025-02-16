@@ -47,7 +47,15 @@ constexpr static int kTotalQP = kUSERC ? kPortEntropy : kPortEntropy + 2;
 // Per-path cwnd or global cwnd.
 static const bool kPPCwnd = false;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
-static const uint32_t kRCSize = 65536;
+static const uint32_t kRCSize = 0;
+
+// Limit the bytes of consecutive cached QP uses.
+static constexpr uint32_t kMAXConsecutiveSameChoiceBytes = 16384;
+// Message size threshold for allowing using cached QP.
+static constexpr uint32_t kMAXUseCacheQPSize = 8192;
+// Message size threshold for bypassing the timing wheel.
+static constexpr uint32_t kBypassTimingWheelThres = 9000;
+
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
 // Limit the per-flow outstanding bytes on each engine.
