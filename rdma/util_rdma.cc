@@ -438,6 +438,7 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
 bool RDMAContext::tx_messages(struct ucclRequest *ureq)
 {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+
     auto size = ureq->send.data_len;
     auto laddr = ureq->send.laddr;
     auto raddr = ureq->send.raddr;
@@ -446,6 +447,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
     auto *sent_offset = &ureq->send.sent_offset;
     uint64_t wr_addr;
     bool queued = false;
+    uint32_t chunk_size;
 
     auto now = rdtsc();
 
@@ -464,6 +466,19 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
             return false;
         }
 
+        chunk_size = std::min(size - *sent_offset, kChunkSize);
+
+        // Select QP.
+        auto qpidx = select_qpidx_pow2(size);
+        auto qpw = &dp_qps_[qpidx];
+
+        if constexpr (kReceiverCCA == kReceiverEQDS) {
+            if (!eqds_qp_cc[qpidx].spend_credit(chunk_size)) {
+                VLOG(3) << "No credit for sending " << chunk_size << " bytes for flow:" << flow->flowid();
+                return false;
+            }
+        }
+
         if constexpr (kTestNoTimingWheel) {
             DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
@@ -471,9 +486,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
 
             wr_ex->sge.addr = laddr + *sent_offset;
             wr_ex->sge.lkey = lkey;
-            wr_ex->sge.length = std::min(size - *sent_offset, kChunkSize);
-
-            auto chunk_size = wr_ex->sge.length;
+            wr_ex->sge.length = chunk_size;
 
             wr->wr.rdma.remote_addr = raddr + *sent_offset;
             wr->wr.rdma.rkey = rkey;
@@ -486,10 +499,6 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
             }
             imm_data.SetRID(ureq->send.rid);
             imm_data.SetMID(ureq->n);
-            
-            // Select QP.
-            auto qpidx = select_qpidx_pow2(size);
-            auto qpw = &dp_qps_[qpidx];
 
             wr->send_flags = 0;
             if (qpw->signal_cnt_++ % kSignalInterval == 0) {
@@ -523,8 +532,7 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
         auto wr = &wr_ex->wr;
         wr_ex->sge.addr = laddr + *sent_offset;
         wr_ex->sge.lkey = lkey;
-        wr_ex->sge.length = std::min(size - *sent_offset, kChunkSize);
-        auto chunk_size = wr_ex->sge.length;
+        wr_ex->sge.length = chunk_size;
 
         // wr->sg_list/num_sge/next/opcode are already set.
 
@@ -542,9 +550,6 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
         imm_data.SetRID(ureq->send.rid);
         imm_data.SetMID(ureq->n);
         
-        // Select QP.
-        auto qpidx = select_qpidx_pow2(size);
-        auto qpw = &dp_qps_[qpidx];
         // There is no n(eed to signal every WQE since we don't handle TX completions.
         // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
         // See https://www.rdmamojo.com/2014/06/30/working-unsignaled-completions/.

@@ -119,11 +119,11 @@ class UcclRDMAEngine {
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclRDMAEngine(int dev, int engine_id, Channel *channel, EQDSChannel *eqds_channel)
+    UcclRDMAEngine(int dev, int engine_id, Channel *channel, eqds::EQDS *eqds)
         : engine_idx_(engine_id),
           dev_(dev),
           channel_(channel),
-          eqds_channel_(eqds_channel),
+          eqds_(eqds),
           last_periodic_tsc_(rdtsc()),
           last_sync_clock_tsc_(rdtsc()),
           rto_tm_(kRTOUSec),
@@ -247,8 +247,8 @@ class UcclRDMAEngine {
     std::unordered_map<PeerID, RDMAContext *> rdma_ctx_map_;
     // Control plane channel with RDMAEndpoint.
     Channel *channel_;
-    // Channel for receiver-driven congestion control.
-    EQDSChannel *eqds_channel_;
+    
+    eqds::EQDS *eqds_;
 
     // Pending rx work due to no available request.
     std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_rx_works_;
@@ -333,7 +333,7 @@ class RDMAEndpoint {
     std::array<int, NUM_ENGINES * NUM_DEVICES> engine_load_vec_ = {};
 
     // Receiver-driven congestion control.
-    EQDS *eqds_[NUM_DEVICES];
+    eqds::EQDS *eqds_[NUM_DEVICES] = {};
 
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
@@ -483,8 +483,6 @@ class UcclFlow {
     static constexpr int kFifoCQSize = 4096;
    
    public:
-
-    EQDSFlowCC eqds_flowcc;
 
     // Per-path cc states.
     Timely cc_pp_[kPortEntropy * NUM_ENGINES];
@@ -638,6 +636,8 @@ class UcclFlow {
             ibv_destroy_qp(recv_comm_.gpu_flush_qp);
         }
     }
+
+    inline FlowID flowid() const { return flow_id_; } 
 
     friend class UcclRDMAEngine;
 

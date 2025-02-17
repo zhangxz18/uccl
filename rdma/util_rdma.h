@@ -493,8 +493,6 @@ struct UCQPWrapper {
     uint32_t in_wheel_cnt_ = 0;
     // A counter for occasionally posting IBV_SEND_SIGNALED flag.
     uint32_t signal_cnt_ = 0;
-    // Congestion control state.
-    swift::Pcb pcb;
     // States for tracking sent chunks.
     TXTracking txtracking;
     // States for tracking received chunks.
@@ -502,6 +500,8 @@ struct UCQPWrapper {
     // We use list_empty(&qpw->ack.ack_link) to check if it has pending ACK to send.
     struct ack_item ack;
     bool rto_armed = false;
+    // Sender congestion control state.
+    swift::Pcb pcb;
 };
 
 /**
@@ -618,6 +618,10 @@ class RDMAContext {
 
         // QPs for data transfer based on UC or RC.
         struct UCQPWrapper dp_qps_[kPortEntropy];
+
+        // Receiver congestion control state per QP.
+        eqds::EQDSQPCC eqds_qp_cc[kPortEntropy];
+
         // Data path QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;
         

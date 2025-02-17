@@ -1,6 +1,9 @@
 #include "eqds.h"
+#include "transport_config.h"
 
 namespace uccl {
+
+namespace eqds {
 
 // Make progress on the pacer.
 void EQDS::run_pacer(void) 
@@ -9,8 +12,12 @@ void EQDS::run_pacer(void)
     while (jring_sc_dequeue_bulk(channel_.cmdq_, &msg, 1, nullptr) == 1) {
         switch (msg.opcode) {
             case EQDSChannel::Msg::kRequestPull:
-                active_senders_.push_back(msg.flow_cc);
-                uccl_wakeup(msg.poll_ctx);
+                for (int i = 0; i < kPortEntropy; i++) {
+                    active_senders_.push_back(&msg.eqds_qpcc[i]);
+                    msg.eqds_qpcc[i].in_pull_ = true;
+                    std::atomic_thread_fence(std::memory_order_acquire);
+                }
+                VLOG(5) << "Registered in pacer pull queue.";
                 break;
             default:
                 LOG(ERROR) << "Unknown opcode: " << msg.opcode;
@@ -36,6 +43,7 @@ void EQDS::handle_pull_target(uint32_t pull_target /* unit of chunks */)
 void EQDS::update_cc_state(void)
 {
 
+}
 }
 
 };

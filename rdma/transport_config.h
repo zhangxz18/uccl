@@ -42,6 +42,8 @@ static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 static const uint32_t NCCL_MIN_POST_RECV = 65536;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static const uint32_t kPortEntropy = 256;
+// Always use the same engine for a flow's all messages.
+static const bool kFlowBindEngine = true;
 
 // Congestion control algorithm.
 enum SenderCCA {
@@ -56,6 +58,7 @@ enum ReceiverCCA {
 };
 static const enum SenderCCA kSenderCCA = kSenderNone;
 static const enum ReceiverCCA kReceiverCCA = kReceiverEQDS;
+static_assert(!(kReceiverCCA == kReceiverEQDS && !kFlowBindEngine), "kFlowBindEngine must be true if kReceiverEQDS is set");
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 
@@ -156,6 +159,4 @@ static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
 static const bool kTestNoRTO = false;
-// Always use the same engine for each flow.
-static const bool kBindEngine = false;
 /// Debugging and testing.

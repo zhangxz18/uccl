@@ -251,8 +251,6 @@ void UcclRDMAEngine::handle_rx_work(void)
 
         if (rdma_ctx->supply_rx_buff(rx_work.ureq)) {
             pending_rx_works_.push_back(std::make_pair(rdma_ctx, rx_work.ureq));
-        } else {
-            uccl_wakeup(rx_work.poll_ctx);
         }
     }
 }
@@ -401,7 +399,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
     }
 
     // Create a thread to handle the QP setup to avoid blocking the engine.
-    std::thread qp_setup_thread([ctrl_work, rdma_ctx, bootstrap_fd, dev]() {
+    std::thread qp_setup_thread([this, ctrl_work, rdma_ctx, bootstrap_fd, dev]() {
         auto meta = ctrl_work.meta;
         auto info = &meta.install_ctx;
         auto *poll_ctx = ctrl_work.poll_ctx;
@@ -461,6 +459,16 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
         }
 
+        if constexpr (kReceiverCCA == kReceiverEQDS) {            
+            
+            // Register this QP to pacer.
+            eqds_->request_pull(rdma_ctx->eqds_qp_cc);
+            
+            // Wait until pacer is ready.
+            volatile bool *done = &rdma_ctx->eqds_qp_cc[kPortEntropy - 1].in_pull_;
+            while (!*done) {}
+        }
+
         uccl_wakeup(poll_ctx);
     });
 
@@ -490,13 +498,21 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     // Create multiple engines. Each engine has its own thread and channel to let the endpoint communicate with.
     for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();
 
+    if constexpr (kReceiverCCA == kReceiverEQDS) {
+        // Receiver-driven congestion control.
+        for (int i = 0; i < num_devices; i++)
+            eqds_[i] = new eqds::EQDS(i);
+    }
+
     for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
          engine_id < total_num_engines; engine_id++, engine_cpu_id++) {
         
         auto dev = engine_id / num_engines_per_dev;
         
-        engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
-            dev, engine_id, channel_vec_[engine_id], &eqds_[dev]->channel_));
+        if constexpr (kReceiverCCA == kReceiverEQDS) {
+            engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
+                dev, engine_id, channel_vec_[engine_id], eqds_[dev]));
+        }
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {
@@ -516,9 +532,6 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     for (int i = 0; i < num_devices; i++) {
         // Create listening sockets
         create_listen_socket(&test_listen_fds_[i], kTestListenPort + i);
-
-        // Receiver-driven congestion control.
-        eqds_[i] = new EQDS(i);
     }
 }
 
@@ -1042,7 +1055,7 @@ int RDMAEndpoint::uccl_flush(UcclFlow *flow, struct Mhandle **mhandles, void **d
 int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq) 
 {
     auto dev = flow->dev_;
-    PollCtx *engine_ctx, *pacer_ctx;
+    PollCtx *pacer_ctx;
     
     if (!flow->check_room()) {return -1;}
 
@@ -1064,7 +1077,7 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
     }
 
     uint32_t candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
-    if constexpr (!kBindEngine) 
+    if constexpr (!kFlowBindEngine) 
         flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     
     auto elems = flow->post_fifo(candidate, data, size, n, mhandles, &ureq->recv.wr, &ureq->recv.sge);
@@ -1076,13 +1089,11 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
     ureq->recv.elems = elems;
     ureq->recv.qp = flow->recv_comm_.base.fifo_qp;
 
-    engine_ctx = ctx_pool_->pop();
-
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
         .peer_id = flow->peer_id_,
         .ureq = ureq,
-        .poll_ctx = engine_ctx,
+        .poll_ctx = ureq->poll_ctx,
     };
     
     auto rxq = channel_vec_[candidate]->rx_cmdq_;
@@ -1092,18 +1103,6 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
         << " size: " << size[0];
     
     flow->poll_flow_cq();
-    
-    if constexpr (kReceiverCCA == kReceiverEQDS) {
-        pacer_ctx = ctx_pool_->pop();
-        eqds_[dev]->request_pull(&flow->eqds_flowcc, pacer_ctx);
-
-        uccl_poll(pacer_ctx);
-    }
-
-    // Make sure the engine is ready for receiving this message.
-    // Normally, this should not take too long.
-    // XXX: Optimize this if it indeed impacts performance.
-    uccl_poll(engine_ctx);
 
     return 0;
 }
