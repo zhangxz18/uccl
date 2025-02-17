@@ -6,7 +6,129 @@ namespace uccl {
 
 EFAFactory efa_ctl;
 
-void EFAFactory::Init() {}
+void EFAFactory::Init() {
+    for (int i = 0; i < NUM_DEVICES; i++) {
+        EFAFactory::InitDev(GID_INDEX_LIST[i]);
+    }
+}
+
+void EFAFactory::InitDev(int gid_idx) {
+    struct EFADevice dev;
+    struct ibv_device **device_list;
+    struct ibv_context *context;
+    struct ibv_device_attr dev_attr;
+    struct ibv_port_attr port_attr;
+    int i, nb_devices;
+
+    // Check if the device is already initialized.
+    DCHECK(efa_ctl->gid_2_dev_map.find(gid_idx) ==
+           efa_ctl->gid_2_dev_map.end());
+
+    // Get Infiniband name from GID index.
+    DCHECK(util_rdma_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
+
+    // Get IP address from GID index.
+    DCHECK(util_rdma_get_ip_from_gididx(gid_idx, &dev.local_ip_str) == 0);
+
+    // Get the list of RDMA devices.
+    device_list = ibv_get_device_list(&nb_devices);
+    if (device_list == nullptr || nb_devices == 0) {
+        perror("ibv_get_device_list");
+        goto error;
+    }
+
+    // Find the device by name.
+    for (i = 0; i < nb_devices; i++) {
+        if (strcmp(ibv_get_device_name(device_list[i]), dev.ib_name) == 0) {
+            break;
+        }
+    }
+    if (i == nb_devices) {
+        fprintf(stderr, "No device found for %s\n", dev.ib_name);
+        goto free_devices;
+    }
+
+    // Open the device.
+    memset(&dev_attr, 0, sizeof(dev_attr));
+    if ((context = ibv_open_device(device_list[i])) == nullptr) {
+        perror("ibv_open_device");
+        goto free_devices;
+    }
+
+    if (ibv_query_device(context, &dev_attr)) {
+        perror("ibv_query_device");
+        goto close_device;
+    }
+
+    // Currently, we only use one port.
+    if (dev_attr.phys_port_cnt != EFA_PORT_NUM /* 1 */) {
+        fprintf(stderr, "Only one port is supported\n");
+        goto close_device;
+    }
+
+    // Port number starts from 1.
+    if (ibv_query_port(context, 1, &port_attr)) {
+        perror("ibv_query_port");
+        goto close_device;
+    }
+
+    if (port_attr.state != IBV_PORT_ACTIVE) {
+        fprintf(stderr, "Port is not active\n");
+        goto close_device;
+    }
+
+    if (port_attr.link_layer != IBV_LINK_LAYER_UNSPECIFIED) {
+        fprintf(stderr, "EFA link layer is not supported\n");
+        goto close_device;
+    }
+
+    dev.dev_attr = dev_attr;
+    dev.port_attr = port_attr;
+    dev.EFA_PORT_NUM = EFA_PORT_NUM;
+    dev.gid_idx = gid_idx;
+    dev.context = context;
+
+    if (ibv_query_gid(context, EFA_PORT_NUM, gid_idx, &dev.gid)) {
+        perror("ibv_query_gid");
+        goto close_device;
+    }
+
+    // Allocate a PD for this device.
+    dev.pd = ibv_alloc_pd(context);
+    if (dev.pd == nullptr) {
+        perror("ibv_alloc_pd");
+        goto close_device;
+    }
+
+    // Detect DMA-BUF support.
+    {
+        struct ibv_pd *pd;
+        pd = ibv_alloc_pd(context);
+        if (pd == nullptr) {
+            perror("ibv_alloc_pd");
+            goto close_device;
+        }
+        // Test kernel DMA-BUF support with a dummy call (fd=-1)
+        (void)ibv_reg_dmabuf_mr(pd, 0ULL /*offset*/, 0ULL /*len*/,
+                                0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
+        dev.dma_buf_support =
+            !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
+        ibv_dealloc_pd(pd);
+
+        VLOG(5) << "DMA-BUF support: " << dev.dma_buf_support;
+    }
+
+    efa_ctl->gid_2_dev_map.insert({gid_idx, efa_ctl->devices_.size()});
+    efa_ctl->devices_.push_back(dev);
+    return;
+
+close_device:
+    ibv_close_device(context);
+free_devices:
+    ibv_free_device_list(device_list);
+error:
+    throw std::runtime_error("Failed to initialize EFAFactory");
+}
 
 EFASocket *EFAFactory::CreateSocket(int socket_id) {
     auto socket = new EFASocket(socket_id);
@@ -15,244 +137,405 @@ EFASocket *EFAFactory::CreateSocket(int socket_id) {
     return socket;
 }
 
-void EFAFactory::Shutdown() {
-    // eBPF program detaching is done by the afxdp daemon
+struct EFADevice *EFAFactory::GetEFADevice(int gid_idx) {
+    auto dev_idx_iter = efa_ctl.gid_2_dev_map.find(gid_idx);
+    DCHECK(dev_idx_iter != efa_ctl.gid_2_dev_map.end());
+    auto dev_idx = *dev_idx_iter;
+    DCHECK(dev_idx >= 0 && dev_idx < efa_ctl.devices_.size());
+    return &efa_ctl.devices_[dev_idx];
+}
 
+void EFAFactory::Shutdown() {
     std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
     for (auto socket : efa_ctl.socket_q_) {
         delete socket;
     }
     efa_ctl.socket_q_.clear();
+
+    devices_.clear();
+    gid_2_dev_map.clear();
 }
 
-EFASocket::EFASocket(int socket_id)
-    : unpulled_tx_pkts_(0), fill_queue_entries_(0) {
-    // TODO(yang): negotiate with afxdp daemon for socket_id and num_frames.
+EFASocket::EFASocket(int gid_idx, int socket_id) : next_qp_for_send_(0);
+gid_idx_(gid_idx), socket_id_(socket_id), unpolled_send_wrs_(0),
+    recv_queue_wrs_(0) {
+    LOG(INFO) << "[AF_XDP] creating gid_idx " << gid_idx_ << " socket_id "
+              << socket_id;
 
-    socket_id_ = socket_id;
+    auto *factory_dev = EFAFactory::GetEFADevice(gid_idx);
+    context_ = factory_dev->context;
+    pd_ = factory_dev->pd;
 
-    // initialize queues, or misterious queue sync problems will happen
-    memset(&recv_queue_, 0, sizeof(recv_queue_));
-    memset(&send_queue_, 0, sizeof(send_queue_));
-    memset(&complete_queue_, 0, sizeof(complete_queue_));
-    memset(&fill_queue_, 0, sizeof(fill_queue_));
+    // Allocate memory for packet headers.
+    void *pkt_hdr_buf_ =
+        mmap(nullptr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize,
+             PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    DCHECK(pkt_hdr_buf_ != nullptr) << "aligned_alloc failed";
+    auto *pkt_hdr_mr_ =
+        ibv_reg_mr(pd_, pkt_hdr_buf_,
+                   PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize,
+                   IBV_ACCESS_LOCAL_WRITE);
+    DCHECK(pkt_hdr_mr_ != nullptr) << "ibv_reg_mr failed";
+    pkt_hdr_pool_ = new PktHdrBuffPool(pkt_hdr_mr_);
 
-    // Step1: retrieve the file descriptors for AF_XDP socket
-    xsk_fd_ = efa_ctl.xsk_fds_[socket_id_];
+    // Allocate memory for packet data.
+    void *pkt_data_buf_ = nullptr;
+    auto cuda_ret =
+        cudaMalloc(&pkt_data_buf_, PktDataBuffPool::kNumPktData *
+                                       PktDataBuffPool::kPktDataSize);
+    DCHECK(cuda_ret == cudaSuccess) << "cudaMalloc failed";
+    auto pkt_data_mr_ =
+        ibv_reg_mr(pd_, pkt_data_buf_,
+                   PktDataBuffPool::kNumPktData * PktDataBuffPool::kPktDataSize,
+                   IBV_ACCESS_LOCAL_WRITE);
+    DCHECK(pkt_data_mr_ != nullptr) << "ibv_reg_mr failed";
+    pkt_data_pool_ = new PktDataBuffPool(pkt_data_mr_);
 
-    // Step2: map UMEM and build four rings for the AF_XDP socket
-    int ret = create_efa_socket();
-    CHECK_EQ(ret, 0) << "xsk_socket__create_shared failed, " << ret;
+    // Allocate memory for frame desc.
+    void *frame_desc_buf_ = mmap(
+        nullptr,
+        FrameDescBuffPool::kNumFrameDesc * FrameDescBuffPool::kFrameDescSize,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    DCHECK(frame_desc_buf_ != nullptr) << "aligned_alloc failed";
+    frame_desc_pool_ = new FrameDescBuffPool();
 
-    LOG(INFO) << "[AF_XDP] socket " << socket_id << " successfully shared";
-
-    // apply_setsockopt(xsk_fd_);
-
-    populate_fill_queue(FILL_RING_SIZE);
-}
-
-void EFASocket::destroy_efa_socket() {}
-
-/**
- * @brief: Manually map UMEM and build four rings for a AF_XDP socket
- * @note: (RX/TX/FILL/COMP_RING_SIZE, NUM_FRAMES, FRAME_SIZE) need negotiating
- * with privileged processes
- */
-int EFASocket::create_efa_socket() {
-    struct xsk_ring_cons *rx = &recv_queue_;
-    struct xsk_ring_prod *tx = &send_queue_;
-    struct xsk_ring_prod *fill = &fill_queue_;
-    struct xsk_ring_cons *comp = &complete_queue_;
-    struct xdp_mmap_offsets off;
-
-    /* initialize frame allocator */
-    uint64_t frame_pool_size = efa_ctl.num_frames_ / NUM_QUEUES;
-    frame_pool_ = new SharedPool<uint64_t, /*Sync=*/true>(frame_pool_size);
-    uint64_t frame_pool_offset = FRAME_SIZE * frame_pool_size * socket_id_;
-    LOG(INFO) << "[AF_XDP] frame pool " << socket_id_
-              << " initialized: frame_pool_size = " << frame_pool_size
-              << " frame_pool_offset = " << std::hex << "0x"
-              << frame_pool_offset;
-    for (uint64_t i = 0; i < frame_pool_size; i++) {
-        uint64_t frame_offset = frame_pool_offset + XDP_PACKET_HEADROOM;
-        push_frame(frame_offset);
-        frame_pool_offset += FRAME_SIZE;
+    // Create completion queue.
+    send_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
+    recv_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
+    if (!send_cq_) {
+        perror("Failed to allocate send/recv_cq_");
+        exit(1);
     }
-    // Flushing the cache to prevent one socket pool's entries from being pushed
-    // to another socket pool, in case socket creatations are done by a single
-    // main thread.
-    frame_pool_->flush_th_cache();
+    // Create send/recv QPs.
+    for (int i = 0; i < kMaxPath; i++) {
+        qp_list_[i] = create_qp(send_cq_, recv_cq_, kMaxSendWr, kMaxRecvWr);
+        refill_recv_queue_data(kMaxRecvWr, i);
+    }
 
-    return 0;
+    // Create QP for ACK packets.
+    ctrl_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
+    if (!ctrl_cq_) {
+        perror("Failed to allocate ctrl CQ");
+        exit(1);
+    }
+    ctrl_qp_ =
+        create_qp(ctrl_cq_, ctrl_cq_, kMaxSendRecvWrCtrl, kMaxSendRecvWrCtrl);
+    refill_recv_queue_ctrl(kMaxRecvWr);
 }
 
-uint32_t EFASocket::pull_complete_queue() {
-    uint32_t idx_cq, completed;
-    completed = xsk_ring_cons__peek(&complete_queue_,
-                                    XSK_RING_CONS__DEFAULT_NUM_DESCS, &idx_cq);
-    if (completed > 0) {
-        for (int i = 0; i < completed; i++) {
-            uint64_t frame_offset =
-                *xsk_ring_cons__comp_addr(&complete_queue_, idx_cq++);
+// Create and configure a UD QP
+struct ibv_qp *EFASocket::create_qp(struct ibv_cq *send_cq,
+                                    struct ibv_cq *recv_cq,
+                                    uint32_t send_cq_size,
+                                    uint32_t recv_cq_size) {
+    struct ibv_qp_init_attr qp_attr = {};
+    qp_attr.send_cq = send_cq;
+    qp_attr.recv_cq = recv_cq;
+    qp_attr.cap.max_send_wr = send_cq_size;
+    qp_attr.cap.max_recv_wr = recv_cq_size;
+    qp_attr.cap.max_send_sge = 2;
+    qp_attr.cap.max_recv_sge = 2;
 
-            DCHECK((frame_offset & XDP_PACKET_HEADROOM_MASK) ==
-                   XDP_PACKET_HEADROOM)
-                << std::hex << frame_offset;
+    qp_attr.qp_type = IBV_QPT_DRIVER;
+    struct ibv_qp *qp = qp =
+        efadv_create_driver_qp(rdma->pd, &qp_attr, EFADV_QP_DRIVER_TYPE_SRD);
 
-            // TODO(yang): why collecting stats here is smaller than at tx time?
-            // out_bytes_ +=
-            //     FrameDesc::get_frame_len(frame_offset, umem_buffer_);
-            // TODO(yang): why will this trigger SEGV? Seems kernel bug.
-            // out_bytes_ +=
-            //     FrameDesc::get_uccl_frame_len(frame_offset, umem_buffer_);
+    if (!qp) {
+        perror("Failed to create QP");
+        exit(1);
+    }
 
-            if (FrameDesc::is_txpulltime_free(frame_offset, umem_buffer_)) {
-                push_frame(frame_offset);
-                /**
-                 * Yang: I susspect this is a bug that AWS ENA driver will pull
-                 * the same frame multiple times. A temp fix is we mark it as
-                 * not txpulltime free, so that the next time polling will not
-                 * double free it.
-                 */
-                FrameDesc::mark_not_txpulltime_free(frame_offset, umem_buffer_);
-            }
-            // In other cases, the transport layer should handle frame freeing.
+    struct ibv_qp_attr attr = {};
+    attr.qp_state = IBV_QPS_INIT;
+    attr.pkey_index = 0;
+    attr.port_num = EFA_PORT_NUM;
+    attr.qkey = QKEY;
+    if (ibv_modify_qp(
+            qp, &attr,
+            IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY)) {
+        perror("Failed to modify QP to INIT");
+        exit(1);
+    }
+
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_RTR;
+    if (ibv_modify_qp(qp, &attr, IBV_QP_STATE)) {
+        perror("Failed to modify QP to RTR");
+        exit(1);
+    }
+
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_RTS;
+    attr.sq_psn = SQ_PSN;  // Set initial Send Queue PSN
+    if (ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_SQ_PSN)) {
+        perror("Failed to modify QP to RTS");
+        exit(1);
+    }
+
+    return qp;
+}
+
+void EFASocket::create_ah(uint8_t remote_gid_idx, union ibv_gid remote_gid) {
+    struct ibv_ah_attr ah_attr = {};
+
+    ah_attr.is_global = 1;  // Enable Global Routing Header (GRH)
+    ah_attr.port_num = EFA_PORT_NUM;
+    ah_attr.grh.sgid_index = gid_idx_;  // Local GID index
+    ah_attr.grh.dgid = remote_gid;      // Destination GID
+    ah_attr.grh.flow_label = 0;
+    ah_attr.grh.hop_limit = 255;
+    ah_attr.grh.traffic_class = 0;
+
+    struct ibv_ah *ah = ibv_create_ah(pd_, &ah_attr);
+    if (!ah) {
+        perror("Failed to create AH");
+        exit(1);
+    }
+
+    DCHECK(remote_gid_idx <= 255) << "remote_gid_idx too large";
+    ah_list_[remote_gid_idx] = ah;
+}
+
+uint32_t EFASocket::send_packet(FrameDesc *frame) {
+    struct ibv_sge sge[2] = {{0}, {0}};
+    struct ibv_send_wr send_wr = {0}, *bad_send_wr;
+
+    auto dest_gid_idx = frame->get_dest_gid_idx();
+    auto dest_qpn = frame->get_dest_qpn();
+    auto src_qp_idx = get_next_qp_idx_for_send();
+
+    // This is a ack packet.
+    if (frame->get_pkt_data_len() == 0) {
+        sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
+                  get_pkt_hdr_lkey()};
+        send_wr.num_sge = 1;
+    } else {  // This is a data packet
+        sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
+                  get_pkt_hdr_lkey()};
+        sge[1] = {frame->get_pkt_data_addr(), frame->get_pkt_data_len(),
+                  get_pkt_data_lkey()};
+        send_wr.num_sge = 2;
+    }
+
+    send_wr.wr_id = (uint64_t)frame;
+    send_wr.opcode = IBV_WR_SEND;
+    send_wr.sg_list = sge;
+    send_wr.wr.ud.ah = ah_list_[dest_gid_idx];
+    send_wr.wr.ud.remote_qpn = dest_qpn;
+    send_wr.wr.ud.remote_qkey = QKEY;
+    send_wr.send_flags = IBV_SEND_SIGNALED;
+
+    if (ibv_post_send(qp_list_[src_qp_idx], &send_wr, &bad_send_wr)) {
+        perror("Server: Failed to post send");
+        exit(1);
+    }
+
+    unpolled_send_wrs_++;
+    return 1;
+}
+
+uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
+    struct ibv_sge sge[2] = {{0}, {0}};
+    struct ibv_send_wr send_wr = {0}, *bad_send_wr;
+
+    for (auto *frame : frames) {
+        auto dest_gid_idx = frame->get_dest_gid_idx();
+        auto dest_qpn = frame->get_dest_qpn();
+        auto src_qp_idx = get_next_qp_idx_for_send();
+
+        // This is a ack packet.
+        if (frame->get_pkt_data_len() == 0) {
+            sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
+                      get_pkt_hdr_lkey()};
+            send_wr.num_sge = 1;
+        } else {  // This is a data packet
+            sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
+                      get_pkt_hdr_lkey()};
+            sge[1] = {frame->get_pkt_data_addr(), frame->get_pkt_data_len(),
+                      get_pkt_data_lkey()};
+            send_wr.num_sge = 2;
         }
-        // out_packets_ += completed;
 
-        xsk_ring_cons__release(&complete_queue_, completed);
-        unpulled_tx_pkts_ -= completed;
+        send_wr.wr_id = (uint64_t)frame;
+        send_wr.opcode = IBV_WR_SEND;
+        send_wr.sg_list = sge;
+        send_wr.wr.ud.ah = ah_list_[dest_gid_idx];
+        send_wr.wr.ud.remote_qpn = dest_qpn;
+        send_wr.wr.ud.remote_qkey = QKEY;
+        send_wr.send_flags = IBV_SEND_SIGNALED;
+        // TODO(yang): Using chained post list
+
+        if (ibv_post_send(qp_list_[src_qp_idx], &send_wr, &bad_send_wr)) {
+            perror("Server: Failed to post send");
+            exit(1);
+        }
     }
-    VLOG(2) << "tx complete_queue completed = " << completed
-            << " unpulled_tx_pkts = " << unpulled_tx_pkts_;
-    return completed;
+
+    unpolled_send_wrs_ += frames.size();
+    return frames.size();
 }
 
-uint32_t EFASocket::send_packet(frame_desc frame) {
-    // reserving a slot in the send queue.
-    uint32_t send_index;
-    VLOG(2) << "tx send_packets num_frames = " << 1;
-    while (xsk_ring_prod__reserve(&send_queue_, 1, &send_index) != 1) {
-        LOG_EVERY_N(WARNING, 1000000)
-            << "send_queue is full. Busy waiting... unpulled_tx_pkts "
-            << unpulled_tx_pkts_ << " send_queue_free_entries "
-            << send_queue_free_entries();
-        kick_tx();
-    }
-    struct xdp_desc *desc = xsk_ring_prod__tx_desc(&send_queue_, send_index);
-    desc->addr = frame.frame_offset;
-    desc->len = frame.frame_len;
-    xsk_ring_prod__submit(&send_queue_, 1);
-    unpulled_tx_pkts_++;
-
-    out_bytes_ += frame.frame_len;
-    out_packets_++;
-
-    return kick_tx_and_pull();
-}
-
-uint32_t EFASocket::send_packets(std::vector<frame_desc> &frames) {
-    // reserving slots in the send queue.
-    uint32_t send_index;
-    auto num_frames = frames.size();
-    VLOG(2) << "tx send_packets num_frames = " << num_frames;
-    while (xsk_ring_prod__reserve(&send_queue_, num_frames, &send_index) !=
-           num_frames) {
-        LOG_EVERY_N(WARNING, 1000000)
-            << "send_queue is full. Busy waiting... unpulled_tx_pkts "
-            << unpulled_tx_pkts_ << " send_queue_free_entries "
-            << send_queue_free_entries() << " num_frames " << num_frames;
-        kick_tx();
-    }
-    for (int i = 0; i < num_frames; i++) {
-        struct xdp_desc *desc =
-            xsk_ring_prod__tx_desc(&send_queue_, send_index++);
-        desc->addr = frames[i].frame_offset;
-        desc->len = frames[i].frame_len;
-
-        out_bytes_ += frames[i].frame_len;
-    }
-    out_packets_ += num_frames;
-    xsk_ring_prod__submit(&send_queue_, num_frames);
-    unpulled_tx_pkts_ += num_frames;
-
-    return kick_tx_and_pull();
-}
-
-void EFASocket::populate_fill_queue(uint32_t budget) {
-    // TODO(yang): figure out why cloudlab needs xsk_prod_nb_free().
-#if defined(AWS_C5) || defined(AWS_G4) || defined(AWS_G4METAL)
-    auto stock_frames = budget;
-#else
-    auto stock_frames = xsk_prod_nb_free(&fill_queue_, budget);
-#endif
-    if (stock_frames <= 0) return;
-
-    uint32_t idx_fq;
-    int ret = xsk_ring_prod__reserve(&fill_queue_, stock_frames, &idx_fq);
-    if (ret <= 0) return;
-
-    for (int i = 0; i < ret; i++)
-        *xsk_ring_prod__fill_addr(&fill_queue_, idx_fq++) = pop_frame();
-
-    fill_queue_entries_ += ret;
-    VLOG(2) << "afxdp reserved fill_queue slots = " << ret
-            << " fill_queue_entries_ = " << fill_queue_entries_;
-
-    xsk_ring_prod__submit(&fill_queue_, ret);
-}
-
-std::vector<EFASocket::frame_desc> EFASocket::recv_packets(uint32_t budget) {
-    std::vector<EFASocket::frame_desc> frames;
+std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t bugget) {
+    std::vector<FrameDesc *> frames;
     frames.reserve(budget);
-    uint32_t idx_rx, rcvd;
-    rcvd = xsk_ring_cons__peek(&recv_queue_, budget, &idx_rx);
-    if (!rcvd) {
-        kick_rx();
-        return frames;
-    }
-    fill_queue_entries_ -= rcvd;
-    VLOG(2) << "rx recv_packets num_frames = " << rcvd
-            << " fill_queue_entries_ = " << fill_queue_entries_;
 
-    for (int i = 0; i < rcvd; i++) {
-        const struct xdp_desc *desc =
-            xsk_ring_cons__rx_desc(&recv_queue_, idx_rx++);
+    while (frames.size() < budget) {
+        int ne = ibv_poll_cq(send_cq_, kMaxBatchCQ, wc_);
+        DCHECK(ne >= 0) << "poll_send_cq ibv_poll_cq error";
 
-        /**
-         * Yang: Under AFXDP zerocopy mode, XDP_TX'ed packets by the XDP hook
-         * will trigger spurious packet receiving behavior. This should be
-         * caused by some subtle kernel bugs. We temporarily work around this by
-         * filtering out these packets who normally have a wrong offset.
-         */
-        if (desc->addr & XDP_PACKET_HEADROOM_MASK != XDP_PACKET_HEADROOM) {
-            LOG_EVERY_N(WARNING, 1000000)
-                << "Received a frame with wrong offset: 0x" << std::hex
-                << desc->addr;
-            // auto frame_offset = desc->addr;
-            // frame_offset &= ~XDP_PACKET_HEADROOM_MASK;
-            // frame_offset |= XDP_PACKET_HEADROOM;
-            // push_frame(frame_offset);
-            continue;
+        for (int i = 0; i < ne; i++) {
+            // Check the completion status.
+            DCHECK(wc_[i].status == IBV_WC_SUCCESS)
+                << "poll_send_cq: completion error: "
+                << ibv_wc_status_str(wc_[i].status);
+
+            DCHECK(wc_[i].opcode == IBV_WC_SEND);
+
+            auto *frame = (FrameDesc *)wc_[i].wr_id;
+            frames.push_back(frame);
         }
 
-        frames.push_back({desc->addr, desc->len});
-        in_bytes_ += desc->len;
+        // TODO(yang): do we need to do anything smarter?
+        if (ne < kMaxBatchCQ) break;
     }
-    in_packets_ += rcvd;
-
-    xsk_ring_cons__release(&recv_queue_, rcvd);
-
-    // Do filling even it is a small batch to control tail latency.
-    populate_fill_queue(rcvd);
 
     return frames;
+}
+
+std::vector<FrameDesc *> EFASocket::recv_packets(uint32_t budget) {
+    std::vector<FrameDesc *> frames;
+    frames.reserve(budget);
+
+    while (frames.size() < budget) {
+        int ne = ibv_poll_cq(recv_cq_, kMaxBatchCQ, wc_);
+        DCHECK(ne >= 0) << "recv_packets ibv_poll_cq error";
+
+        for (int i = 0; i < ne; i++) {
+            // Check the completion status.
+            DCHECK(wc_[i].status == IBV_WC_SUCCESS)
+                << "recv_packets: completion error: "
+                << ibv_wc_status_str(wc_[i].status);
+
+            DCHECK(wc_[i].opcode == IBV_WC_RECV);
+
+            auto *frame = (FrameDesc *)wc_[i].wr_id;
+            frames.push_back(frame);
+        }
+
+        // TODO(yang): do we need to do anything smarter?
+        if (ne < kMaxBatchCQ) break;
+    }
+
+    recv_queue_wrs_ -= frames.size();
+    return frames;
+}
+
+std::vector<FrameDesc *> EFASocket::recv_acks_and_poll_ctrl_cq(
+    uint32_t budget) {
+    std::vector<FrameDesc *> frames;
+    frames.reserve(budget);
+
+    while (frames.size() < budget) {
+        int ne = ibv_poll_cq(ctrl_cq_, kMaxBatchCQ, wc_);
+        DCHECK(ne >= 0) << "recv_acks ibv_poll_cq error";
+
+        for (int i = 0; i < ne; i++) {
+            // Check the completion status.
+            DCHECK(wc_[i].status == IBV_WC_SUCCESS)
+                << "recv_acks: completion error: "
+                << ibv_wc_status_str(wc_[i].status);
+
+            FrameDesc *frame = (FrameDesc *)wc_[i].wr_id;
+
+            if (wc_[i].opcode == IBV_WC_RECV) {
+                frames.push_back(frame);
+            } else if (wc_[i].opcode == IBV_WC_SEND) {
+                auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
+                pkt_hdr_pool_->free_buff(pkt_hdr_addr);
+                frame_desc_pool_->free_buff((uint64_t)frame);
+            } else {
+                DCHECK(false) << "Wrong wc_[i].opcode: " << wc_[i].opcode;
+            }
+        }
+
+        // TODO(yang): do we need to do anything smarter?
+        if (ne < kMaxBatchCQ) break;
+    }
+
+    recv_queue_wrs_ -= frames.size();
+    return frames;
+}
+
+void EFASocket::refill_recv_queue_data(uint32_t budget, uint32_t qp_idx) {
+    int ret;
+    uint64_t pkt_hdr_buf, pkt_data_buf, frame_desc_buf;
+    auto *qp = qp_list_[qp_idx];
+
+    for (int i = 0; i < budget; i++) {
+        ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
+        ret |= pkt_data_pool_->alloc_buff(&pkt_data_buf);
+        ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
+        DCHECK(ret == 0);
+
+        auto *frame_desc = FrameDesc::Create(
+            frame_desc_buf, pkt_hdr_buf, pkt_data_buf,
+            PktHdrBuffPool::kPktHdrSize, PktDataBuffPool::kPktDataSize, 0);
+
+        // recv size does not need to exactly match send size. But we need limit
+        // the hdr sge to exactly match hdr size, so that we can split hdr and
+        // data between GPU and CPU.
+        struct ibv_sge sge[2] = {
+            {(uintptr_t)pkt_hdr_buf, EFA_GRH_SIZE + kUcclPktHdrLen,
+             get_pkt_hdr_lkey()},
+            {(uintptr_t)pkt_data_buf, kUcclPktdataLen, get_pkt_data_lkey()}};
+
+        struct ibv_recv_wr wr = {}, *bad_wr;
+        wr.wr_id = (uint64_t)frame_desc;
+        wr.num_sge = 2;
+        wr.sg_list = sge;
+
+        // Post receive buffer
+        if (ibv_post_recv(qp, &wr, &bad_wr)) {
+            perror("Failed to post recv");
+            exit(1);
+        }
+    }
+}
+void EFASocket::refill_recv_queue_ctrl(uint32_t budget) {
+    int ret;
+    uint64_t pkt_hdr_buf, frame_desc_buf;
+    auto *qp = ctrl_qp_;
+
+    for (int i = 0; i < budget; i++) {
+        ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
+        ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
+        DCHECK(ret == 0);
+
+        auto *frame_desc = FrameDesc::Create(frame_desc_buf, pkt_hdr_buf, 0,
+                                             PktHdrBuffPool::kPktHdrSize, 0, 0);
+
+        // recv size does not need to exactly match send size.
+        struct ibv_sge sge[1] = {{(uintptr_t)pkt_hdr_buf,
+                                  PktHdrBuffPool::kPktHdrSize,
+                                  get_pkt_hdr_lkey()}};
+
+        struct ibv_recv_wr wr = {}, *bad_wr;
+        wr.wr_id = (uint64_t)frame_desc;
+        wr.num_sge = 1;
+        wr.sg_list = sge;
+
+        // Post receive buffer
+        if (ibv_post_recv(qp, &wr, &bad_wr)) {
+            perror("Failed to post recv");
+            exit(1);
+        }
+    }
 }
 
 std::string EFASocket::to_string() {
     std::string s;
     s += Format("free frames: %u, unpulled tx pkts: %u, fill queue entries: %u",
-                frame_pool_->size(), unpulled_tx_pkts_, fill_queue_entries_);
+                frame_pool_->size(), unpolled_send_wrs_, recv_queue_wrs_);
     if (socket_id_ == 0) {
         auto now = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -278,15 +561,15 @@ std::string EFASocket::to_string() {
 }
 
 void EFASocket::shutdown() {
-    // pull_complete_queue to make sure all frames are tx successfully.
-    while (unpulled_tx_pkts_) {
-        kick_tx();
-        pull_complete_queue();
+    // pull_completion_queue to make sure all frames are tx successfully.
+    while (unpolled_send_wrs_) {
+        pull_completion_queue();
     }
 }
 
 EFASocket::~EFASocket() {
-    destroy_efa_socket();
-    delete frame_pool_;
+    delete pkt_hdr_pool_;
+    delete pkt_data_pool_;
+    delete frame_desc_pool_;
 }
 }  // namespace uccl

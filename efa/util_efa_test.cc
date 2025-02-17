@@ -231,7 +231,7 @@ void socket_recv(struct socket_t* socket, int socket_id) {
     uint32_t rcvd = frames.size();
     inflight_pkts -= rcvd;
 
-    VLOG(3) << "rx fill_queue rcvd = " << rcvd
+    VLOG(3) << "rx recv_queue rcvd = " << rcvd
             << ", inflight_pkts = " << inflight_pkts.load();
 
     for (int i = 0; i < rcvd; i++) {

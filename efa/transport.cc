@@ -890,7 +890,7 @@ EFASocket::frame_desc UcclFlow::craft_ackpacket(
     auto frame_offset = socket_->pop_frame();
     auto msgbuf = FrameDesc::Create(frame_offset, socket_->umem_buffer_,
                                    kNetHdrLen + kControlPayloadBytes);
-    // Let EFASocket::pull_complete_queue() free control frames.
+    // Let EFASocket::pull_completion_queue() free control frames.
     msgbuf->mark_txpulltime_free();
 
     uint8_t *pkt_addr = (uint8_t *)socket_->umem_buffer_ + frame_offset;
@@ -934,7 +934,7 @@ EFASocket::frame_desc UcclFlow::craft_rssprobe_packet(uint16_t dst_port) {
     auto frame_offset = socket_->pop_frame();
     auto msgbuf = FrameDesc::Create(frame_offset, socket_->umem_buffer_,
                                    kNetHdrLen + kRssProbePayloadBytes);
-    // Let EFASocket::pull_complete_queue() free control frames.
+    // Let EFASocket::pull_completion_queue() free control frames.
     msgbuf->mark_txpulltime_free();
 
     uint8_t *pkt_addr = (uint8_t *)socket_->umem_buffer_ + frame_offset;

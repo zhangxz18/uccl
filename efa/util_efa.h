@@ -2,9 +2,12 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
+#include <cuda_runtime.h>
 #include <errno.h>
 #include <glog/logging.h>
 #include <ifaddrs.h>
+#include <infiniband/efadv.h>
+#include <infiniband/verbs.h>
 #include <inttypes.h>
 #include <linux/if_ether.h>
 #include <linux/if_link.h>
@@ -28,8 +31,9 @@
 #include <set>
 
 #include "transport_config.h"
+#include "transport_header.h"
+#include "util.h"
 #include "util_list.h"
-#include "util_shared_pool.h"
 #include "util_timer.h"
 
 namespace uccl {
@@ -110,39 +114,41 @@ class BuffPool {
     uint64_t *buffer_pool_;
 };
 
-class UDPktHdrBuffPool : public BuffPool {
+class PktHdrBuffPool : public BuffPool {
    public:
-    static constexpr uint32_t kPktHdrSize = 64 + UD_ADDITION;
+    // This should cover EFA_GRH_SIZE + data packet hdr
+    // or EFA_GRH_SIZE + ack packet hdr + sack packet hdr.
+    static constexpr uint32_t kPktHdrSize = 256;
     static constexpr uint32_t kNumPktHdr = NUM_FRAMES;
     static_assert((kNumPktHdr & (kNumPktHdr - 1)) == 0,
                   "kNumPktHdr must be power of 2");
 
-    UDPktHdrBuffPool(struct ibv_mr *mr)
-        : BuffPool(kNumPktHdr, kPktHdrSize, mr) {}
+    PktHdrBuffPool(struct ibv_mr *mr) : BuffPool(kNumPktHdr, kPktHdrSize, mr) {}
 
-    ~UDPktHdrBuffPool() = default;
+    ~PktHdrBuffPool() = default;
 };
 
-class UDPktDataBuffPool : public BuffPool {
+class PktDataBuffPool : public BuffPool {
    public:
-    static constexpr uint32_t kPktDataSize =
-        EFA_MAX_PAYLOAD - UDPktHdrBuffPool::kPktHdrSize;
+    static constexpr uint32_t kPktDataSize = EFA_MTU;
     static constexpr uint32_t kNumPktData = NUM_FRAMES;
     static_assert((kNumPktData & (kNumPktData - 1)) == 0,
                   "kNumPkt must be power of 2");
 
-    UDPktDataBuffPool(struct ibv_mr *mr)
+    PktDataBuffPool(struct ibv_mr *mr)
         : BuffPool(kNumPktData, kPktDataSize, mr) {}
 
-    ~UDPktDataBuffPool() = default;
+    ~PktDataBuffPool() = default;
 };
 
 class FrameDesc {
     // Describing the packet frame address and length.
-    uint64_t pkt_data_addr_;  // in GPU memory.
     uint64_t pkt_hdr_addr_;   // in CPU memory.
-    uint32_t pkt_data_len_;
-    uint16_t dest_qp_;  // dest QP to use for this frame.
+    uint64_t pkt_data_addr_;  // in GPU memory.
+    uint32_t pkt_hdr_len_;    // the length of packet hdr.
+    uint32_t pkt_data_len_;   // the length of packet data.
+    uint16_t dest_qpn_;       // dest QP to use for this frame.
+    uint8_t dest_gid_idx_;    // dest gid to use for this frame.
 
     // Flags to denote the message buffer state.
     static const uint8_t UCCL_MSGBUF_FLAGS_SYN = (1 << 0);
@@ -152,29 +158,37 @@ class FrameDesc {
 
     struct list_head frame_link_;
 
-    FrameDesc(uint64_t pkt_data_addr, uint64_t pkt_hdr_addr,
-              uint32_t pkt_data_len, uint8_t msg_flags_)
-        : pkt_data_addr_(pkt_data_addr),
-          pkt_hdr_addr_(pkt_hdr_addr),
+    FrameDesc(uint64_t pkt_hdr_addr, uint64_t pkt_data_addr,
+              uint32_t pkt_hdr_len, uint32_t pkt_data_len, uint8_t msg_flags_)
+        : pkt_hdr_addr_(pkt_hdr_addr),
+          pkt_data_addr_(pkt_data_addr),
+          pkt_hdr_len_(pkt_hdr_len),
           pkt_data_len_(pkt_data_len),
           msg_flags_(msg_flags) {
         INIT_LIST_HEAD(&frame_link_);
-        dest_qp_ = UINT16_MAX;
+        dest_qpn_ = UINT16_MAX;
+        dest_gid_idx_ = UINT8_MAX;
     }
 
    public:
-    static FrameDesc *Create(uint64_t frame_desc_addr, uint64_t pkt_data_addr,
-                             uint64_t pkt_hdr_addr, uint32_t pkt_data_len,
-                             uint8_t msg_flags_ = 0) {
+    static FrameDesc *Create(uint64_t frame_desc_addr, uint64_t pkt_hdr_addr,
+                             uint64_t pkt_data_addr, uint32_t pkt_hdr_len,
+                             uint32_t pkt_data_len, uint8_t msg_flags_ = 0) {
         return new (reinterpret_cast<void *>(frame_desc_addr)
-            FrameDesc(pkt_data_addr, pkt_hdr_addr, pkt_data_len, msg_flags);
+            FrameDesc(pkt_hdr_addr, pkt_data_addr, pkt_hdr_len, pkt_data_len, msg_flags);
     }
-    uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
     uint32_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
-    uint8_t *get_pkt_data_len() const { return pkt_data_len_; }
+    uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
+    uint8_t get_pkt_hdr_len() const { return pkt_hdr_len_; }
+    uint8_t get_pkt_data_len() const { return pkt_data_len_; }
 
-    uint16_t get_dest_qp() const { return dest_qp_; }
-    void set_dest_qp(uint16_t dest_qp) const { dest_qp_ = dest_qp; }
+    uint16_t get_dest_qpn() const { return dest_qpn_; }
+    void set_dest_qpn(uint16_t dest_qpn) const { dest_qpn_ = dest_qpn; }
+
+    uint8_t get_dest_gid_idx() const { return dest_gid_idx_; }
+    void set_dest_gid_idx(uint8_t dest_gid_idx) const {
+        dest_gid_idx_ = dest_gid_idx;
+    }
 
     uint16_t msg_flags() const { return msg_flags_; }
     void set_msg_flags(uint16_t flags) { msg_flags_ = flags; }
@@ -208,18 +222,24 @@ class FrameDesc {
     }
 
     void clear_fields() {
-        next_ = nullptr;
-        frame_offset_ = 0;
-        umem_buffer_ = nullptr;
-        frame_len_ = 0;
+        pkt_hdr_addr_ = 0;
+        pkt_data_addr_ = 0;
+        pkt_hdr_len_ = 0;
+        pkt_data_len_ = 0;
         msg_flags_ = 0;
+        dest_qpn_ = UINT16_MAX;
+        dest_gid_idx_ = UINT8_MAX;
+        INIT_LIST_HEAD(&frame_link_);
     }
 
     std::string to_string() {
         std::stringstream s;
-        s << "pkt_data_addr: 0x" << std::hex << pkt_data_addr_
+        s << "pkt_hdr_addr: 0x" << std::hex << pkt_hdr_addr_
+          << " pkt_data_addr: 0x" << std::hex << pkt_data_addr_
+          << " pkt_hdr_len: " << std::dec << pkt_hdr_len_
           << " pkt_data_len: " << std::dec << pkt_data_len_
-          << " pkt_hdr_addr: 0x" << std::hex << pkt_hdr_addr_
+          << " dest_qpn: " << std::dec << dest_qpn_
+          << " dest_gid_idx: " << std::dec << dest_gid_idx_
           << " msg_flags: " << std::dec << std::bitset<8>(msg_flags_);
         return s.str();
     }
@@ -242,10 +262,27 @@ class FrameDescBuffPool : public BuffPool {
     static_assert((kNumFrameDesc & (kNumFrameDesc - 1)) == 0,
                   "kNumFrameDesc must be power of 2");
 
-    FrameDescBuffPool(struct ibv_mr *mr)
-        : BuffPool(kNumFrameDesc, kFrameDescSize, mr) {}
+    FrameDescBuffPool() : BuffPool(kNumFrameDesc, kFrameDescSize, nullptr) {}
 
     ~FrameDescBuffPool() = default;
+};
+
+struct EFADevice {
+    char ib_name[64];
+    std::string local_ip_str;
+
+    struct ibv_context *context;
+    struct ibv_device_attr dev_attr;
+    struct ibv_port_attr port_attr;
+
+    uint8_t EFA_PORT_NUM;
+    uint8_t gid_idx;
+    union ibv_gid gid;
+
+    struct ibv_pd *pd;
+
+    // DMA-BUF support
+    bool dma_buf_support;
 };
 
 class EFASocket;
@@ -254,105 +291,166 @@ extern EFAFactory efa_ctl;
 
 class EFAFactory {
    public:
+    std::vector<struct EFADevice> devices_;
+
+    // int gid_idx --> int dev
+    std::unordered_map<int, int> gid_2_dev_map;
+
     std::mutex socket_q_lock_;
     std::deque<EFASocket *> socket_q_;
 
+    // Not thread-safe; should be called just once.
     static void Init();
-    static EFASocket *CreateSocket(int socket_id);
+    // gid_idx from GID_INDEX_LIST;
+    // socket_id from [0, ..., kNumEnginesPerDev-1].
+    static EFASocket *CreateSocket(int gid_idx, int socket_id);
+    // Getting a pointer to the struct EFADevice.
+    static struct EFADevice *GetEFADevice(int gid_idx);
+
     static void Shutdown();
+
+   private:
+    static void InitDev(int gid_idx);
 };
 
 class EFASocket {
-    // socket_id starts from 0, equal to socket_id.
-    EFASocket(int socket_id);
+    struct ibv_context *context_;
+    struct ibv_pd *pd_;
 
-    void destroy_efa_socket();
-    int create_efa_socket();
+    struct ibv_cq *send_cq_;
+    struct ibv_cq *recv_cq_;
+    struct ibv_qp *qp_list_[kMaxPath];
+
+    struct ibv_cq *ctrl_cq_;
+    struct ibv_qp *ctrl_qp_;
+
+    // For fast CQ polling.
+    struct ibv_wc wc_[kMaxBatchCQ];
+
+    // remote_gid_idx -> struct ibv_ah*.
+    struct ibv_ah *ah_list_[255];
+
+    EFASocket(int gid_idx, int socket_id);
+
+    struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
+                             uint32_t send_cq_size, uint32_t recv_cq_size);
+
+    // !!! User must call this to create ah before sending packets.
+    void create_ah(uint8_t remote_gid_idx, union ibv_gid remote_gid);
+
+    uint32_t next_qp_idx_for_send_;
+    inline uint32_t get_next_qp_idx_for_send() {
+        next_qp_idx_for_send_ = (next_qp_idx_for_send_++) % kMaxQPForSend;
+        return next_qp_idx_for_send_;
+    }
 
    public:
+    uint32_t gid_idx_;
     uint32_t socket_id_;
-    UDPktDataBuffPool *pkt_data_pool_;
-    UDPktHdrBuffPool *pkt_hdr_pool_;
+
+    PktHdrBuffPool *pkt_hdr_pool_;
+    PktDataBuffPool *pkt_data_pool_;
     FrameDescBuffPool *frame_desc_pool_;
 
+    inline uint32_t gid_idx() const { return gid_idx_; }
     inline uint32_t socket_id() const { return socket_id_; }
-    // dest_qp is specified in the FrameDesc; src_qp is determined by EFASocket
-    // internally to evenly spread the load
+
+    // dest_qpn and dest_gid_idx is specified in the FrameDesc; src_qp is
+    // determined by EFASocket internally to evenly spread the load. This
+    // function also dynamically chooses normal qp and ctrl_qp based on the size
+    // of pkt_hdr_len_ and pkt_data_len_.
     uint32_t send_packet(FrameDesc *frame);
     uint32_t send_packets(std::vector<FrameDesc *> &frames);
+    // This polls send_cq_;
+    std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
+
+    // We embedded FrameDesc* into wr_id, so we can retrieve it later.
+    // This polls recv_cq_;
     std::vector<FrameDesc *> recv_packets(uint32_t budget);
 
-    uint32_t pull_complete_queue();
+    // This will internally free FrameDesc used to send acks.
+    std::vector<FrameDesc *> recv_acks_and_poll_ctrl_cq(uint32_t budget);
 
-    void populate_recv_queue(uint32_t budget);
-    inline void populate_recv_queue_to_full() {
-        populate_recv_queue(FILL_RING_SIZE - fill_queue_entries_);
-    }
-
-    inline uint32_t send_queue_free_entries(uint32_t nb = UINT32_MAX) {
-        return xsk_prod_nb_free(&send_queue_, nb);
-    }
-    inline uint64_t send_queue_estimated_latency_ns() {
-        auto send_queue_pending_entries =
-            TX_RING_SIZE - send_queue_free_entries();
-        return send_queue_pending_entries * AFXDP_MTU * 1000000000UL /
-               kLinkBandwidth;
-    }
+    void refill_recv_queue_data(uint32_t budget, uint32_t qp_idx);
+    void refill_recv_queue_ctrl(uint32_t budget);
 
     std::string to_string();
     void shutdown();
     ~EFASocket();
 
-    friend class EFAFactory;
-
-    // #define FRAME_POOL_DEBUG
-
-#ifdef FRAME_POOL_DEBUG
-    std::set<uint64_t> free_frames_;
-#endif
-
-    inline uint64_t pop_frame() {
-#ifdef FRAME_POOL_DEBUG
-        auto frame_offset = frame_pool_->pop();
-        CHECK(free_frames_.erase(frame_offset) == 1);
-        FrameDesc::clear_fields(frame_offset, umem_buffer_);
-        return frame_offset;
-#else
-        auto frame_offset = frame_pool_->pop();
-        FrameDesc::clear_fields(frame_offset, efa_ctl.umem_buffer_);
-        return frame_offset;
-#endif
+    inline uint32_t send_queue_free_entries() {
+        return kMaxSendWr - unpolled_send_wrs_;
+    }
+    inline uint64_t send_queue_estimated_latency_ns() {
+        return unpolled_send_wrs_ * EFA_MTU * 1000000000UL / kLinkBandwidth;
     }
 
-    inline void push_frame(uint64_t frame_offset) {
-#ifdef FRAME_POOL_DEBUG
-        if (free_frames_.find(frame_offset) == free_frames_.end()) {
-            FrameDesc::clear_fields(frame_offset, umem_buffer_);
-            free_frames_.insert(frame_offset);
-            frame_pool_->push(frame_offset);
-        } else {
-            CHECK(false) << "Frame offset " << std::hex << frame_offset
-                         << " size " << std::dec
-                         << FrameDesc::get_msgbuf_ptr(frame_offset,
-                                                      umem_buffer_)
-                                ->get_frame_len()
-                         << " already in free_frames_";
-        }
-#else
-        FrameDesc::clear_fields(frame_offset, efa_ctl.umem_buffer_);
-        frame_pool_->push(frame_offset);
-#endif
+    inline uint64_t pop_pkt_hdr() {
+        uint64_t pkt_hdr_addr;
+        auto ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_addr);
+        DCHECK(ret == 0);
+        return pkt_hdr_addr;
+    }
+    inline void push_pkt_hdr(uint64_t pkt_hdr_addr) {
+        pkt_hdr_pool_->free_buff(pkt_hdr_addr);
+    }
+    inline void get_pkt_hdr_lkey() { return pkt_hdr_pool_->get_lkey(); }
+
+    inline uint64_t pop_pkt_data() {
+        uint64_t pkt_data_addr;
+        auto ret = pkt_data_pool_->alloc_buff(&pkt_data_addr);
+        DCHECK(ret == 0);
+        return pkt_data_addr;
+    }
+    inline void push_pkt_data(uint64_t pkt_data_addr) {
+        pkt_data_pool_->free_buff(pkt_data_addr);
+    }
+    inline void get_pkt_data_lkey() { return pkt_data_pool_->get_lkey(); }
+
+    inline uint64_t pop_frame_desc() {
+        uint64_t pkt_frame_desc;
+        auto ret = frame_desc_pool_->alloc_buff(&pkt_frame_desc);
+        DCHECK(ret == 0);
+        return pkt_frame_desc;
+    }
+    inline void push_frame_desc(uint64_t pkt_frame_desc) {
+        frame_desc_pool_->free_buff(pkt_frame_desc);
     }
 
    private:
-    uint32_t unpulled_tx_pkts_;
-    uint32_t fill_queue_entries_;
+    uint32_t unpolled_send_wrs_;
+    uint32_t recv_queue_wrs_;
 
     std::chrono::time_point<std::chrono::high_resolution_clock> last_stat_;
     inline static std::atomic<uint64_t> out_packets_ = 0;
     inline static std::atomic<uint64_t> out_bytes_ = 0;
     inline static std::atomic<uint64_t> in_packets_ = 0;
     inline static std::atomic<uint64_t> in_bytes_ = 0;
+
+    friend class EFAFactory;
 };
+
+/**
+ * @brief This helper function gets the Infiniband name from the GID index.
+ *
+ * @param gid_idx
+ * @param ib_name
+ * @return int
+ */
+static inline int util_efa_get_ib_name_from_gididx(int gid_idx, char *ib_name) {
+    sprintf(ib_name, "%s", EFA_DEVICE_NAME_LIST[gid_idx].c_str());
+    return 0;
+}
+
+/**
+ * @brief This helper function gets the IP address of the device from gid_index.
+ *
+ * @param gid_idx
+ * @return int
+ */
+static inline int util_efa_get_ip_from_gididx(int gid_idx, std::string *ip) {
+    *ip = get_dev_ip(ENA_DEVICE_NAME_LIST[gid_idx].c_str());
+    return *ip == "" ? -1 : 0;
+}
 
 }  // namespace uccl
