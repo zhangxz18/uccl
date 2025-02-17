@@ -322,7 +322,8 @@ class EFASocket {
     struct ibv_cq *recv_cq_;
     struct ibv_qp *qp_list_[kMaxPath];
 
-    // TODO(yang): considering removing special ctrl cq and qp.
+    // TODO(yang): considering removing special ctrl cq and qp---then we need to
+    // have same size pkthdr for both data and ack packet.
     struct ibv_cq *ctrl_cq_;
     struct ibv_qp *ctrl_qp_;
 
