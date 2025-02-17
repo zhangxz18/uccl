@@ -21,11 +21,11 @@
  */
 static constexpr bool kPatched = true;  ///< Patch from ECN-vs-delay
 // EWMA alpha used for global CC state.
-static constexpr double kEwmaAlpha = 0.9;
+static constexpr double kEwmaAlpha = 0.125;
 static constexpr double kBeta = 0.008;
 
 // EWMA alpha used for per-path CC states.
-static constexpr double kPPEwmaAlpha = 0.9;
+static constexpr double kPPEwmaAlpha = 0.125;
 
 namespace uccl {
 
