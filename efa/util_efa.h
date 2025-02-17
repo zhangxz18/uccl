@@ -317,10 +317,12 @@ class EFASocket {
     struct ibv_context *context_;
     struct ibv_pd *pd_;
 
+    // TODO(yang): considering merging send and recv cq into one.
     struct ibv_cq *send_cq_;
     struct ibv_cq *recv_cq_;
     struct ibv_qp *qp_list_[kMaxPath];
 
+    // TODO(yang): considering removing special ctrl cq and qp.
     struct ibv_cq *ctrl_cq_;
     struct ibv_qp *ctrl_qp_;
 

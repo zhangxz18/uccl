@@ -299,22 +299,24 @@ void EFASocket::create_ah(uint8_t remote_gid_idx, union ibv_gid remote_gid) {
 uint32_t EFASocket::send_packet(FrameDesc *frame) {
     struct ibv_sge sge[2] = {{0}, {0}};
     struct ibv_send_wr send_wr = {0}, *bad_send_wr;
+    struct ibv_qp *src_qp;
 
     auto dest_gid_idx = frame->get_dest_gid_idx();
     auto dest_qpn = frame->get_dest_qpn();
-    auto src_qp_idx = get_next_qp_idx_for_send();
 
     // This is a ack packet.
     if (frame->get_pkt_data_len() == 0) {
         sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
                   get_pkt_hdr_lkey()};
         send_wr.num_sge = 1;
+        src_qp = ctrl_qp_;
     } else {  // This is a data packet
         sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
                   get_pkt_hdr_lkey()};
         sge[1] = {frame->get_pkt_data_addr(), frame->get_pkt_data_len(),
                   get_pkt_data_lkey()};
         send_wr.num_sge = 2;
+        src_qp = qp_list_[get_next_qp_idx_for_send()];
     }
 
     send_wr.wr_id = (uint64_t)frame;
@@ -325,7 +327,7 @@ uint32_t EFASocket::send_packet(FrameDesc *frame) {
     send_wr.wr.ud.remote_qkey = QKEY;
     send_wr.send_flags = IBV_SEND_SIGNALED;
 
-    if (ibv_post_send(qp_list_[src_qp_idx], &send_wr, &bad_send_wr)) {
+    if (ibv_post_send(src_qp, &send_wr, &bad_send_wr)) {
         perror("Server: Failed to post send");
         exit(1);
     }
@@ -337,6 +339,7 @@ uint32_t EFASocket::send_packet(FrameDesc *frame) {
 uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
     struct ibv_sge sge[2] = {{0}, {0}};
     struct ibv_send_wr send_wr = {0}, *bad_send_wr;
+    struct ibv_qp *src_qp;
 
     for (auto *frame : frames) {
         auto dest_gid_idx = frame->get_dest_gid_idx();
@@ -348,12 +351,14 @@ uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
             sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
                       get_pkt_hdr_lkey()};
             send_wr.num_sge = 1;
+            src_qp = ctrl_qp_;
         } else {  // This is a data packet
             sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
                       get_pkt_hdr_lkey()};
             sge[1] = {frame->get_pkt_data_addr(), frame->get_pkt_data_len(),
                       get_pkt_data_lkey()};
             send_wr.num_sge = 2;
+            src_qp = qp_list_[get_next_qp_idx_for_send()];
         }
 
         send_wr.wr_id = (uint64_t)frame;
@@ -365,7 +370,7 @@ uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
         send_wr.send_flags = IBV_SEND_SIGNALED;
         // TODO(yang): Using chained post list
 
-        if (ibv_post_send(qp_list_[src_qp_idx], &send_wr, &bad_send_wr)) {
+        if (ibv_post_send(src_qp, &send_wr, &bad_send_wr)) {
             perror("Server: Failed to post send");
             exit(1);
         }
