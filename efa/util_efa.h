@@ -324,9 +324,17 @@ class EFAFactory {
     static void InitDev(int gid_idx);
 };
 
+struct ConnMetadata {
+    // data qps + ctrl qp.
+    uint32_t qpn_list[kMaxPath + 1];
+    union ibv_gid gid;
+    uint8_t gid_idx;
+};
+
 class EFASocket {
     struct ibv_context *context_;
     struct ibv_pd *pd_;
+    union ibv_gid gid_;
 
     // TODO(yang): considering merging send and recv cq into one.
     struct ibv_cq *send_cq_;
@@ -349,9 +357,6 @@ class EFASocket {
     struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
                              uint32_t send_cq_size, uint32_t recv_cq_size);
 
-    // !!! User must call this to create ah before sending packets.
-    void create_ah(uint8_t remote_gid_idx, union ibv_gid remote_gid);
-
     uint32_t next_qp_idx_for_send_;
     inline uint32_t get_next_qp_idx_for_send() {
         next_qp_idx_for_send_ = (next_qp_idx_for_send_++) % kMaxQPForSend;
@@ -368,6 +373,9 @@ class EFASocket {
 
     inline uint32_t gid_idx() const { return gid_idx_; }
     inline uint32_t socket_id() const { return socket_id_; }
+
+    // !!! User must call this to create ah before sending packets.
+    void create_ah(uint8_t remote_gid_idx, union ibv_gid remote_gid);
 
     // dest_qpn and dest_gid_idx is specified in FrameDesc; src_qp is determined
     // by EFASocket internally to evenly spread the load. This function also
@@ -388,6 +396,16 @@ class EFASocket {
     std::string to_string();
     void shutdown();
     ~EFASocket();
+
+    // Return kMaxPath + 1 QP numbers for client to use.
+    void get_conn_metadata(ConnMetadata *meta) {
+        for (int i = 0; i < kMaxPath; i++) {
+            meta->qpn_list[i] = qp_list_[i]->qp_num;
+        }
+        meta->qpn_list[kMaxPath] = ctrl_qp_->qp_num;
+        meta->gid = gid_;
+        meta->gid_idx = gid_idx_;
+    }
 
     inline uint32_t send_queue_free_entries() {
         return kMaxSendWr - unpolled_send_wrs_;

@@ -167,6 +167,7 @@ EFASocket::EFASocket(int gid_idx, int socket_id)
     auto *factory_dev = EFAFactory::GetEFADevice(gid_idx);
     context_ = factory_dev->context;
     pd_ = factory_dev->pd;
+    gid_ = factory_dev->gid;
 
     // Allocate memory for packet headers.
     void *pkt_hdr_buf_ =
