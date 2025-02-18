@@ -21,7 +21,8 @@ enum class CCType {
 };
 static constexpr CCType kCCType = CCType::kCubicPP;
 
-#define P4D
+// #define P4D
+#define G6E
 
 /// Interface configuration.
 #ifdef P4D
@@ -32,6 +33,14 @@ static const std::string EFA_DEVICE_NAME_LIST[NUM_DEVICES] = {
 static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
     "ens32", "ens65", "ens130", "ens163"};
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
+#elif defined(G6E)
+static const uint8_t NUM_DEVICES = 4;
+static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3};
+static const std::string EFA_DEVICE_NAME_LIST[NUM_DEVICES] = {
+    "rdmap155s0", "rdmap156s0", "rdmap188s0", "rdmap189s0"};
+static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
+    "enp135s0", "enp136s0", "enp170s0", "enp171s0"};
+static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
 static const uint8_t EFA_PORT_NUM = 1;
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
@@ -41,7 +50,7 @@ static const uint32_t EFA_GRH_SIZE = 40;       // Auto-added by EFA during recv.
 
 static const uint32_t kMaxSendWr = 128;
 static const uint32_t kMaxRecvWr = 128;
-static const uint32_t kMaxSendRecvWrCtrl = 2048;
+static const uint32_t kMaxSendRecvWrForCtrl = 2048;
 static const uint32_t kMaxCqeTotal = 16384;
 static const uint32_t kMaxBatchCQ = 16;
 static const uint32_t kMaxQPForSend = 4;

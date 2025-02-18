@@ -870,7 +870,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->net_flags = net_flags;
     ucclh->ackno = be32_t(UINT32_MAX);
     // This fills the FrameDesc flags into the outgoing packet msg_flags.
-    ucclh->msg_flags = msgbuf->msg_flags();
+    ucclh->msg_flags = msgbuf->get_msg_flags();
     ucclh->frame_len = be16_t(frame_len);
 
     ucclh->seqno = be32_t(seqno);
@@ -1003,7 +1003,7 @@ void UcclEngine::run() {
             active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
         }
 
-        auto frames = socket_->recv_packets(RECV_BATCH_SIZE);
+        auto frames = socket_->poll_recv_cq(RECV_BATCH_SIZE);
         if (frames.size()) process_rx_msg(frames);
 
         if (Channel::dequeue_sc(channel_->tx_deser_q_, &tx_deser_work)) {
@@ -1260,7 +1260,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
         auto frame = flow->craft_rssprobe_packet(dst_port);
         socket_->send_packet(frame);
 
-        auto frames = socket_->recv_packets(RECV_BATCH_SIZE);
+        auto frames = socket_->poll_recv_cq(RECV_BATCH_SIZE);
         for (auto &frame : frames) {
             auto *msgbuf = FrameDesc::Create(
                 frame.frame_offset, socket_->umem_buffer_, frame.frame_len);

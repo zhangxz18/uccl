@@ -104,6 +104,10 @@ class BuffPool {
         tail_ = (tail_ + 1) & (num_elements_ - 1);
     }
 
+    inline uint32_t avail_slots() {
+        return (tail_ - head_ + num_elements_) & (num_elements_ - 1);
+    }
+
    protected:
     void *base_addr_;
     uint32_t head_;
@@ -147,6 +151,7 @@ class FrameDesc {
     uint64_t pkt_data_addr_;  // in GPU memory.
     uint32_t pkt_hdr_len_;    // the length of packet hdr.
     uint32_t pkt_data_len_;   // the length of packet data.
+    uint32_t src_qp_idx_;     // src QP to use for this frame.
     uint16_t dest_qpn_;       // dest QP to use for this frame.
     uint8_t dest_gid_idx_;    // dest gid to use for this frame.
 
@@ -159,13 +164,14 @@ class FrameDesc {
     struct list_head frame_link_;
 
     FrameDesc(uint64_t pkt_hdr_addr, uint64_t pkt_data_addr,
-              uint32_t pkt_hdr_len, uint32_t pkt_data_len, uint8_t msg_flags_)
+              uint32_t pkt_hdr_len, uint32_t pkt_data_len, uint8_t msg_flags)
         : pkt_hdr_addr_(pkt_hdr_addr),
           pkt_data_addr_(pkt_data_addr),
           pkt_hdr_len_(pkt_hdr_len),
           pkt_data_len_(pkt_data_len),
           msg_flags_(msg_flags) {
         INIT_LIST_HEAD(&frame_link_);
+        src_qp_idx_ = UINT32_MAX;
         dest_qpn_ = UINT16_MAX;
         dest_gid_idx_ = UINT8_MAX;
     }
@@ -173,24 +179,27 @@ class FrameDesc {
    public:
     static FrameDesc *Create(uint64_t frame_desc_addr, uint64_t pkt_hdr_addr,
                              uint64_t pkt_data_addr, uint32_t pkt_hdr_len,
-                             uint32_t pkt_data_len, uint8_t msg_flags_ = 0) {
-        return new (reinterpret_cast<void *>(frame_desc_addr)
-            FrameDesc(pkt_hdr_addr, pkt_data_addr, pkt_hdr_len, pkt_data_len, msg_flags);
+                             uint32_t pkt_data_len, uint8_t msg_flags = 0) {
+        return new (reinterpret_cast<void *>(frame_desc_addr)) FrameDesc(
+            pkt_hdr_addr, pkt_data_addr, pkt_hdr_len, pkt_data_len, msg_flags);
     }
     uint32_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
     uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
     uint8_t get_pkt_hdr_len() const { return pkt_hdr_len_; }
     uint8_t get_pkt_data_len() const { return pkt_data_len_; }
 
+    uint32_t get_src_qp_idx() const { return src_qp_idx_; }
+    void set_src_qp_idx(uint32_t src_qp_idx) { src_qp_idx_ = src_qp_idx; }
+
     uint16_t get_dest_qpn() const { return dest_qpn_; }
-    void set_dest_qpn(uint16_t dest_qpn) const { dest_qpn_ = dest_qpn; }
+    void set_dest_qpn(uint16_t dest_qpn) { dest_qpn_ = dest_qpn; }
 
     uint8_t get_dest_gid_idx() const { return dest_gid_idx_; }
-    void set_dest_gid_idx(uint8_t dest_gid_idx) const {
+    void set_dest_gid_idx(uint8_t dest_gid_idx) {
         dest_gid_idx_ = dest_gid_idx;
     }
 
-    uint16_t msg_flags() const { return msg_flags_; }
+    uint16_t get_msg_flags() const { return msg_flags_; }
     void set_msg_flags(uint16_t flags) { msg_flags_ = flags; }
     void add_msg_flags(uint16_t flags) { msg_flags_ |= flags; }
 
@@ -227,6 +236,7 @@ class FrameDesc {
         pkt_hdr_len_ = 0;
         pkt_data_len_ = 0;
         msg_flags_ = 0;
+        src_qp_idx_ = UINT32_MAX;
         dest_qpn_ = UINT16_MAX;
         dest_gid_idx_ = UINT8_MAX;
         INIT_LIST_HEAD(&frame_link_);
@@ -238,6 +248,7 @@ class FrameDesc {
           << " pkt_data_addr: 0x" << std::hex << pkt_data_addr_
           << " pkt_hdr_len: " << std::dec << pkt_hdr_len_
           << " pkt_data_len: " << std::dec << pkt_data_len_
+          << " src_qp_idx: " << std::dec << src_qp_idx_
           << " dest_qpn: " << std::dec << dest_qpn_
           << " dest_gid_idx: " << std::dec << dest_gid_idx_
           << " msg_flags: " << std::dec << std::bitset<8>(msg_flags_);
@@ -275,7 +286,7 @@ struct EFADevice {
     struct ibv_device_attr dev_attr;
     struct ibv_port_attr port_attr;
 
-    uint8_t EFA_PORT_NUM;
+    uint8_t efa_port_num;
     uint8_t gid_idx;
     union ibv_gid gid;
 
@@ -358,24 +369,21 @@ class EFASocket {
     inline uint32_t gid_idx() const { return gid_idx_; }
     inline uint32_t socket_id() const { return socket_id_; }
 
-    // dest_qpn and dest_gid_idx is specified in the FrameDesc; src_qp is
-    // determined by EFASocket internally to evenly spread the load. This
-    // function also dynamically chooses normal qp and ctrl_qp based on the size
-    // of pkt_hdr_len_ and pkt_data_len_.
+    // dest_qpn and dest_gid_idx is specified in FrameDesc; src_qp is determined
+    // by EFASocket internally to evenly spread the load. This function also
+    // dynamically chooses normal qp and ctrl_qp based on pkt_data_len_.
     uint32_t send_packet(FrameDesc *frame);
     uint32_t send_packets(std::vector<FrameDesc *> &frames);
-    // This polls send_cq_;
+
+    // This polls send_cq_ for data qps;
     std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
+    // This polls recv_cq_ for data qps; wr_id is FrameDesc*
+    std::vector<FrameDesc *> poll_recv_cq(uint32_t budget);
+    // This will internally free FrameDesc that was used to send acks.
+    std::vector<FrameDesc *> poll_ctrl_cq(uint32_t budget);
 
-    // We embedded FrameDesc* into wr_id, so we can retrieve it later.
-    // This polls recv_cq_;
-    std::vector<FrameDesc *> recv_packets(uint32_t budget);
-
-    // This will internally free FrameDesc used to send acks.
-    std::vector<FrameDesc *> recv_acks_and_poll_ctrl_cq(uint32_t budget);
-
-    void refill_recv_queue_data(uint32_t budget, uint32_t qp_idx);
-    void refill_recv_queue_ctrl(uint32_t budget);
+    void post_recv_wrs(uint32_t budget, uint32_t qp_idx);
+    void post_recv_wrs_for_ctrl(uint32_t budget);
 
     std::string to_string();
     void shutdown();
@@ -397,7 +405,7 @@ class EFASocket {
     inline void push_pkt_hdr(uint64_t pkt_hdr_addr) {
         pkt_hdr_pool_->free_buff(pkt_hdr_addr);
     }
-    inline void get_pkt_hdr_lkey() { return pkt_hdr_pool_->get_lkey(); }
+    inline uint32_t get_pkt_hdr_lkey() { return pkt_hdr_pool_->get_lkey(); }
 
     inline uint64_t pop_pkt_data() {
         uint64_t pkt_data_addr;
@@ -408,7 +416,7 @@ class EFASocket {
     inline void push_pkt_data(uint64_t pkt_data_addr) {
         pkt_data_pool_->free_buff(pkt_data_addr);
     }
-    inline void get_pkt_data_lkey() { return pkt_data_pool_->get_lkey(); }
+    inline uint32_t get_pkt_data_lkey() { return pkt_data_pool_->get_lkey(); }
 
     inline uint64_t pop_frame_desc() {
         uint64_t pkt_frame_desc;

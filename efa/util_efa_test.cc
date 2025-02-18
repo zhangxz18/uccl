@@ -227,7 +227,7 @@ void socket_send(struct socket_t* socket, int socket_id) {
 void socket_recv(struct socket_t* socket, int socket_id) {
     // Check any packet received, in order to drive packet receiving path for
     // other kernel transport.
-    auto frames = socket->efa_socket->recv_packets(MY_RECV_BATCH_SIZE);
+    auto frames = socket->efa_socket->poll_recv_cq(MY_RECV_BATCH_SIZE);
     uint32_t rcvd = frames.size();
     inflight_pkts -= rcvd;
 
