@@ -462,10 +462,10 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
         if constexpr (kReceiverCCA == kReceiverEQDS) {            
             
             // Register this QP to pacer.
-            eqds_->request_pull(rdma_ctx->eqds_qp_cc);
+            eqds_->request_pull(rdma_ctx->eqds_qp_cc_);
             
             // Wait until pacer is ready.
-            volatile bool *done = &rdma_ctx->eqds_qp_cc[kPortEntropy - 1].in_pull_;
+            volatile bool *done = &rdma_ctx->eqds_qp_cc_[kPortEntropy - 1].in_pull_;
             while (!*done) {}
         }
 

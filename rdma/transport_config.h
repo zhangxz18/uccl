@@ -42,6 +42,8 @@ static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 static const uint32_t NCCL_MIN_POST_RECV = 65536;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static const uint32_t kPortEntropy = 256;
+// Chunk size for each WQE.
+static const uint32_t kChunkSize = 32 << 10;
 // Always use the same engine for a flow's all messages.
 static const bool kFlowBindEngine = true;
 
@@ -59,6 +61,7 @@ enum ReceiverCCA {
 static const enum SenderCCA kSenderCCA = kSenderNone;
 static const enum ReceiverCCA kReceiverCCA = kReceiverEQDS;
 static_assert(!(kReceiverCCA == kReceiverEQDS && !kFlowBindEngine), "kFlowBindEngine must be true if kReceiverEQDS is set");
+static_assert(!(kReceiverCCA == kReceiverEQDS && (kChunkSize <= (16 << 10))), "kChunkSize must be greater than 16KB if kReceiverEQDS is set");
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 
@@ -77,8 +80,6 @@ static constexpr uint32_t kMAXUseCacheQPSize = 8192;
 // Message size threshold for bypassing the timing wheel.
 static constexpr uint32_t kBypassTimingWheelThres = 9000;
 
-// Chunk size for each WQE.
-static const uint32_t kChunkSize = 32 << 10;
 // Limit the per-flow outstanding bytes on each engine.
 static const uint32_t kMaxOutstandingBytes = 16 * kChunkSize;
 // # of Tx work handled in one loop.
@@ -106,6 +107,8 @@ static const uint32_t kMaxInline = 512;
 static const uint32_t kMaxSge = 1;
 // Maximum number of outstanding receive messages in one recv request.
 static const uint32_t kMaxRecv = 8;
+// EQDS only supports one outstanding message per posting.
+static const uint32_t kNCCLMaxRecv = kReceiverCCA == kReceiverEQDS ? 1 : kMaxRecv;
 // Maximum number of outstanding receive requests in one engine.
 static const uint32_t kMaxReq = 32 * kMaxRecv;
 // Maximum number of WQEs in SRQ (Shared Receive Queue).

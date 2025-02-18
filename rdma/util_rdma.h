@@ -190,6 +190,58 @@ class CtrlChunkBuffPool : public BuffPool {
         ~CtrlChunkBuffPool() = default;
 };
 
+class IMMDataEQDS {
+    public:
+        // High----------------32bit------------------Low
+        //  | PULLTARGET  |  NCHUNK  |  CSN  |  RID  |
+        //       10bit        6bit      8bit    8bit
+        constexpr static int kRID = 0;
+        constexpr static int kCSN = 8;
+        constexpr static int kNCHUNK = kCSN + UINT_CSN_BIT;
+        constexpr static int kPULLTARGET = kNCHUNK + 6;
+
+        IMMDataEQDS(uint32_t imm_data):imm_data_(imm_data) {}
+        
+        inline uint32_t GetPULLTARGET(void) {
+            return (imm_data_ >> kPULLTARGET) & 0x3FF;
+        }
+
+        inline uint32_t GetNCHUNK(void) {
+            return (imm_data_ >> kNCHUNK) & 0x3F;
+        }
+
+        inline uint32_t GetCSN(void) {
+            return (imm_data_ >> kCSN) & UINT_CSN_MASK;
+        }
+
+        inline uint32_t GetRID(void) {
+            return (imm_data_ >> kRID) & 0xFF;
+        }
+
+        inline void SetPULLTARGET(uint32_t pulltarget) {
+            imm_data_ |= (pulltarget & 0x3FF) << kPULLTARGET;
+        }
+
+        inline void SetNCHUNK(uint32_t nchunk) {
+            imm_data_ |= (nchunk & 0x3F) << kNCHUNK;
+        }
+
+        inline void SetCSN(uint32_t csn) {
+            imm_data_ |= (csn & UINT_CSN_MASK) << kCSN;
+        }
+
+        inline void SetRID(uint32_t rid) {
+            imm_data_ |= (rid & 0xFF) << kRID;
+        }
+
+        inline uint32_t GetImmData(void) {
+            return imm_data_;
+        }
+
+    private:
+        uint32_t imm_data_;
+};
+
 class IMMData {
     public:
         // High--------------------32bit----------------------Low
@@ -620,7 +672,7 @@ class RDMAContext {
         struct UCQPWrapper dp_qps_[kPortEntropy];
 
         // Receiver congestion control state per QP.
-        eqds::EQDSQPCC eqds_qp_cc[kPortEntropy];
+        eqds::EQDSQPCC eqds_qp_cc_[kPortEntropy];
 
         // Data path QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;
@@ -756,9 +808,16 @@ class RDMAContext {
             // Return the QP with lower RTT.
             auto qpidx = dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
             if (msize <= kBypassTimingWheelThres) {
-                if (dp_qps_[q1].in_wheel_cnt_ != 0 && dp_qps_[q2].in_wheel_cnt_ == 0) {
-                    // For small messages, we prefer the QP with no in-wheel chunks.
-                    qpidx = q2;
+                if constexpr (kReceiverCCA == kReceiverNone) {
+                    if (dp_qps_[q1].in_wheel_cnt_ != 0 && dp_qps_[q2].in_wheel_cnt_ == 0) {
+                        // For small messages, we prefer the QP with no in-wheel chunks.
+                        qpidx = q2;
+                    }
+                } else {
+                    if (eqds_qp_cc_[q1].credit() <= 0 && eqds_qp_cc_[q2].credit() > 0) {
+                        // For small messages, we prefer the QP with credit.
+                        qpidx = q2;
+                    }
                 }
             }
             last_qp_choice_ = qpidx;
@@ -766,7 +825,15 @@ class RDMAContext {
         }
         
         // Return true if this message is transmitted completely.
-        bool tx_messages(struct ucclRequest *ureq);
+        inline bool tx_messages(struct ucclRequest *ureq) {
+            if (kReceiverCCA == kReceiverNone)
+                return senderCC_tx_messages(ureq);
+            else
+                return receiverCC_tx_messages(ureq);
+        }
+        bool senderCC_tx_messages(struct ucclRequest *ureq);
+        
+        bool receiverCC_tx_messages(struct ucclRequest *ureq);
 
         int supply_rx_buff(struct ucclRequest *ureq);
 
@@ -838,7 +905,14 @@ class RDMAContext {
          * @param ack_list If this QP needs ACK, add it to the list.
          * @return true If the chunk is received successfully.
          */
-        void rx_chunk(struct list_head *ack_list);
+        inline void rx_chunk(struct list_head *ack_list) {
+            if constexpr (kReceiverCCA == kReceiverNone)
+                senderCC_rx_chunk(ack_list);
+            else
+                receiverCC_rx_chunk(ack_list);
+        }
+        void senderCC_rx_chunk(struct list_head *ack_list);
+        void receiverCC_rx_chunk(struct list_head *ack_list);
 
         /**
          * @brief Receive a retransmitted chunk from the flow.

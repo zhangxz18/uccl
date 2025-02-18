@@ -435,7 +435,109 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
     return 0;
 }
 
-bool RDMAContext::tx_messages(struct ucclRequest *ureq)
+bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
+{
+    auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+
+    auto size = ureq->send.data_len;
+    auto laddr = ureq->send.laddr;
+    auto raddr = ureq->send.raddr;
+    auto lkey = ureq->send.lkey;
+    auto rkey = ureq->send.rkey;
+    auto *sent_offset = &ureq->send.sent_offset;
+    uint64_t wr_addr;
+    bool queued = false;
+    uint32_t chunk_size, qpidx;
+    struct UCQPWrapper *qpw;
+
+    auto now = rdtsc();
+
+    if (*sent_offset == 0 /* Not yet transmitted for this message */) {
+        ureq->send.tx_events = (size + kChunkSize - 1) / kChunkSize;
+        if (ureq->send.nchunk == 1) {
+            // Size mismatch.
+            ureq->send.nchunk = ureq->send.tx_events;
+        }
+    }
+
+    while (*sent_offset < size) {
+
+        if (outstanding_bytes_ >= kMaxOutstandingBytes) {
+            // Push the message to the pending transmit queue.
+            return false;
+        }
+
+        chunk_size = std::min(size - *sent_offset, kChunkSize);
+
+        // Select QP.
+        int select_budget = 4;
+        bool can_send = false;
+        while (select_budget--) {
+            qpidx = select_qpidx_pow2(size);
+            qpw = &dp_qps_[qpidx];
+            
+            if (eqds_qp_cc_[qpidx].spend_credit(chunk_size)) {
+                can_send = true;
+                break;
+            }
+        }
+        
+        if (!can_send) {
+            VLOG(3) << "No credit for sending " << chunk_size << " bytes for flow:" << flow->flowid();
+            return false;
+        }
+
+        DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
+        struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
+        auto wr = &wr_ex->wr;
+
+        wr_ex->sge.addr = laddr + *sent_offset;
+        wr_ex->sge.lkey = lkey;
+        wr_ex->sge.length = chunk_size;
+
+        wr->wr.rdma.remote_addr = raddr + *sent_offset;
+        wr->wr.rdma.rkey = rkey;
+
+        IMMDataEQDS imm_data(0);
+
+        imm_data.SetNCHUNK(0);
+        if ((*sent_offset + chunk_size == size) && ureq->send.nchunk) {
+            imm_data.SetNCHUNK(ureq->send.nchunk);
+        }
+        imm_data.SetRID(ureq->send.rid);
+
+        imm_data.SetPULLTARGET(eqds_qp_cc_[qpidx].compute_pull_target());
+
+        wr->send_flags = 0;
+        if (qpw->signal_cnt_++ % kSignalInterval == 0) {
+            wr->send_flags = IBV_SEND_SIGNALED;
+            pending_signal_poll_++;
+        }
+        
+        imm_data.SetCSN(qpw->pcb.get_snd_nxt().to_uint32());
+
+        wr->imm_data = htonl(imm_data.GetImmData());
+
+        struct ibv_send_wr *bad_wr;
+        DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
+
+        *sent_offset += chunk_size;
+        // Track this chunk.
+        qpw->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
+        // Arm timer for TX
+        arm_timer_for_qp(qpw);
+
+        VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", mid: " << ureq->n << " with QP#" << qpidx;
+
+        outstanding_bytes_ += chunk_size;
+
+        continue;
+    }
+
+    return true;
+}
+
+bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
 {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
 
@@ -471,13 +573,6 @@ bool RDMAContext::tx_messages(struct ucclRequest *ureq)
         // Select QP.
         auto qpidx = select_qpidx_pow2(size);
         auto qpw = &dp_qps_[qpidx];
-
-        if constexpr (kReceiverCCA == kReceiverEQDS) {
-            if (!eqds_qp_cc[qpidx].spend_credit(chunk_size)) {
-                VLOG(3) << "No credit for sending " << chunk_size << " bytes for flow:" << flow->flowid();
-                return false;
-            }
-        }
 
         if constexpr (kTestNoTimingWheel) {
             DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
@@ -1555,7 +1650,118 @@ void RDMAContext::rc_rx_chunk(void)
     }
 }
 
-void RDMAContext::rx_chunk(struct list_head *ack_list)
+void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
+{
+    VLOG(5) << "rx_chunk";
+    auto cq_ex = recv_cq_ex_;
+
+    auto now = rdtsc();
+     
+    auto byte_len = ibv_wc_read_byte_len(cq_ex);
+    auto imm_data = IMMDataEQDS(ntohl(ibv_wc_read_imm_data(cq_ex)));
+    auto qp_num = ibv_wc_read_qp_num(cq_ex);
+    auto qpidx = qpn2idx_[qp_num];
+    auto qpw = &dp_qps_[qpidx];
+    auto eqds_qp_cc = &eqds_qp_cc_[qpidx];
+
+    auto pull_target = imm_data.GetPULLTARGET();
+    auto nchunks = imm_data.GetNCHUNK();
+    auto csn = imm_data.GetCSN();
+    auto rid = imm_data.GetRID();
+
+    VLOG(5) << "Received chunk: (byte_len, csn, rid, mid): " << byte_len << ", " << csn << ", " << rid << " from QP#" << qpidx;
+
+    // Compare CSN with the expected CSN.
+    auto ecsn = qpw->pcb.rcv_nxt;
+
+    auto distance = UINT_CSN(csn) - ecsn;
+
+    if ((UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))) {
+        VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
+        qpw->pcb.stats_chunk_drop++;
+        return;
+    }
+
+    if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
+        VLOG(4) << "Chunk too far ahead. Dropping as we can't handle SACK. "
+                    << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
+        qpw->pcb.stats_chunk_drop++;
+        return;
+    }
+
+    // Locate request by rid
+    auto req = get_recvreq_by_id(rid);
+
+    /* 
+     * No need for the following code to check as we can only accept a retransmission chunk when 
+     * the barrier after this chunk has arrived.
+    */
+    
+    // auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
+    // auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
+    // auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
+    // DCHECK(!(*sack_bitmap & (1ULL << cursor)));
+
+    qpw->rxtracking.ready_csn_.insert(csn);
+
+    // Always use the latest timestamp.
+    if constexpr (kTestNoHWTimestamp)
+        qpw->pcb.t_remote_nic_rx = now;
+    else
+        qpw->pcb.t_remote_nic_rx = ibv_wc_read_completion_ts(cq_ex);
+
+    qpw->pcb.sack_bitmap_bit_set(distance.to_uint32());
+
+    auto *msg_size = &req->ureq->recv.elems[0].size;
+    uint32_t *received_bytes = req->received_bytes;
+    received_bytes[0] += byte_len;
+
+    if (nchunks) {
+        // Tx size < Rx size, adjust the meesage size using the information carried by the last chunk.
+        auto actual_size = kChunkSize * (nchunks - 1) + byte_len;
+        *msg_size = actual_size;
+        req->ureq->recv.data_len[0] = actual_size;
+    }
+
+    if (*msg_size == received_bytes[0]) req->fin_msg++;
+    if (req->fin_msg == req->ureq->n) { // This request (may contain multiple messages) is complete.
+        VLOG(3) << "Request complete (" << req->ureq->n << " messages)";
+        auto poll_ctx = req->ureq->poll_ctx;
+        // Wakeup app thread.
+        uccl_wakeup(poll_ctx);
+        // Free the request.
+        free_recvreq(req);
+    }
+
+    eqds_qp_cc->handle_pull_target(pull_target);
+
+    try_update_csn(qpw);
+
+    if (distance.to_uint32()) {
+        qpw->rxtracking.encounter_ooo();
+        qpw->pcb.stats_ooo++;
+    }
+    
+    qpw->rxtracking.cumulate_wqe();
+    qpw->rxtracking.cumulate_bytes(byte_len);
+
+    if (list_empty(&qpw->ack.ack_link))
+        list_add_tail(&qpw->ack.ack_link, ack_list);
+
+    // Send ACK if needed.
+    if (qpw->rxtracking.need_imm_ack()) {
+        uint64_t chunk_addr;
+        DCHECK(ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+        craft_ack(qpidx, chunk_addr, 0);
+        flush_acks(1, chunk_addr);
+
+        qpw->rxtracking.clear_imm_ack();
+        list_del(&qpw->ack.ack_link);
+    }
+}
+
+void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
 {
     VLOG(5) << "rx_chunk";
     auto cq_ex = recv_cq_ex_;

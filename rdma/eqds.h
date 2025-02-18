@@ -42,20 +42,29 @@ struct EQDSQPCC {
 
     static constexpr PullQuanta INIT_PULL_QUANTA = 1000000000;
     static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
-
-    bool in_pull_ = false;
-
-    /// Receiver-side
-    uint32_t unsent_bytes_;
+    
+    /********************************************************************/
+    /************************ Sender-side states ************************/
+    /********************************************************************/
     
     // Last received highest credit in PullQuanta.
-    PullQuanta _pull = INIT_PULL_QUANTA;
+    PullQuanta pull_ = INIT_PULL_QUANTA;
 
     // Receive request credit in PullQuanta, but consume it in bytes
     int32_t credit_pull_ = 0;
     int32_t credit_spec_ = kEQDSMaxCwnd;
 
     bool in_speculating_;
+    
+    uint32_t unsent_bytes_;
+
+    /********************************************************************/
+    /************************ Receiver-side states ************************/
+    /********************************************************************/
+
+    bool in_pull_ = false;
+
+    PullQuanta highest_pull_target_;
 
     inline int32_t credit() { return credit_pull_ + credit_spec_; }
 
@@ -80,13 +89,13 @@ struct EQDSQPCC {
     }
 
     inline void receive_credit(PullQuanta pullno) {
-        if (pullno > _pull) {
-            PullQuanta extra_credit = pullno - _pull;
+        if (pullno > pull_) {
+            PullQuanta extra_credit = pullno - pull_;
             credit_pull_ += unquantize(extra_credit);
             if (credit_pull_ > kEQDSMaxCwnd) {
                 credit_pull_ = kEQDSMaxCwnd;
             }
-            _pull = pullno;
+            pull_ = pullno;
         }
     }
 
@@ -105,6 +114,17 @@ struct EQDSQPCC {
 
     inline void try_continue_send() {
 
+    }
+
+    inline PullQuanta compute_pull_target() {
+        PullQuanta target;
+        return target;
+    }
+
+    inline void handle_pull_target(PullQuanta pull_target) {
+        if (pull_target > highest_pull_target_) {
+            highest_pull_target_ = pull_target;
+        }
     }
 
 };
