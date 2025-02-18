@@ -509,10 +509,8 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         
         auto dev = engine_id / num_engines_per_dev;
         
-        if constexpr (kReceiverCCA == kReceiverEQDS) {
-            engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
-                dev, engine_id, channel_vec_[engine_id], eqds_[dev]));
-        }
+        engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
+            dev, engine_id, channel_vec_[engine_id], eqds_[dev]));
         
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [engine_ptr = engine_vec_.back().get(), engine_id, engine_cpu_id]() {

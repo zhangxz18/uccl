@@ -826,7 +826,7 @@ class RDMAContext {
         
         // Return true if this message is transmitted completely.
         inline bool tx_messages(struct ucclRequest *ureq) {
-            if (kReceiverCCA == kReceiverNone)
+            if constexpr (kReceiverCCA == kReceiverNone)
                 return senderCC_tx_messages(ureq);
             else
                 return receiverCC_tx_messages(ureq);

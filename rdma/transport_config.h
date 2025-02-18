@@ -58,8 +58,8 @@ enum ReceiverCCA {
     // EQDS [NSDI'22]
     kReceiverEQDS,
 };
-static const enum SenderCCA kSenderCCA = kSenderNone;
-static const enum ReceiverCCA kReceiverCCA = kReceiverEQDS;
+static const enum SenderCCA kSenderCCA = kSenderTimely;
+static const enum ReceiverCCA kReceiverCCA = kReceiverNone;
 static_assert(!(kReceiverCCA == kReceiverEQDS && !kFlowBindEngine), "kFlowBindEngine must be true if kReceiverEQDS is set");
 static_assert(!(kReceiverCCA == kReceiverEQDS && (kChunkSize <= (16 << 10))), "kChunkSize must be greater than 16KB if kReceiverEQDS is set");
 
