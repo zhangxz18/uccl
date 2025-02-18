@@ -789,14 +789,14 @@ int RDMAContext::receiver_poll_rc_cq(void)
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
 
     while (1) {
-        if (cq_ex->status != IBV_WC_SUCCESS)
+        if (cq_ex->status == IBV_WC_SUCCESS) {
+            rc_rx_chunk();
+            post_srq_cnt_++;
+        } else {
             LOG(ERROR) << "data path CQ state error: " << cq_ex->status 
             << " from QP:" << ibv_wc_read_qp_num(cq_ex);
-        
-        rc_rx_chunk();
-
-        post_srq_cnt_++;
-        
+        }
+            
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }
     
@@ -896,11 +896,12 @@ int RDMAContext::sender_poll_rc_cq(void)
     if (ibv_start_poll(cq_ex, &poll_cq_attr)) return 0;
 
     while (1) {
-        if (cq_ex->status != IBV_WC_SUCCESS)
+        if (cq_ex->status == IBV_WC_SUCCESS) {
+            rc_rx_ack();
+        } else {
             LOG(ERROR) << "data path CQ state error: " << cq_ex->status 
             << " from QP:" << ibv_wc_read_qp_num(cq_ex);
-
-        rc_rx_ack();
+        }
 
         if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
     }
