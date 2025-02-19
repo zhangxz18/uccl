@@ -15,9 +15,9 @@ mpirun --bind-to none -np 4 -N 1 --host ${HOSTS} \
     -x NCCL_NET_DISABLE=0 \
     -x NCCL_P2P_NET_CHUNKSIZE=524288 \
     -x NCCL_BUFFSIZE=8388608 \
+    -x NCCL_P2P_PXN_LEVEL=0 \
     /opt/uccl_rdma/nccl-tests/build/alltoall_perf \
-    -b 1K -e 1G -f 2 -g 1 -t 8
--w 100 -n 100
+    -b 1K -e 1G -f 2 -g 1 -t 8 -w 100 -n 100
 # -x NCCL_SOCKET_NTHREADS=4 \
 # -x NCCL_NSOCKS_PERTHREAD=2 \
 # -x NCCL_MAX_NCHANNELS=8 \
@@ -28,6 +28,7 @@ mpirun --bind-to none -np 4 -N 1 --host ${HOSTS} \
 # -x NCCL_DEBUG=INFO \
 # -x NCCL_TESTS_SPLIT_MASK=0x7 \
 # -x OFI_NCCL_PROTOCOL=RDMA \
+# -x NCCL_PXN_DISABLE=1 \
 # -R 1
 
 # for i in 1 2 3 4; do

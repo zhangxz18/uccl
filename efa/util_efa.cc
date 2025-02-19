@@ -8,12 +8,12 @@ EFAFactory efa_ctl;
 
 void EFAFactory::Init() {
     for (int i = 0; i < NUM_DEVICES; i++) {
-        EFAFactory::InitDev(GID_INDEX_LIST[i]);
+        EFAFactory::InitDev(i);
     }
 }
 
-void EFAFactory::InitDev(int gid_idx) {
-    struct EFADevice dev;
+void EFAFactory::InitDev(int dev_idx) {
+    struct EFADevice *dev = new struct EFADevice();
     struct ibv_device **device_list;
     struct ibv_context *context;
     struct ibv_device_attr dev_attr;
@@ -21,13 +21,13 @@ void EFAFactory::InitDev(int gid_idx) {
     int i, nb_devices;
 
     // Check if the device is already initialized.
-    DCHECK(efa_ctl.gid_2_dev_map.find(gid_idx) == efa_ctl.gid_2_dev_map.end());
+    DCHECK(efa_ctl.dev_map.find(dev_idx) == efa_ctl.dev_map.end());
 
-    // Get Infiniband name from GID index.
-    DCHECK(util_efa_get_ib_name_from_gididx(gid_idx, dev.ib_name) == 0);
+    // Get Infiniband name from dev_idx.
+    DCHECK(util_efa_get_ib_name_from_dev_idx(dev_idx, dev->ib_name) == 0);
 
-    // Get IP address from GID index.
-    DCHECK(util_efa_get_ip_from_gididx(gid_idx, &dev.local_ip_str) == 0);
+    // Get IP address from dev_idx.
+    DCHECK(util_efa_get_ip_from_dev_idx(dev_idx, &dev->local_ip_str) == 0);
 
     // Get the list of RDMA devices.
     device_list = ibv_get_device_list(&nb_devices);
@@ -38,16 +38,18 @@ void EFAFactory::InitDev(int gid_idx) {
 
     // Find the device by name.
     for (i = 0; i < nb_devices; i++) {
-        if (strcmp(ibv_get_device_name(device_list[i]), dev.ib_name) == 0) {
+        LOG(INFO) << "Device: " << ibv_get_device_name(device_list[i]);
+        if (strcmp(ibv_get_device_name(device_list[i]), dev->ib_name) == 0) {
             break;
         }
     }
     if (i == nb_devices) {
-        fprintf(stderr, "No device found for %s\n", dev.ib_name);
+        fprintf(stderr, "No device found for %s\n", dev->ib_name);
         goto free_devices;
     }
-    LOG(INFO) << "Found device: " << dev.ib_name << " at index " << i
-              << " with gid_idx " << gid_idx;
+    DCHECK(i == dev_idx);
+    LOG(INFO) << "Found device: " << dev->ib_name << " at index " << i
+              << " with gid_idx " << EFA_GID_IDX;
 
     // Open the device.
     memset(&dev_attr, 0, sizeof(dev_attr));
@@ -62,7 +64,7 @@ void EFAFactory::InitDev(int gid_idx) {
     }
 
     // Currently, we only use one port.
-    if (dev_attr.phys_port_cnt != EFA_PORT_NUM /* 1 */) {
+    if (dev_attr.phys_port_cnt != IB_PORT_NUM /* 1 */) {
         fprintf(stderr, "Only one port is supported\n");
         goto close_device;
     }
@@ -83,20 +85,20 @@ void EFAFactory::InitDev(int gid_idx) {
         goto close_device;
     }
 
-    dev.dev_attr = dev_attr;
-    dev.port_attr = port_attr;
-    dev.efa_port_num = EFA_PORT_NUM;
-    dev.gid_idx = gid_idx;
-    dev.context = context;
+    dev->dev_attr = dev_attr;
+    dev->port_attr = port_attr;
+    dev->dev_idx = dev_idx;
+    dev->ib_port_num = IB_PORT_NUM;
+    dev->context = context;
 
-    if (ibv_query_gid(context, EFA_PORT_NUM, gid_idx, &dev.gid)) {
+    if (ibv_query_gid(context, IB_PORT_NUM, EFA_GID_IDX, &dev->gid)) {
         perror("ibv_query_gid");
         goto close_device;
     }
 
     // Allocate a PD for this device.
-    dev.pd = ibv_alloc_pd(context);
-    if (dev.pd == nullptr) {
+    dev->pd = ibv_alloc_pd(context);
+    if (dev->pd == nullptr) {
         perror("ibv_alloc_pd");
         goto close_device;
     }
@@ -112,15 +114,14 @@ void EFAFactory::InitDev(int gid_idx) {
         // Test kernel DMA-BUF support with a dummy call (fd=-1)
         (void)ibv_reg_dmabuf_mr(pd, 0ULL /*offset*/, 0ULL /*len*/,
                                 0ULL /*iova*/, -1 /*fd*/, 0 /*flags*/);
-        dev.dma_buf_support =
+        dev->dma_buf_support =
             !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
         ibv_dealloc_pd(pd);
 
-        LOG(INFO) << "DMA-BUF support: " << dev.dma_buf_support;
+        LOG(INFO) << "DMA-BUF support: " << dev->dma_buf_support;
     }
 
-    efa_ctl.gid_2_dev_map.insert({gid_idx, efa_ctl.devices_.size()});
-    efa_ctl.devices_.push_back(dev);
+    efa_ctl.dev_map.insert({dev_idx, dev});
     return;
 
 close_device:
@@ -131,19 +132,18 @@ error:
     throw std::runtime_error("Failed to initialize EFAFactory");
 }
 
-EFASocket *EFAFactory::CreateSocket(int gid_idx, int socket_id) {
-    auto socket = new EFASocket(gid_idx, socket_id);
+EFASocket *EFAFactory::CreateSocket(int dev_idx, int socket_id) {
+    auto socket = new EFASocket(dev_idx, socket_id);
     std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
     efa_ctl.socket_q_.push_back(socket);
     return socket;
 }
 
-struct EFADevice *EFAFactory::GetEFADevice(int gid_idx) {
-    auto dev_idx_iter = efa_ctl.gid_2_dev_map.find(gid_idx);
-    DCHECK(dev_idx_iter != efa_ctl.gid_2_dev_map.end());
-    auto dev_idx = dev_idx_iter->second;
-    DCHECK(dev_idx >= 0 && dev_idx < efa_ctl.devices_.size());
-    return &efa_ctl.devices_[dev_idx];
+struct EFADevice *EFAFactory::GetEFADevice(int dev_idx) {
+    auto dev_iter = efa_ctl.dev_map.find(dev_idx);
+    DCHECK(dev_iter != efa_ctl.dev_map.end());
+    auto *dev = dev_iter->second;
+    return dev;
 }
 
 void EFAFactory::Shutdown() {
@@ -153,20 +153,19 @@ void EFAFactory::Shutdown() {
     }
     efa_ctl.socket_q_.clear();
 
-    efa_ctl.devices_.clear();
-    efa_ctl.gid_2_dev_map.clear();
+    efa_ctl.dev_map.clear();
 }
 
-EFASocket::EFASocket(int gid_idx, int socket_id)
+EFASocket::EFASocket(int dev_idx, int socket_id)
     : next_qp_idx_for_send_(0),
-      gid_idx_(gid_idx),
+      dev_idx_(dev_idx),
       socket_id_(socket_id),
       unpolled_send_wrs_(0),
       recv_queue_wrs_(0) {
-    LOG(INFO) << "[AF_XDP] creating gid_idx " << gid_idx_ << " socket_id "
+    LOG(INFO) << "[AF_XDP] creating dev_idx_ " << dev_idx_ << " socket_id "
               << socket_id;
 
-    auto *factory_dev = EFAFactory::GetEFADevice(gid_idx);
+    auto *factory_dev = EFAFactory::GetEFADevice(dev_idx);
     context_ = factory_dev->context;
     pd_ = factory_dev->pd;
     gid_ = factory_dev->gid;
@@ -249,7 +248,7 @@ struct ibv_qp *EFASocket::create_qp(struct ibv_cq *send_cq,
     struct ibv_qp_attr attr = {};
     attr.qp_state = IBV_QPS_INIT;
     attr.pkey_index = 0;
-    attr.port_num = EFA_PORT_NUM;
+    attr.port_num = IB_PORT_NUM;
     attr.qkey = QKEY;
     if (ibv_modify_qp(
             qp, &attr,
@@ -276,33 +275,12 @@ struct ibv_qp *EFASocket::create_qp(struct ibv_cq *send_cq,
     return qp;
 }
 
-void EFASocket::create_ah(uint8_t remote_gid_idx, union ibv_gid remote_gid) {
-    struct ibv_ah_attr ah_attr = {};
-
-    ah_attr.is_global = 1;  // Enable Global Routing Header (GRH)
-    ah_attr.port_num = EFA_PORT_NUM;
-    ah_attr.grh.sgid_index = gid_idx_;  // Local GID index
-    ah_attr.grh.dgid = remote_gid;      // Destination GID
-    ah_attr.grh.flow_label = 0;
-    ah_attr.grh.hop_limit = 255;
-    ah_attr.grh.traffic_class = 0;
-
-    struct ibv_ah *ah = ibv_create_ah(pd_, &ah_attr);
-    if (!ah) {
-        perror("Failed to create AH");
-        exit(1);
-    }
-
-    DCHECK(remote_gid_idx <= 255) << "remote_gid_idx too large";
-    ah_list_[remote_gid_idx] = ah;
-}
-
 uint32_t EFASocket::send_packet(FrameDesc *frame) {
     struct ibv_sge sge[2] = {{0}, {0}};
     struct ibv_send_wr send_wr = {0}, *bad_send_wr;
     struct ibv_qp *src_qp;
 
-    auto dest_gid_idx = frame->get_dest_gid_idx();
+    auto dest_ah = frame->get_dest_ah();
     auto dest_qpn = frame->get_dest_qpn();
 
     if (frame->get_pkt_data_len() == 0) {
@@ -324,12 +302,13 @@ uint32_t EFASocket::send_packet(FrameDesc *frame) {
         src_qp = qp_list_[src_qp_idx];
 
         frame->set_src_qp_idx(src_qp_idx);
+        LOG(INFO) << "send_packet with two sge";
     }
 
     send_wr.wr_id = (uint64_t)frame;
     send_wr.opcode = IBV_WR_SEND;
     send_wr.sg_list = sge;
-    send_wr.wr.ud.ah = ah_list_[dest_gid_idx];
+    send_wr.wr.ud.ah = dest_ah;
     send_wr.wr.ud.remote_qpn = dest_qpn;
     send_wr.wr.ud.remote_qkey = QKEY;
     send_wr.send_flags = IBV_SEND_SIGNALED;
@@ -349,7 +328,7 @@ uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
     struct ibv_qp *src_qp;
 
     for (auto *frame : frames) {
-        auto dest_gid_idx = frame->get_dest_gid_idx();
+        auto dest_ah = frame->get_dest_ah();
         auto dest_qpn = frame->get_dest_qpn();
 
         if (frame->get_pkt_data_len() == 0) {
@@ -376,7 +355,7 @@ uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
         send_wr.wr_id = (uint64_t)frame;
         send_wr.opcode = IBV_WR_SEND;
         send_wr.sg_list = sge;
-        send_wr.wr.ud.ah = ah_list_[dest_gid_idx];
+        send_wr.wr.ud.ah = dest_ah;
         send_wr.wr.ud.remote_qpn = dest_qpn;
         send_wr.wr.ud.remote_qkey = QKEY;
         send_wr.send_flags = IBV_SEND_SIGNALED;

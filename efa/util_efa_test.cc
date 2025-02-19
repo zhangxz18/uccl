@@ -16,16 +16,9 @@ using namespace uccl;
 
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 
-volatile bool quit;
-
-void clean_shutdown_handler(int signal) {
-    (void)signal;
-    quit = true;
-}
-
 // Exchange QPNs and GIDs via TCP
-void exchange_qpns(const char *peer_ip, ConnMetadata *local_metadata,
-                   ConnMetadata *remote_metadata) {
+void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
+                   ConnMeta *remote_metadata) {
     int sock;
     struct sockaddr_in addr;
     char mode = peer_ip ? 'c' : 's';
@@ -59,11 +52,11 @@ void exchange_qpns(const char *peer_ip, ConnMetadata *local_metadata,
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
     // Send local QPN and GID
-    if (send(sock, local_metadata, sizeof(ConnMetadata), 0) <= 0)
+    if (send(sock, local_metadata, sizeof(ConnMeta), 0) <= 0)
         perror("send() failed");
 
     // Receive remote QPN and GID
-    if (recv(sock, remote_metadata, sizeof(ConnMetadata), 0) <= 0)
+    if (recv(sock, remote_metadata, sizeof(ConnMeta), 0) <= 0)
         perror("recv() timeout");
 
     close(sock);
@@ -71,14 +64,12 @@ void exchange_qpns(const char *peer_ip, ConnMetadata *local_metadata,
 }
 
 void run_server() {
-    auto *socket = EFAFactory::CreateSocket(GID_INDEX_LIST[0], 0);
+    auto *socket = EFAFactory::CreateSocket(0, 0);
 
-    auto local_meta = new ConnMetadata();
+    auto local_meta = new ConnMeta();
     socket->get_conn_metadata(local_meta);
-    auto remote_meta = new ConnMetadata();
+    auto remote_meta = new ConnMeta();
     exchange_qpns(nullptr, local_meta, remote_meta);
-
-    socket->create_ah(remote_meta->gid_idx, remote_meta->gid);
 
     std::vector<FrameDesc *> frames;
     do {
@@ -96,14 +87,15 @@ void run_server() {
 }
 
 void run_client(const char *server_ip) {
-    auto *socket = EFAFactory::CreateSocket(GID_INDEX_LIST[0], 0);
+    auto *socket = EFAFactory::CreateSocket(0, 0);
 
-    auto local_meta = new ConnMetadata();
+    auto local_meta = new ConnMeta();
     socket->get_conn_metadata(local_meta);
-    auto remote_meta = new ConnMetadata();
+    auto remote_meta = new ConnMeta();
     exchange_qpns(server_ip, local_meta, remote_meta);
 
-    socket->create_ah(remote_meta->gid_idx, remote_meta->gid);
+    auto *dev = EFAFactory::GetEFADevice(0);
+    auto *dest_ah = dev->create_ah(remote_meta->gid);
 
     // Send a packet
     auto frame_desc = socket->pop_frame_desc();
@@ -111,7 +103,7 @@ void run_client(const char *server_ip) {
     auto pkt_data = socket->pop_pkt_data();
     auto *frame = FrameDesc::Create(frame_desc, pkt_hdr, pkt_data,
                                     kUcclPktHdrLen, kUcclPktdataLen, 0);
-    frame->set_dest_gid_idx(remote_meta->gid_idx);
+    frame->set_dest_ah(dest_ah);
     frame->set_dest_qpn(remote_meta->qpn_list[0]);
 
     strcpy((char *)pkt_hdr, "Hello World");
@@ -138,12 +130,6 @@ int main(int argc, char *argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
-
-    signal(SIGINT, clean_shutdown_handler);
-    signal(SIGTERM, clean_shutdown_handler);
-    signal(SIGHUP, clean_shutdown_handler);
-    signal(SIGALRM, clean_shutdown_handler);
-    alarm(10);
 
     std::once_flag init_flag;
     std::call_once(init_flag, []() { EFAFactory::Init(); });
