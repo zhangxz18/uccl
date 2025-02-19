@@ -302,7 +302,6 @@ uint32_t EFASocket::send_packet(FrameDesc *frame) {
         src_qp = qp_list_[src_qp_idx];
 
         frame->set_src_qp_idx(src_qp_idx);
-        LOG(INFO) << "send_packet with two sge";
     }
 
     send_wr.wr_id = (uint64_t)frame;
@@ -488,6 +487,7 @@ void EFASocket::post_recv_wrs(uint32_t budget, uint32_t qp_idx) {
         auto *frame_desc = FrameDesc::Create(
             frame_desc_buf, pkt_hdr_buf, pkt_data_buf,
             PktHdrBuffPool::kPktHdrSize, PktDataBuffPool::kPktDataSize, 0);
+        frame_desc->set_src_qp_idx(qp_idx);
 
         // recv size does not need to exactly match send size. But we need limit
         // the hdr sge to exactly match hdr size, so that we can split hdr and
@@ -523,6 +523,7 @@ void EFASocket::post_recv_wrs_for_ctrl(uint32_t budget) {
 
         auto *frame_desc = FrameDesc::Create(frame_desc_buf, pkt_hdr_buf, 0,
                                              PktHdrBuffPool::kPktHdrSize, 0, 0);
+        frame_desc->set_src_qp_idx(kMaxPath);
 
         // recv size does not need to exactly match send size.
         struct ibv_sge sge[1] = {{(uintptr_t)pkt_hdr_buf,

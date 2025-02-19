@@ -185,7 +185,7 @@ class FrameDesc {
         return new (reinterpret_cast<void *>(frame_desc_addr)) FrameDesc(
             pkt_hdr_addr, pkt_data_addr, pkt_hdr_len, pkt_data_len, msg_flags);
     }
-    uint32_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
+    uint64_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
     uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
     uint8_t get_pkt_hdr_len() const { return pkt_hdr_len_; }
     uint8_t get_pkt_data_len() const { return pkt_data_len_; }
