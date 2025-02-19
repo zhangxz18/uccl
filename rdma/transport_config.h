@@ -8,9 +8,12 @@
 
 #define CLOUDLAB_DEV
 
-// #define STATS
+#define STATS
 
 /// Interface configuration.
+static const uint32_t MAX_PEER = 256;
+// Maximum number of flows (one-way) on each engine.
+static const uint32_t MAX_FLOW = 256;
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 #ifdef CLOUDLAB_DEV
 static const bool USE_ROCE = true;
@@ -106,11 +109,9 @@ static const uint32_t kMaxInline = 512;
 // Maximum number of SGEs in one WQE.
 static const uint32_t kMaxSge = 1;
 // Maximum number of outstanding receive messages in one recv request.
-static const uint32_t kMaxRecv = 8;
-// EQDS only supports one outstanding message per posting.
-static const uint32_t kNCCLMaxRecv = kReceiverCCA == kReceiverEQDS ? 1 : kMaxRecv;
+static const uint32_t kMaxRecv = 1;
 // Maximum number of outstanding receive requests in one engine.
-static const uint32_t kMaxReq = 32 * kMaxRecv;
+static const uint32_t kMaxReq = 256;
 // Maximum number of WQEs in SRQ (Shared Receive Queue).
 static const uint32_t kMaxSRQ = 64 * kMaxReq;
 // Maximum number of WQEs in Retr RQ.
@@ -134,7 +135,7 @@ static const std::size_t kSackBitmapSize = 64 << 1;
 // This is true for flow-level ECMP, which is the common case.
 // When the network supports adaptive routing, duplicate acks may be caused by adaptive routing.
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
-static const std::size_t kFastRexmitDupAckThres = 1;
+static const std::size_t kFastRexmitDupAckThres = 16;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static const uint32_t kRTOAbortThreshold = 50;
@@ -161,5 +162,5 @@ static const bool kTestConstantRate = false;
 static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
-static const bool kTestNoRTO = false;
+static const bool kTestNoRTO = true;
 /// Debugging and testing.

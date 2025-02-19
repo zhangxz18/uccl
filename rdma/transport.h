@@ -68,6 +68,7 @@ class Channel {
         enum Op : uint8_t {
             // Endpoint --> Engine
             kInstallCtx = 0,
+            kInstallFlow,
         };
         Op opcode;
         PeerID peer_id;
@@ -191,6 +192,13 @@ class UcclRDMAEngine {
      * @param ctrl_work 
      */
     void handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work);
+
+    /**
+     * @brief Install a new UcclFlow on the engine.
+     * 
+     * @param ctrl_work 
+     */
+    void handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work);
 
     inline bool need_sync(uint64_t now) {
         return now - last_sync_clock_tsc_ > ns_to_cycles(kSyncClockIntervalNS, freq_ghz);
@@ -340,9 +348,9 @@ class RDMAEndpoint {
 
     int test_listen_fds_[NUM_DEVICES];
 
-    std::mutex fd_map_mu_;
+    std::mutex fd_vec_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
-    std::unordered_map<FlowID, int> fd_map_;
+    std::vector<int> fd_vec_;
 
     // Peer map for connecting/accepting
     std::unordered_map<UcclPeer, PeerInfo, UcclPeerHash> peer_map_[NUM_DEVICES];
@@ -350,8 +358,10 @@ class RDMAEndpoint {
 
     PeerID next_peer_id_[NUM_DEVICES] = {};
 
-    // UcclFlow map
-    std::unordered_map<FlowID, UcclFlow *> active_flows_map_[NUM_DEVICES];
+    Spin flow_id_spin_[NUM_DEVICES][MAX_PEER];
+    FlowID next_flow_id_[NUM_DEVICES][MAX_PEER] = {};
+
+    std::vector<UcclFlow *> active_flows_vec_[NUM_DEVICES];
     Spin active_flows_spin_[NUM_DEVICES];
 
    public:
@@ -421,7 +431,9 @@ class RDMAEndpoint {
 
    private:
 
-    PollCtx *install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta);
+    PollCtx *install_ctx_on_engine(uint32_t engine_idx, PeerID peer_id, union CtrlMeta meta);
+
+    PollCtx *install_flow_on_engine(uint32_t engine_idx, PeerID peer_id, union CtrlMeta meta);
 
     /**
      * @brief Safely install context on all engines serving the device.
@@ -443,6 +455,8 @@ class RDMAEndpoint {
     PeerID *peer_id, struct RemoteRDMAContext *remote_ctx);
 
     void install_ctx_on_engines(int fd, int dev, PeerID peer_id, struct RemoteRDMAContext *remote_ctx);
+
+    void install_flow_on_engines(int dev, PeerID peer_id, FlowID flow_id, UcclFlow *flow, bool is_send);
     
     inline void put_load_on_engine(int engine_id);
     
@@ -472,6 +486,28 @@ class RDMAEndpoint {
     friend class UcclFlow;
 };
 
+struct SubUcclFlow {
+
+    uint32_t fid_;
+
+    // # of chunks in the timing wheel.
+    uint32_t in_wheel_cnt_ = 0;
+
+    // States for tracking sent chunks.
+    TXTracking txtracking;
+    // States for tracking received chunks.
+    RXTracking rxtracking;
+
+    // Sender congestion control state.
+    swift::Pcb pcb;
+
+    // Whether RTO is armed for the flow.
+    bool rto_armed = false;
+
+    // We use list_empty(&flow->ack.ack_link) to check if it has pending ACK to send.
+    struct ack_item ack;
+};
+
 /**
  * @class UcclFlow, a connection between a local and a remote NIC.
  * @brief Class to abstract the components and functionality of a single flow.
@@ -484,13 +520,15 @@ class UcclFlow {
    
    public:
 
+    struct SubUcclFlow sub_flows_[NUM_ENGINES];
+
     // Per-path cc states.
     Timely cc_pp_[kPortEntropy * NUM_ENGINES];
 
     // Global cc states.
     Timely cc_[NUM_ENGINES];
 
-    UcclFlow(RDMAEndpoint *ep, int bootstrap_fd, int dev, 
+    UcclFlow(RDMAEndpoint *ep,  int bootstrap_fd, int dev, 
         PeerID peer_id, FlowID flow_id, struct RemoteRDMAContext remote_ctx, std::string remote_ip, int remote_dev, bool is_send) : 
         ep_(ep), dev_(dev), 
             peer_id_(peer_id), flow_id_(flow_id), remote_ctx_(remote_ctx), remote_ip_(remote_ip), remote_dev_(remote_dev), is_send_(is_send) {
@@ -501,6 +539,9 @@ class UcclFlow {
         }
 
         for (int i = 0; i < NUM_ENGINES; i++) {
+            sub_flows_[i].fid_ = flow_id;
+            INIT_LIST_HEAD(&sub_flows_[i].ack.ack_link);
+            sub_flows_[i].ack.subflow = &sub_flows_[i];
             cc_[i] = Timely(freq_ghz, kLinkBandwidth);
         }
         

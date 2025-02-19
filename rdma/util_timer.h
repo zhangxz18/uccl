@@ -149,7 +149,7 @@ class TscTimer {
 
 struct TimerData {
     void *rdma_ctx;
-    void *qpw;
+    void *flow;
 };
 
 class TimerManager {
@@ -159,37 +159,37 @@ public:
     explicit TimerManager(double timeout_us = 1000) 
         : timeout_(us_to_cycles(timeout_us, freq_ghz)) {
         heap_.reserve(kPortEntropy * 64);
-        qpw_map_.reserve(kPortEntropy * 64);
+        flow_map_.reserve(kPortEntropy * 64);
     }
 
     void arm_timer(struct TimerData data) {
-        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+        if (auto it = flow_map_.find(data.flow); it != flow_map_.end()) {
             // Already being armed, do nothing.
         } else {
             // Add new timer.
              const CycleCount new_expire = rdtsc() + timeout_;
             heap_.push_back({new_expire, data});
-            qpw_map_[data.qpw] = heap_.size() - 1;
+            flow_map_[data.flow] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);
         }
     }
 
     void arm_timer(struct TimerData data, double timeout_us) {
         auto timeout = us_to_cycles(timeout_us, freq_ghz);
-        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+        if (auto it = flow_map_.find(data.flow); it != flow_map_.end()) {
             // Already being armed, do nothing.
         } else {
             // Add new timer.
              const CycleCount new_expire = rdtsc() + timeout;
             heap_.push_back({new_expire, data});
-            qpw_map_[data.qpw] = heap_.size() - 1;
+            flow_map_[data.flow] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);
         }
     }
 
     void rearm_timer(struct TimerData data) {
         const CycleCount new_expire = rdtsc() + timeout_;
-        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+        if (auto it = flow_map_.find(data.flow); it != flow_map_.end()) {
             // Update existing timer.
             const size_t index = it->second;
             heap_[index].expire = new_expire;
@@ -197,7 +197,7 @@ public:
         } else {
             // Add new timer.
             heap_.push_back({new_expire, data});
-            qpw_map_[data.qpw] = heap_.size() - 1;
+            flow_map_[data.flow] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);
         }
     }
@@ -205,7 +205,7 @@ public:
     void rearm_timer(struct TimerData data, double timeout_us) {
         auto timeout = us_to_cycles(timeout_us, freq_ghz);
         const CycleCount new_expire = rdtsc() + timeout;
-        if (auto it = qpw_map_.find(data.qpw); it != qpw_map_.end()) {
+        if (auto it = flow_map_.find(data.flow); it != flow_map_.end()) {
             // Update existing timer.
             const size_t index = it->second;
             heap_[index].expire = new_expire;
@@ -213,7 +213,7 @@ public:
         } else {
             // Add new timer.
             heap_.push_back({new_expire, data});
-            qpw_map_[data.qpw] = heap_.size() - 1;
+            flow_map_[data.flow] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);
         }
     }
@@ -224,11 +224,11 @@ public:
         
         while (!heap_.empty() && heap_[0].expire <= now) {
             expired.push_back(heap_[0].data);
-            qpw_map_.erase(heap_[0].data.qpw);
+            flow_map_.erase(heap_[0].data.flow);
             
             if (heap_.size() > 1) {
                 heap_[0] = heap_.back();
-                qpw_map_[heap_[0].data.qpw] = 0;
+                flow_map_[heap_[0].data.flow] = 0;
             }
             heap_.pop_back();
             
@@ -240,17 +240,17 @@ public:
     }
 
     void disarm_timer(struct TimerData data) {
-        auto it = qpw_map_.find(data.qpw);
-        if (it == qpw_map_.end()) return;
+        auto it = flow_map_.find(data.flow);
+        if (it == flow_map_.end()) return;
 
         const size_t index = it->second;
-        qpw_map_.erase(data.qpw);
+        flow_map_.erase(data.flow);
 
         if (index == heap_.size() - 1) {
             heap_.pop_back();
         } else {
             heap_[index] = heap_.back();
-            qpw_map_[heap_[index].data.qpw] = index;
+            flow_map_[heap_[index].data.flow] = index;
             heap_.pop_back();
 
             adjust_heap_node(index);
@@ -268,7 +268,7 @@ private:
     };
 
     std::vector<TimerNode> heap_;
-    std::unordered_map<void*, size_t> qpw_map_;
+    std::unordered_map<void*, size_t> flow_map_;
     const CycleCount timeout_;
 
     void heapify_up(size_t index) {
@@ -316,8 +316,8 @@ private:
 
     void swap_nodes(size_t a, size_t b) {
         std::swap(heap_[a], heap_[b]);
-        qpw_map_[heap_[a].data.qpw] = a;
-        qpw_map_[heap_[b].data.qpw] = b;
+        flow_map_[heap_[a].data.flow] = a;
+        flow_map_[heap_[b].data.flow] = b;
     }
 };
 

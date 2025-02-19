@@ -354,13 +354,13 @@ void UcclRDMAEngine::handle_rto() {
 
     for (auto data : expired_qp_vec) {
         auto *rdma_ctx = reinterpret_cast<struct RDMAContext *>(data.rdma_ctx);
-        auto *qpw = reinterpret_cast<struct UCQPWrapper *>(data.qpw);
+        auto *subflow = reinterpret_cast<struct SubUcclFlow *>(data.flow);
 
-        DCHECK(rdma_ctx && qpw);
+        DCHECK(rdma_ctx && subflow);
         
-        rdma_ctx->mark_qp_timeout(qpw);
+        rdma_ctx->mark_flow_timeout(subflow);
 
-        rdma_ctx->rto_retransmit(qpw);
+        rdma_ctx->rto_retransmit(subflow);
     }
 }
 
@@ -374,10 +374,34 @@ void UcclRDMAEngine::process_ctl_reqs() {
                     VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kInstallCtx";
                     handle_install_ctx_on_engine(ctrl_work);
                 break;
+            case Channel::CtrlMsg::kInstallFlow:
+                    VLOG(6) << "[Engine#" << engine_idx_ << "] " << "kInstallFlow";
+                    handle_install_flow_on_engine(ctrl_work);
+                break;
             default:
                 break;
         }
     }
+}
+
+void UcclRDMAEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work)
+{
+    DCHECK(rdma_ctx_map_.find(ctrl_work.peer_id) != rdma_ctx_map_.end());
+    
+    auto *rdma_ctx = rdma_ctx_map_[ctrl_work.peer_id];
+    auto *poll_ctx = ctrl_work.poll_ctx;
+    auto flow_id = ctrl_work.meta.install_flow.flow_id;
+    auto *flow = reinterpret_cast<UcclFlow *>(ctrl_work.meta.install_flow.context);
+    auto is_send = ctrl_work.meta.install_flow.is_send;
+    
+    DCHECK(flow_id < MAX_FLOW);
+
+    if (is_send)
+        rdma_ctx->sender_flow_tbl_[flow_id] = flow;
+    else
+        rdma_ctx->receiver_flow_tbl_[flow_id] = flow;
+
+    uccl_wakeup(poll_ctx);
 }
 
 void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
@@ -392,9 +416,9 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
     RDMAContext *rdma_ctx;
 
     {
-        DCHECK(rdma_ctx_map_.find(info->peer_id) == rdma_ctx_map_.end());
-        rdma_ctx = RDMAFactory::CreateContext(&rto_tm_, dev, engine_idx_ % NUM_ENGINES, meta);
-        std::tie(std::ignore, ret) = rdma_ctx_map_.insert({info->peer_id, rdma_ctx});
+        DCHECK(rdma_ctx_map_.find(ctrl_work.peer_id) == rdma_ctx_map_.end());
+        rdma_ctx = RDMAFactory::CreateContext(ctrl_work.peer_id, &rto_tm_, dev, engine_idx_ % NUM_ENGINES, meta);
+        std::tie(std::ignore, ret) = rdma_ctx_map_.insert({ctrl_work.peer_id, rdma_ctx});
         DCHECK(ret);
     }
 
@@ -547,12 +571,11 @@ RDMAEndpoint::~RDMAEndpoint() {
     for (auto &engine : engine_vec_) engine->release();
 
     for (int dev = 0; dev < num_devices_; dev++) {
-        for (auto &it: active_flows_map_[dev]) {
-            auto flow = it.second;
-            flow->release();
+
+        for (auto &flow : active_flows_vec_[dev]) {
             delete flow;
         }
-        active_flows_map_[dev].clear();
+        active_flows_vec_[dev].clear();
 
         peer_map_[dev].clear();
 
@@ -564,8 +587,8 @@ RDMAEndpoint::~RDMAEndpoint() {
     delete ctx_pool_;
     delete[] ctx_pool_buf_;
 
-    for (auto &[flow_id, boostrap_fd] : fd_map_) {close(boostrap_fd);}
-    fd_map_.clear();
+    for (auto &boostrap_fd : fd_vec_) {close(boostrap_fd);}
+    fd_vec_.clear();
 
     {
         std::lock_guard<std::mutex> lock(stats_mu_);
@@ -576,13 +599,31 @@ RDMAEndpoint::~RDMAEndpoint() {
     stats_thread_.join();
 }
 
-PollCtx *RDMAEndpoint::install_ctx_on_engine(uint32_t engine_idx, union CtrlMeta meta)
+PollCtx *RDMAEndpoint::install_flow_on_engine(uint32_t engine_idx, PeerID peer_id, union CtrlMeta meta)
+{
+    auto *cmdq = channel_vec_[engine_idx]->ctrl_cmdq_;
+
+    auto *poll_ctx = ctx_pool_->pop();
+    Channel::CtrlMsg ctrl_msg = {
+        .opcode = Channel::CtrlMsg::Op::kInstallFlow,
+        .peer_id = peer_id,
+        .meta = meta,
+        .poll_ctx = poll_ctx,
+    };
+
+    while (jring_mp_enqueue_bulk(cmdq, &ctrl_msg, 1, nullptr) != 1) {}
+
+    return poll_ctx;
+}
+
+PollCtx *RDMAEndpoint::install_ctx_on_engine(uint32_t engine_idx, PeerID peer_id, union CtrlMeta meta)
 {
     auto *cmdq = channel_vec_[engine_idx]->ctrl_cmdq_;
     
     auto *poll_ctx = ctx_pool_->pop();
     Channel::CtrlMsg ctrl_msg = {
         .opcode = Channel::CtrlMsg::Op::kInstallCtx,
+        .peer_id = peer_id,
         .meta = meta,
         .poll_ctx = poll_ctx,
     };
@@ -653,6 +694,24 @@ void RDMAEndpoint::safe_install_ctx(int dev, int bootstrap_fd, bool local_lock_f
     }
 }
 
+void RDMAEndpoint::install_flow_on_engines(int dev, PeerID peer_id, FlowID flow_id, UcclFlow *flow, bool is_send)
+{
+    union CtrlMeta meta = {};
+    auto *info = &meta.install_flow;
+
+    info->flow_id = flow_id;
+    info->context= flow;
+    info->is_send = is_send;
+
+    for (int i = 0; i < num_engines_per_dev_; i++) {
+        auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
+        auto *poll_ctx = install_flow_on_engine(engine_idx, peer_id, meta);
+        uccl_poll(poll_ctx);
+    }
+
+    VLOG(5) << "Installed flow " << flow_id << " on all engines";
+}
+
 void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struct RemoteRDMAContext *remote_ctx)
 {
     union CtrlMeta meta = {};
@@ -673,11 +732,10 @@ void RDMAEndpoint::install_ctx_on_engines(int fd, int dev, PeerID peer_id, struc
     DCHECK(ret == sizeof(ibv_port_attr)) << "Failed to receive PortAttr";
 
     info->bootstrap_fd = fd;
-    info->peer_id = peer_id;
 
     for (int i = 0; i < num_engines_per_dev_; i++) {
         auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
-        auto *poll_ctx = install_ctx_on_engine(engine_idx, meta);
+        auto *poll_ctx = install_ctx_on_engine(engine_idx, peer_id, meta);
         uccl_poll(poll_ctx);
     }
 
@@ -692,6 +750,9 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int remote_dev, std::string remote_ip
     int ret;
     int bootstrap_fd;
     bool local_lock_first = false;
+    PeerID peer_id;
+    struct RemoteRDMAContext remote_ctx;
+    FlowID flow_id;
 
     bootstrap_fd = socket(AF_INET, SOCK_STREAM, 0);
     DCHECK(bootstrap_fd >= 0) << "uccl_connect: socket()";
@@ -724,32 +785,12 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int remote_dev, std::string remote_ip
     int flag = 1;
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
+    
+    // Step1: send our device ID to the server.
+    ret = send_message(bootstrap_fd, &dev, sizeof(int));
+    DCHECK(ret == sizeof(int)) << "uccl_connect: send_message()";
 
-    FlowID flow_id;
-    while (true) {
-        ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
-        DCHECK(ret == sizeof(FlowID)) << "uccl_connect: receive_message()";
-
-        // Check if the flow ID is unique, and return it to the server.
-        bool unique;
-        {
-            std::lock_guard<std::mutex> lock(fd_map_mu_);
-            unique =
-                (fd_map_.find(flow_id) == fd_map_.end());
-            if (unique) fd_map_[flow_id] = bootstrap_fd;
-        }
-
-        ret = send_message(bootstrap_fd, &unique, sizeof(bool));
-        DCHECK(ret == sizeof(bool)) << "uccl_connect: send_message()";
-
-        if (unique) {
-            // Send our device ID to the server.
-            ret = send_message(bootstrap_fd, &dev, sizeof(int));
-            DCHECK(ret == sizeof(int)) << "uccl_connect: send_message()";
-            break;
-        }
-    }
-
+    // Step2: determine the lock order.
     if (str_to_ip(factory_dev->local_ip_str.c_str()) < str_to_ip(remote_ip.c_str())) {
         local_lock_first = true;
     } else if (str_to_ip(factory_dev->local_ip_str.c_str()) == str_to_ip(remote_ip.c_str())) {
@@ -757,20 +798,21 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int remote_dev, std::string remote_ip
         if (dev < remote_dev) local_lock_first = true;
     }
 
-    PeerID peer_id;
-    struct RemoteRDMAContext remote_ctx;
-
+    // Step3: install RDMAContexts on both sides if needed.
     safe_install_ctx(dev, bootstrap_fd, local_lock_first, remote_ip, remote_dev, &peer_id, &remote_ctx);
 
-    // Install flow on Endpoint.
+    // Step4: negotiate FlowID with server.
+    ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+    DCHECK(ret == sizeof(FlowID)) << "uccl_connect: receive_message()";
+
+    // Step5: create a new UcclFlow.
     auto *flow = new UcclFlow(this, bootstrap_fd, dev, peer_id, flow_id, remote_ctx, remote_ip, remote_dev, true);
     DCHECK(flow);
-    {
-        active_flows_spin_[dev].Lock();
-        std::tie(std::ignore, ret) = active_flows_map_[dev].insert({flow_id, flow});
-        active_flows_spin_[dev].Unlock();
-        DCHECK(ret);
-    }
+    active_flows_spin_[dev].Lock();
+    active_flows_vec_[dev].push_back(flow);
+    active_flows_spin_[dev].Unlock();
+
+    install_flow_on_engines(dev, peer_id, flow_id, flow, true);
 
     return ConnID{.context = flow,
                   .flow_id = flow_id,
@@ -785,6 +827,9 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
     int bootstrap_fd;
     int ret;
     bool local_lock_first = false;
+    PeerID peer_id;
+    struct RemoteRDMAContext remote_ctx;
+    FlowID flow_id;
 
     bootstrap_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clien);
     DCHECK(bootstrap_fd >= 0) << "uccl_accept: accept()";
@@ -796,48 +841,12 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
     int flag = 1;
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
-     
-    // Generate unique flow ID for both client and server.
-    FlowID flow_id;
-    while (true) {
-        bool unique;
-        {
-            std::lock_guard<std::mutex> lock(fd_map_mu_);
-            // generate flow_id sequentially for better debugging
-            static uint64_t fff = 0;
-            flow_id = fff++;
-            unique = (fd_map_.find(flow_id) == fd_map_.end());
-            if (unique) {
-                // Speculatively insert the flow ID.
-                fd_map_[flow_id] = bootstrap_fd;
-            } else {
-                continue;
-            }
-        }
+    
+    // Step1: receive the remote_dev from client.
+    ret = receive_message(bootstrap_fd, remote_dev, sizeof(int));
+    DCHECK(ret == sizeof(int));
 
-        VLOG(5) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
-                  << flow_id;
-
-        // Let client use flow_id + 50000 and ask client if this is unique
-        FlowID cid = flow_id + 50000;
-        int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
-        DCHECK(ret == sizeof(FlowID));
-        bool unique_from_client;
-        ret = receive_message(bootstrap_fd, &unique_from_client, sizeof(bool));
-        DCHECK(ret == sizeof(bool));
-
-        if (unique_from_client) {
-            // Receive the remote_dev from client.
-            ret = receive_message(bootstrap_fd, remote_dev, sizeof(int));
-            DCHECK(ret == sizeof(int));
-            break;
-        } else {
-            // Remove the speculatively inserted flow ID.
-            std::lock_guard<std::mutex> lock(fd_map_mu_);
-            DCHECK(1 == fd_map_.erase(flow_id));
-        }
-    }
-
+    // Step2: determine the lock order.
     auto factory_dev = RDMAFactory::get_factory_dev(dev);
     if (str_to_ip(factory_dev->local_ip_str.c_str()) < str_to_ip(remote_ip.c_str())) {
         local_lock_first = true;
@@ -846,20 +855,31 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
         if (dev < *remote_dev) local_lock_first = true;
     }
 
-    PeerID peer_id;
-    struct RemoteRDMAContext remote_ctx;
-    
+    // Step3: install RDMAContexts on both sides if needed.
     safe_install_ctx(dev, bootstrap_fd, local_lock_first, remote_ip, *remote_dev, &peer_id, &remote_ctx);
+     
+    // Step4: negotiate FlowID with client.
+    flow_id_spin_[dev][peer_id].Lock();
+    flow_id = next_flow_id_[dev][peer_id]++;
+    flow_id_spin_[dev][peer_id].Unlock();
+    {
+        std::lock_guard<std::mutex> lock(fd_vec_mu_);
+        fd_vec_.push_back(bootstrap_fd);
+    }
+    ret = send_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+    DCHECK(ret == sizeof(FlowID));
 
-    // Install flow on Endpoint.
+    VLOG(5) << "[Endpoint] accept: propose FlowID: " << std::hex << "0x"
+              << flow_id << "for dev/peer: " << dev << "/" << peer_id;
+
+    // Step5: create a new UcclFlow.
     auto *flow = new UcclFlow(this, bootstrap_fd, dev, peer_id, flow_id, remote_ctx, remote_ip, *remote_dev, false);
     DCHECK(flow);
-    {
-        active_flows_spin_[dev].Lock();
-        std::tie(std::ignore, ret) = active_flows_map_[dev].insert({flow_id, flow});
-        active_flows_spin_[dev].Unlock();
-        DCHECK(ret);
-    }
+    active_flows_spin_[dev].Lock();
+    active_flows_vec_[dev].push_back(flow);
+    active_flows_spin_[dev].Unlock();
+
+    install_flow_on_engines(dev, peer_id, flow_id, flow, false);
 
     return ConnID{.context = flow,
                   .flow_id = flow_id,
@@ -985,7 +1005,6 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
         else
             ureq->poll_ctx = ctx_pool_->pop();
         ureq->context = flow;
-        ureq->send.nchunk = size < slots[i].size ? 1 : 0;
         ureq->send.tx_events = 0;
         // Track this request.
         ureqs[i] = ureq;

@@ -139,9 +139,6 @@ class WrExBuffPool : public BuffPool {
 };
 
 struct retr_chunk_hdr {
-    // Lossy QP index for the lost chunk.
-    uint32_t qidx;
-    uint32_t pad;
     // Target address for the lost chunk.
     uint64_t remote_addr;
 };
@@ -242,7 +239,7 @@ class IMMDataEQDS {
         uint32_t imm_data_;
 };
 
-class IMMData {
+class IMMDataRC {
     public:
         // High--------------------32bit----------------------Low
         //  |***Reserved***|  NCHUNK  |  CSN  |  RID  |  MID  |
@@ -252,8 +249,8 @@ class IMMData {
         constexpr static int kCSN = 11;
         constexpr static int kNCHUNK = kCSN + UINT_CSN_BIT;
 
-        IMMData(uint32_t imm_data):imm_data_(imm_data) {}
-        ~IMMData() = default;
+        IMMDataRC(uint32_t imm_data):imm_data_(imm_data) {}
+        ~IMMDataRC() = default;
 
         inline uint32_t GetNCHUNK(void) {
             return (imm_data_ >> kNCHUNK) & 0x3FF;
@@ -294,6 +291,71 @@ class IMMData {
     private:
         uint32_t imm_data_;    
 };
+
+class IMMData {
+    public:
+        // HINT: Indicates whether the last chunk of a message.
+        // CSN:  Chunk Sequence Number.
+        // RID:  Request ID.
+        // FID:  Flow Index.
+        // High-----------------32bit------------------Low
+        //  | HINT |  RESERVED  |  CSN  |  RID  |  FID  |
+        //    1bit      8bit       8bit    7bit    8bit
+        constexpr static int kFID = 0;
+        constexpr static int kRID = 8;
+        constexpr static int kCSN = 15;
+        constexpr static int kRESERVED = kCSN + UINT_CSN_BIT;
+        constexpr static int kHINT = kRESERVED + 8;
+
+        IMMData(uint32_t imm_data):imm_data_(imm_data) {}
+
+        inline uint32_t GetHINT(void) {
+            return (imm_data_ >> kHINT) & 0x1;
+        }
+
+        inline uint32_t GetRESERVED(void) {
+            return (imm_data_ >> kRESERVED) & 0xFF;
+        }
+
+        inline uint32_t GetCSN(void) {
+            return (imm_data_ >> kCSN) & UINT_CSN_MASK;
+        }
+
+        inline uint32_t GetRID(void) {
+            return (imm_data_ >> kRID) & 0x7F;
+        }
+
+        inline uint32_t GetFID(void) {
+            return (imm_data_ >> kFID) & 0xFF;
+        }
+
+        inline void SetHINT(uint32_t hint) {
+            imm_data_ |= (hint & 0x1) << kHINT;
+        }
+
+        inline void SetRESERVED(uint32_t reserved) {
+            imm_data_ |= (reserved & 0xFF) << kRESERVED;
+        }
+
+        inline void SetCSN(uint32_t csn) {
+            imm_data_ |= (csn & UINT_CSN_MASK) << kCSN;
+        }
+
+        inline void SetRID(uint32_t rid) {
+            imm_data_ |= (rid & 0x7F) << kRID;
+        }
+
+        inline void SetFID(uint32_t fid) {
+            imm_data_ |= (fid & 0xFF) << kFID;
+        }
+
+        inline uint32_t GetImmData(void) {
+            return imm_data_;
+        }
+
+    private:
+        uint32_t imm_data_;
+};
 /**
  * @brief Metadata for control messages.
  */
@@ -303,9 +365,15 @@ union CtrlMeta {
         union ibv_gid remote_gid;
         struct ibv_port_attr remote_port_attr;
         bool is_send;
-        PeerID peer_id;
         int bootstrap_fd;
     } install_ctx;
+
+    // kInstallFlow
+    struct {
+        FlowID flow_id;
+        void *context;
+        bool is_send;
+    } install_flow;
 };
 
 struct FifoItem {
@@ -380,7 +448,6 @@ struct ucclRequest {
             uint32_t rkey;
             uint32_t rid;
             uint32_t sent_offset;
-            uint32_t nchunk;
         } send;
     };
 };
@@ -449,7 +516,7 @@ struct RecvComm {
 class RXTracking {
     public:
 
-        std::set<UINT_CSN> ready_csn_;
+        std::set<std::pair<UINT_CSN, void*>> ready_csn_;
         
         RXTracking() = default;
         ~RXTracking() = default;
@@ -505,7 +572,7 @@ class TXTracking {
             return unacked_chunks_.front();
         }
 
-        uint64_t ack_transmitted_chunks(uint32_t engine_offset, uint32_t g_qpidx, uint32_t num_acked_chunks, 
+        uint64_t ack_transmitted_chunks(uint32_t engine_offset, RDMAContext *rdma_ctx, uint32_t num_acked_chunks, 
                 uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc, uint32_t *outstanding_bytes);
 
         inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
@@ -520,17 +587,12 @@ class TXTracking {
             return unacked_chunks_[track_idx].timestamp;
         }
 
-        inline void set_rdma_ctx(struct RDMAContext *rdma_ctx) {
-            rdma_ctx_ = rdma_ctx;
-        }
-
     private:
-        struct RDMAContext *rdma_ctx_ = nullptr;
         std::vector<TXTracking::ChunkTrack> unacked_chunks_;
 };
 
 struct ack_item {
-    uint32_t qpidx;
+    struct SubUcclFlow *subflow;
     struct list_head ack_link;
 };
 
@@ -541,18 +603,8 @@ struct ack_item {
 struct UCQPWrapper {
     struct ibv_qp *qp;
     uint32_t local_psn;
-    // # of chunks in the timing wheel for in-order within the same QP.
-    uint32_t in_wheel_cnt_ = 0;
     // A counter for occasionally posting IBV_SEND_SIGNALED flag.
     uint32_t signal_cnt_ = 0;
-    // States for tracking sent chunks.
-    TXTracking txtracking;
-    // States for tracking received chunks.
-    RXTracking rxtracking;
-    // We use list_empty(&qpw->ack.ack_link) to check if it has pending ACK to send.
-    struct ack_item ack;
-    bool rto_armed = false;
-    // Sender congestion control state.
     swift::Pcb pcb;
 };
 
@@ -561,13 +613,13 @@ struct UCQPWrapper {
  * Multiple SACKs are packed in a single packet transmitted through the Ctrl QP.
  */
 struct __attribute__((packed)) UcclSackHdr {
-    be16_t qpidx;  // QP index.
+    be16_t fid;    // Flow ID
     be32_t ackno;  // Sequence number to denote the packet counter in the flow.
+    be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
     be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
     be64_t sack_bitmap[kSackBitmapSize /
                        swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
                                                             // SACKs received.
-    be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
 };
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
 static_assert(kUcclSackHdrLen == 32, "UcclSackHdr size mismatch");
@@ -590,6 +642,9 @@ class RDMAContext {
         static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
 
         uint32_t engine_offset_;
+
+        void *sender_flow_tbl_[MAX_FLOW];
+        void *receiver_flow_tbl_[MAX_FLOW];
 
         // Track outstanding RECV requests.
         struct RecvRequest reqs_[kMaxReq];
@@ -622,45 +677,21 @@ class RDMAContext {
             VLOG(3) << "alloc_recvreq: nullptr";
             return nullptr;
         }
+        
+        PeerID peer_id_;
 
         TimerManager *rto_;
 
-        // Try to arm a timer for the given QP. If the timer is already armed, do nothing.
-        inline void arm_timer_for_qp(struct UCQPWrapper *qpw) {
-            if (!qpw->rto_armed) {
-                if constexpr (kConstRTO) {
-                    rto_->arm_timer({this, qpw});
-                } else {
-                    rto_->arm_timer({this, qpw}, std::max(kRTORTT * qpw->pcb.timely.get_avg_rtt(), kMinRTOUsec));
-                }
-                qpw->rto_armed = true;
-            }
-        }
+        // Try to arm a timer for the given flow. If the timer is already armed, do nothing.
+        void arm_timer_for_flow(void *context);
 
-        // Try to rearm a timer for the given QP. If the timer is not armed, arm it.
+        // Try to rearm a timer for the given flow. If the timer is not armed, arm it.
         // If the timer is already armed, rearm it.
-        inline void rearm_timer_for_qp(struct UCQPWrapper *qpw) {
-            if (qpw->rto_armed) {
-                if constexpr (kConstRTO) {
-                    rto_->rearm_timer({this, qpw});
-                } else {
-                    rto_->rearm_timer({this, qpw}, std::max(kRTORTT * qpw->pcb.timely.get_avg_rtt(), kMinRTOUsec));
-                }
-            } else {
-                arm_timer_for_qp(qpw);
-            }
-        }
+        void rearm_timer_for_flow(void *context);
 
-        inline void mark_qp_timeout(struct UCQPWrapper *qpw) {
-            qpw->rto_armed = false;
-        }
+        void mark_flow_timeout(void *context);
 
-        inline void disarm_timer_for_qp(struct UCQPWrapper *qpw) {
-            if (qpw->rto_armed) {
-                rto_->disarm_timer({this, qpw});
-                qpw->rto_armed = false;
-            }
-        }
+        void disarm_timer_for_flow(void *context);
 
         // Remote RDMA context.
         struct RemoteRDMAContext remote_ctx_;
@@ -765,8 +796,7 @@ class RDMAContext {
         inline bool can_use_last_choice(uint32_t msize) {
             bool cond1 = msize <= kMAXUseCacheQPSize;
             bool cond2 = consecutive_same_choice_bytes_ + msize <= kMAXConsecutiveSameChoiceBytes;
-            bool cond3 = dp_qps_[last_qp_choice_].in_wheel_cnt_ == 0;
-            if (cond1 && cond2 && cond3) {
+            if (cond1 && cond2) {
                 consecutive_same_choice_bytes_ += msize;
                 return true;
             }
@@ -807,19 +837,6 @@ class RDMAContext {
 
             // Return the QP with lower RTT.
             auto qpidx = dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
-            if (msize <= kBypassTimingWheelThres) {
-                if constexpr (kReceiverCCA == kReceiverNone) {
-                    if (dp_qps_[q1].in_wheel_cnt_ != 0 && dp_qps_[q2].in_wheel_cnt_ == 0) {
-                        // For small messages, we prefer the QP with no in-wheel chunks.
-                        qpidx = q2;
-                    }
-                } else {
-                    if (eqds_qp_cc_[q1].credit() <= 0 && eqds_qp_cc_[q2].credit() > 0) {
-                        // For small messages, we prefer the QP with credit.
-                        qpidx = q2;
-                    }
-                }
-            }
             last_qp_choice_ = qpidx;
             return qpidx;
         }
@@ -894,11 +911,10 @@ class RDMAContext {
         void check_srq(bool force = false);
 
         /**
-         * @brief Retransmit a chunk for the given data path QP.
-         * @param qpw 
+         * @brief Retransmit a chunk for the given subUcclFlow.
          * @param wr_ex 
          */
-        void retransmit_chunk(struct UCQPWrapper *qpw, struct wr_ex *wr_ex);
+        void retransmit_chunk(struct SubUcclFlow *subflow, struct wr_ex *wr_ex);
 
         /**
          * @brief Receive a chunk from the flow.
@@ -935,13 +951,12 @@ class RDMAContext {
         void rx_ack(uint64_t pkt_addr);
 
         /**
-         * @brief Craft an ACK for a data path QP using the given WR index.
+         * @brief Craft an ACK for a subUcclFlow using the given WR index.
          * 
-         * @param qpidx 
          * @param chunk_addr
          * @param num_sge
          */
-        void craft_ack(int qpidx, uint64_t chunk_addr, int num_sge);
+        void craft_ack(struct SubUcclFlow *subflow, uint64_t chunk_addr, int num_sge);
 
         /**
          * @brief Flush all ACKs in the batch.
@@ -960,20 +975,19 @@ class RDMAContext {
          * @brief Try to update the CSN for the given data path QP.
          * @param qpw 
          */
-        void try_update_csn(struct UCQPWrapper *qpw);
+        void try_update_csn(struct SubUcclFlow *subflow);
 
         /**
-         * @brief Retransmit chunks for the given QP.
-         * @param qpw 
+         * @brief Retransmit chunks for the given subUcclFlow.
          * @param rto 
          */
-        void __retransmit(struct UCQPWrapper *qpw, bool rto);
-        inline void fast_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, false); }
-        inline void rto_retransmit(struct UCQPWrapper *qpw) { __retransmit(qpw, true); }
+        void __retransmit(void *context, bool rto);
+        inline void fast_retransmit(void *context) { __retransmit(context, false); }
+        inline void rto_retransmit(void *context) { __retransmit(context, true); }
 
         std::string to_string();
 
-        RDMAContext(TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta);
+        RDMAContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta);
 
         ~RDMAContext(void);
         
@@ -1028,7 +1042,7 @@ class RDMAFactory {
          * @param meta 
          * @return RDMAContext* 
          */
-        static RDMAContext *CreateContext(TimerManager *rto, int dev, uint32_t engine_offset_, union CtrlMeta meta);
+        static RDMAContext *CreateContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t engine_offset_, union CtrlMeta meta);
         static inline struct FactoryDevice *get_factory_dev(int dev) {
             DCHECK(dev >= 0 && dev < rdma_ctl->devices_.size());
             return &rdma_ctl->devices_[dev];

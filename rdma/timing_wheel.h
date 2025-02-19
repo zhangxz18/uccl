@@ -123,8 +123,6 @@ struct timing_wheel_args_t {
 class TimingWheel {
    public:
 
-    uint64_t prev_tx_tsc_[kPortEntropy] = {};
-
     TimingWheel(timing_wheel_args_t args)
         : freq_ghz_(args.freq_ghz_),
         wslot_width_tsc_(args.wslot_width_tsc_),
@@ -155,7 +153,7 @@ class TimingWheel {
     // Queue a work request (i.e., one chunk) on the timing wheel.
     // Returns true if the work request was queued on the wheel.
     // Otherwise, the timing wheel was bypassed and the caller can transmit directly.
-    inline bool queue_on_timing_wheel(uint32_t qpidx, double target_rate, size_t *prev_desired_tx_tsc, 
+    inline bool queue_on_timing_wheel(double target_rate, size_t *prev_desired_tx_tsc, 
         size_t ref_tsc, void *wr, size_t chunk_size, bool allow_bypass) {
         if constexpr (kTestConstantRate)
             target_rate = Timely::gbps_to_rate(kLinkBandwidth);
@@ -169,11 +167,7 @@ class TimingWheel {
         size_t desired_tx_tsc = *prev_desired_tx_tsc + cycle_delta;
         desired_tx_tsc = (std::max)(desired_tx_tsc, ref_tsc);
 
-        // Avoid Out-of-Order TX within each QP.
-        desired_tx_tsc = (std::max)(desired_tx_tsc, prev_tx_tsc_[qpidx]);
-
         *prev_desired_tx_tsc = desired_tx_tsc;
-        prev_tx_tsc_[qpidx] = desired_tx_tsc;
 
         if (desired_tx_tsc == ref_tsc && allow_bypass) {
             return false;
