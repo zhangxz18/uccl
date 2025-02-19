@@ -872,6 +872,16 @@ void RDMAContext::check_srq(bool force)
 
 void RDMAContext::retransmit_chunk(struct SubUcclFlow *subflow, struct wr_ex *wr_ex)
 {
+    if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
+        poll_retr_cq();
+        // Try again.
+        if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
+            /// FIXME: We should tell caller that we cannot retransmit the chunk due to retransmission limit.
+            VLOG(5) << "Too many inflight retransmission chunks: " << inflight_retr_chunks_;
+            return;
+        }
+    }
+
     auto *lossy_qpw = &dp_qps_[wr_ex->qpidx];
     struct ibv_send_wr barrier_wr, retr_wr, *bad_wr;
     // Step1: Send a barrier WQE through the original lossy QP.

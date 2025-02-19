@@ -115,9 +115,9 @@ static const uint32_t kMaxReq = 256;
 // Maximum number of WQEs in SRQ (Shared Receive Queue).
 static const uint32_t kMaxSRQ = 64 * kMaxReq;
 // Maximum number of WQEs in Retr RQ.
-static const uint32_t kMaxRetr = 16;
+static const uint32_t kMaxRetr = 64;
 // Maximum number of outstanding retransmission chunks on all QPs.
-static const uint32_t kMaxInflightRetrChunks = 8;
+static const uint32_t kMaxInflightRetrChunks = 32;
 static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
 static const uint32_t kMaxBurstTW = 24;
@@ -162,5 +162,5 @@ static const bool kTestConstantRate = false;
 static const bool kTestLoss = false;
 static const double kTestLossRate = 0.0;
 // Disable RTO.
-static const bool kTestNoRTO = true;
+static const bool kTestNoRTO = false;
 /// Debugging and testing.
