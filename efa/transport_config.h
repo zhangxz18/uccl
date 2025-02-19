@@ -21,8 +21,8 @@ enum class CCType {
 };
 static constexpr CCType kCCType = CCType::kCubicPP;
 
-// #define P4D
-#define G6E
+#define P4D
+// #define G6E
 
 /// Interface configuration.
 #ifdef P4D

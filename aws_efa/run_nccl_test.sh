@@ -2,7 +2,7 @@
 
 # PLUGIN_PATH="/opt/aws-ofi-nccl/lib/libnccl-net.so" # for DL AMI ubuntu20
 PLUGIN_PATH="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so" # for DL AMI ubuntu22
-HOSTS="172.31.46.241,172.31.39.66,172.31.45.114,172.31.47.215"
+HOSTS="172.31.42.140,172.31.39.44,172.31.32.200,172.31.36.4"
 
 mpirun --bind-to none -np 4 -N 1 --host ${HOSTS} \
     --mca plm_rsh_args "-o StrictHostKeyChecking=no" \

@@ -21,11 +21,11 @@ popd
 Throughput benchmark: 
 ```
 ib_send_bw -d rdmap16s27 --report_gbits -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 4096 -m 8192 -F
-ib_send_bw -d rdmap16s27 --report_gbits 172.31.37.118 -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 4096 -m 8192 -F
+ib_send_bw -d rdmap16s27 --report_gbits 172.31.42.140 -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 4096 -m 8192 -F
 ```
 
 Latency benchmark: 
 ```
 ib_send_lat -d rdmap16s27 --report_gbits -x 0 -c UD -F
-ib_send_lat -d rdmap16s27 --report_gbits 172.31.37.118 -x 0 -c UD -F
+ib_send_lat -d rdmap16s27 --report_gbits 172.31.42.140 -x 0 -c UD -F
 ```

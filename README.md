@@ -54,7 +54,7 @@ UCCL currently supports AWS ENA NICs; support for Azure and GCP NICs and RDMA is
     
     * Build `uccl` under the `/opt` folder:
         * `sudo chown ubuntu:ubuntu /opt && cd /opt`
-        * `git clone https://github.com/uccl-project/uccl.git && cd uccl`
+        * `git clone git@github.com:uccl-project/uccl_rdma.git && cd uccl_rdma`
         * Install dependency: 
             ```
             sudo apt update
@@ -92,7 +92,7 @@ UCCL currently supports AWS ENA NICs; support for Azure and GCP NICs and RDMA is
             sudo dkms install -m amzn-drivers -v 2.13.0
             sudo modprobe -r ena; sudo modprobe ena
             ```
-    * Build `nccl` and `nccl-tests` under the `/opt/uccl` folder:
+    * Build `nccl` and `nccl-tests` under the `/opt/uccl_rdma` folder:
         ```
         cd nccl
         make src.build -j
@@ -101,19 +101,19 @@ UCCL currently supports AWS ENA NICs; support for Azure and GCP NICs and RDMA is
 
         # Consider "conda deactivate" when hitting dependency errors
         cd nccl-tests
-        make MPI=1 MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/opt/uccl/nccl/build -j
+        make MPI=1 MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/opt/uccl_rdma/nccl/build -j
         cd ..
         ```
     </details>
 
 3. Run UCCL transport tests on `VM1`:
-    * `cd /opt/uccl && git pull`
+    * `cd /opt/uccl_rdma && git pull`
     * Edit `nodes.txt` to only include the two public IPs of the VMs
     * Build UCCL: 
         * `python setup_all.py --target aws_g4_afxdp`
         * Keep `setup_all.py` running
     * Run UCCL tests: 
-        * `cd /opt/uccl/afxdp/`
+        * `cd /opt/uccl_rdma/afxdp/`
         * [`VM1`] `./transport_test --logtostderr=1 --clientip=<VM2 ens6 IP> --test=bimq`
         * [`VM2`] `./transport_test --logtostderr=1 --client --serverip=<VM1 ens6 IP> --test=bimq`
         * [`VM2`] You should be able to see something like `Sent 10000 messages, med rtt: 1033 us, tail rtt: 1484 us, link bw 98.3371 Gbps, app bw 95.3775 Gbps`. 
@@ -121,7 +121,7 @@ UCCL currently supports AWS ENA NICs; support for Azure and GCP NICs and RDMA is
 
 4. Run `nccl-tests` on `VM1`: 
     * `python setup_all.py --target aws_g4_afxdp`
-    * `cd /opt/uccl/afxdp/`
+    * `cd /opt/uccl_rdma/afxdp/`
     * `./run_nccl_test.sh afxdp 2`
     * You should be able to see `nccl-tests` results. 
 
