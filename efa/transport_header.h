@@ -2,8 +2,11 @@
 
 #include <cstdint>
 
+#include "transport_cc.h"
 #include "transport_config.h"
 #include "util_endian.h"
+
+namespace uccl {
 
 /**
  * Uccl Packet Header just after UDP header.
@@ -41,9 +44,6 @@ struct __attribute__((packed)) UcclSackHdr {
 static const size_t kUcclPktHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclPktdataLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
-static_assert(EFA_GRH_SIZE + kUcclPktHdrLen + kUcclSackHdrLen <
-                  PktHdrBuffPool::kPktHdrSize,
-              "uccl pkt hdr and sack hdr too large");
 
 #ifdef USE_TCP
 static const size_t kNetHdrLen =
@@ -66,3 +66,5 @@ inline UcclPktHdr::UcclFlags operator&(UcclPktHdr::UcclFlags lhs,
     return UcclPktHdr::UcclFlags(static_cast<UcclFlagsType>(lhs) &
                                  static_cast<UcclFlagsType>(rhs));
 }
+
+}  // namespace uccl

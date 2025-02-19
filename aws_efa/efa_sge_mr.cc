@@ -207,16 +207,19 @@ struct rdma_context *init_rdma() {
 #if USE_GDR == 0
     rdma->buf1 = (char *)aligned_alloc(
         4096, align_size(4096, BUFFER_SIZE1 + UD_ADDITION));
+    rdma->mr1 = ibv_reg_mr(rdma->pd, rdma->buf1, BUFFER_SIZE1 + UD_ADDITION,
+                           IBV_ACCESS_LOCAL_WRITE);
 #else
     if (cudaMalloc(&rdma->buf1, BUFFER_SIZE1 + UD_ADDITION) != cudaSuccess) {
         perror("Failed to allocate GPU memory");
         exit(1);
     }
-#endif
-    rdma->buf2 = (char *)aligned_alloc(
-        4096, align_size(4096, BUFFER_SIZE2 + UD_ADDITION));
     rdma->mr1 = ibv_reg_mr(rdma->pd, rdma->buf1, BUFFER_SIZE1 + UD_ADDITION,
                            IBV_ACCESS_LOCAL_WRITE);
+#endif
+
+    rdma->buf2 = (char *)aligned_alloc(
+        4096, align_size(4096, BUFFER_SIZE2 + UD_ADDITION));
     rdma->mr2 = ibv_reg_mr(rdma->pd, rdma->buf2, BUFFER_SIZE2 + UD_ADDITION,
                            IBV_ACCESS_LOCAL_WRITE);
     if (!rdma->mr1 || !rdma->mr2) {
@@ -254,7 +257,7 @@ void run_server(struct rdma_context *rdma, int gid_index) {
     struct ibv_wc wc;
     printf("Server waiting for message...\n");
     while (ibv_poll_cq(rdma->cq, 1, &wc) < 1);
-    
+
     // Only the first message is attached a hdr.
 #if USE_GDR == 0
     printf("Server received: %s | %s\n", rdma->buf1 + UD_ADDITION, rdma->buf2);

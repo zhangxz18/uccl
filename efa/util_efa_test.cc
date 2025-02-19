@@ -42,20 +42,14 @@ void exchange_qpns(const char *peer_ip, ConnMetadata *local_metadata,
     if (mode == 's') {
         printf("Server waiting for connection...\n");
         bind(sock, (struct sockaddr *)&addr, sizeof(addr));
-        listen(sock, 10);
+        listen(sock, 128);
         sock = accept(sock, NULL, NULL);  // Blocks if no client
         printf("Server accepted connection\n");
     } else {
         printf("Client attempting connection...\n");
-        int attempts = 5;
-        while (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0 &&
-               attempts--) {
+        while (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             perror("Connect failed, retrying...");
             sleep(1);
-        }
-        if (attempts == 0) {
-            perror("Failed to connect after retries");
-            exit(1);
         }
         printf("Client connected\n");
     }
@@ -143,6 +137,7 @@ void run_client(const char *server_ip) {
 int main(int argc, char *argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
+    gflags::ParseCommandLineFlags(&argc, &argv, true);
 
     signal(SIGINT, clean_shutdown_handler);
     signal(SIGTERM, clean_shutdown_handler);

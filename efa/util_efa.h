@@ -131,6 +131,9 @@ class PktHdrBuffPool : public BuffPool {
 
     ~PktHdrBuffPool() = default;
 };
+static_assert(EFA_GRH_SIZE + kUcclPktHdrLen + kUcclSackHdrLen <
+                  PktHdrBuffPool::kPktHdrSize,
+              "uccl pkt hdr and sack hdr too large");
 
 class PktDataBuffPool : public BuffPool {
    public:

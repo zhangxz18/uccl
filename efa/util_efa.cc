@@ -46,6 +46,8 @@ void EFAFactory::InitDev(int gid_idx) {
         fprintf(stderr, "No device found for %s\n", dev.ib_name);
         goto free_devices;
     }
+    LOG(INFO) << "Found device: " << dev.ib_name << " at index " << i
+              << " with gid_idx " << gid_idx;
 
     // Open the device.
     memset(&dev_attr, 0, sizeof(dev_attr));
@@ -114,7 +116,7 @@ void EFAFactory::InitDev(int gid_idx) {
             !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
         ibv_dealloc_pd(pd);
 
-        VLOG(5) << "DMA-BUF support: " << dev.dma_buf_support;
+        LOG(INFO) << "DMA-BUF support: " << dev.dma_buf_support;
     }
 
     efa_ctl.gid_2_dev_map.insert({gid_idx, efa_ctl.devices_.size()});
@@ -438,7 +440,7 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
             frames.push_back(frame);
 
             auto src_qp_idx = frame->get_src_qp_idx();
-            // TODO(yang): Making this chained? 
+            // TODO(yang): Making this chained?
             post_recv_wrs(1, src_qp_idx);
         }
 
@@ -472,7 +474,7 @@ std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget) {
                 frames.push_back(frame);
 
                 auto src_qp_idx = frame->get_src_qp_idx();
-                // TODO(yang): Making this chained? 
+                // TODO(yang): Making this chained?
                 post_recv_wrs_for_ctrl(1);
             } else if (wc_[i].opcode == IBV_WC_SEND) {
                 auto pkt_hdr_addr = frame->get_pkt_hdr_addr();

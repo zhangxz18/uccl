@@ -81,7 +81,6 @@ static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 static const uint32_t kMaxPathHistoryPerEngine = 4096;
 
 static_assert(kMaxPath <= 4096, "kMaxPath too large");
-static_assert(NUM_QUEUES <= 16, "NUM_QUEUES too large");
 static_assert(kMaxUnackedPktsPerEngine <= kMaxPathHistoryPerEngine,
               "kMaxUnackedPktsPerEngine too large");
 static_assert(is_power_of_two(kMaxPathHistoryPerEngine),
