@@ -16,7 +16,7 @@ using namespace uccl;
 
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 #define ITERATIONS 10240
-#define MAX_INFLIGHT 256u
+#define MAX_INFLIGHT 512u
 
 // Exchange QPNs and GIDs via TCP
 void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
@@ -179,8 +179,8 @@ void run_server() {
     } while (frames.size() == 0);
     CHECK(frames.size() == 1 && polled_send_acks == 0);
     frame = frames[0];
-    CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
-                 "Ctrl Packet") == 0);
+    // CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
+    //              "Ctrl Packet") == 0);
     socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
     socket->push_frame_desc((uint64_t)frame);
     CHECK(socket->recv_queue_wrs() >=

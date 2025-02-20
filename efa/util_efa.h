@@ -388,6 +388,8 @@ class EFASocket {
 
     struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
                              uint32_t send_cq_size, uint32_t recv_cq_size);
+    struct ibv_qp *create_srd_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
+                                 uint32_t send_cq_size, uint32_t recv_cq_size);
 
     uint16_t next_qp_idx_for_send_;
     inline uint16_t get_next_qp_idx_for_send() {

@@ -219,7 +219,7 @@ EFASocket::EFASocket(int dev_idx, int socket_id)
     ctrl_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
     DCHECK(ctrl_cq_) << "Failed to allocate ctrl CQ";
 
-    ctrl_qp_ = create_qp(ctrl_cq_, ctrl_cq_, kMaxSendRecvWrForCtrl,
+    ctrl_qp_ = create_srd_qp(ctrl_cq_, ctrl_cq_, kMaxSendRecvWrForCtrl,
                          kMaxSendRecvWrForCtrl);
     post_recv_wrs_for_ctrl(kMaxSendRecvWrForCtrl);
 }
@@ -245,6 +245,57 @@ struct ibv_qp *EFASocket::create_qp(struct ibv_cq *send_cq,
     qp_attr.qp_type = IBV_QPT_UD;
     struct ibv_qp *qp = ibv_create_qp(pd_, &qp_attr);
 #endif
+
+    if (!qp) {
+        perror("Failed to create QP");
+        exit(1);
+    }
+
+    struct ibv_qp_attr attr = {};
+    attr.qp_state = IBV_QPS_INIT;
+    attr.pkey_index = 0;
+    attr.port_num = IB_PORT_NUM;
+    attr.qkey = QKEY;
+    if (ibv_modify_qp(
+            qp, &attr,
+            IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY)) {
+        perror("Failed to modify QP to INIT");
+        exit(1);
+    }
+
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_RTR;
+    if (ibv_modify_qp(qp, &attr, IBV_QP_STATE)) {
+        perror("Failed to modify QP to RTR");
+        exit(1);
+    }
+
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_RTS;
+    attr.sq_psn = SQ_PSN;  // Set initial Send Queue PSN
+    if (ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_SQ_PSN)) {
+        perror("Failed to modify QP to RTS");
+        exit(1);
+    }
+
+    return qp;
+}
+
+struct ibv_qp *EFASocket::create_srd_qp(struct ibv_cq *send_cq,
+                                        struct ibv_cq *recv_cq,
+                                        uint32_t send_cq_size,
+                                        uint32_t recv_cq_size) {
+    struct ibv_qp_init_attr qp_attr = {};
+    qp_attr.send_cq = send_cq;
+    qp_attr.recv_cq = recv_cq;
+    qp_attr.cap.max_send_wr = send_cq_size;
+    qp_attr.cap.max_recv_wr = recv_cq_size;
+    qp_attr.cap.max_send_sge = 2;
+    qp_attr.cap.max_recv_sge = 2;
+
+    qp_attr.qp_type = IBV_QPT_DRIVER;
+    struct ibv_qp *qp = qp =
+        efadv_create_driver_qp(pd_, &qp_attr, EFADV_QP_DRIVER_TYPE_SRD);
 
     if (!qp) {
         perror("Failed to create QP");
