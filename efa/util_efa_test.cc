@@ -16,6 +16,7 @@ using namespace uccl;
 
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 #define ITERATIONS 10240
+#define MAX_INFLIGHT 256u
 
 // Exchange QPNs and GIDs via TCP
 void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
@@ -64,6 +65,42 @@ void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
     printf("QPNs and GIDs exchanged\n");
 }
 
+std::vector<FrameDesc *> prepare_frames(EFASocket *socket,
+                                        struct ibv_ah *dest_ah,
+                                        ConnMeta *remote_meta, int num_frames) {
+    std::vector<FrameDesc *> frames;
+    for (int i = 0; i < num_frames; i++) {
+        auto frame_desc = socket->pop_frame_desc();
+        auto pkt_hdr = socket->pop_pkt_hdr();
+        auto pkt_data = socket->pop_pkt_data();
+        auto frame = FrameDesc::Create(frame_desc, pkt_hdr, kUcclPktHdrLen,
+                                       pkt_data, kUcclPktdataLen, 0);
+        frame->set_dest_ah(dest_ah);
+        auto path_id = IntRand(0, kMaxPath - 1);
+        frame->set_dest_qpn(remote_meta->qpn_list[path_id]);
+        frames.push_back(frame);
+    }
+    return frames;
+}
+
+std::vector<FrameDesc *> prepare_frames_for_ctrl(EFASocket *socket,
+                                                 struct ibv_ah *dest_ah,
+                                                 ConnMeta *remote_meta,
+                                                 int num_frames) {
+    std::vector<FrameDesc *> frames;
+    for (int i = 0; i < num_frames; i++) {
+        auto frame_desc = socket->pop_frame_desc();
+        auto pkt_hdr = socket->pop_pkt_hdr();
+        auto frame = FrameDesc::Create(
+            frame_desc, pkt_hdr, kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
+        frame->set_dest_ah(dest_ah);
+        auto path_id = kMaxPath;
+        frame->set_dest_qpn(remote_meta->qpn_list[path_id]);
+        frames.push_back(frame);
+    }
+    return frames;
+}
+
 void run_server() {
     auto *socket = EFAFactory::CreateSocket(0, 0);
 
@@ -96,7 +133,7 @@ void run_server() {
         socket->push_pkt_data(frame->get_pkt_data_addr());
         socket->push_frame_desc((uint64_t)frame);
         CHECK(socket->recv_queue_wrs() >=
-              kMaxSendWr * kMaxPath - kMaxRecvDeficitCnt * kMaxPath);
+              kMaxRecvWr * kMaxPath - kMaxRecvWrDeficit * kMaxPath);
 
         // Send it back.
         frame = FrameDesc::Create(socket->pop_frame_desc(),
@@ -114,10 +151,11 @@ void run_server() {
             frames = socket->poll_send_cq(1);
         } while (frames.size() == 0);
         CHECK(frames.size() == 1);
+        frame = frames[0];
         socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
         socket->push_pkt_data(frame->get_pkt_data_addr());
         socket->push_frame_desc((uint64_t)frame);
-        CHECK_EQ(socket->send_queue_free_space(), kMaxRecvWr * kMaxPath);
+        CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxPath);
 
         end_time = std::chrono::high_resolution_clock::now();
         duration2 += end_time - mid_time;
@@ -135,18 +173,44 @@ void run_server() {
         << " us";
 
     // Receiving an ack ctrl packet.
-    uint32_t finished_sends = 0;
+    uint32_t polled_send_acks = 0;
     do {
-        frames = socket->poll_ctrl_cq(1, finished_sends);
+        frames = socket->poll_ctrl_cq(1, &polled_send_acks);
     } while (frames.size() == 0);
-    CHECK(frames.size() == 1 && finished_sends == 0);
+    CHECK(frames.size() == 1 && polled_send_acks == 0);
     frame = frames[0];
     CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
                  "Ctrl Packet") == 0);
     socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
     socket->push_frame_desc((uint64_t)frame);
     CHECK(socket->recv_queue_wrs() >=
-          kMaxSendWr * kMaxPath - kMaxRecvDeficitCnt * kMaxPath);
+          kMaxRecvWr * kMaxPath - kMaxRecvWrDeficit * kMaxPath);
+
+    // Benchmarking throughput
+    int recv_frames = 0;
+    while (true) {
+        // Receiving data packets
+        frames = socket->poll_recv_cq(RECV_BATCH_SIZE);
+        VLOG(4) << "Received " << frames.size() << " frames";
+        for (auto frame : frames) {
+            socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
+            socket->push_pkt_data(frame->get_pkt_data_addr());
+            socket->push_frame_desc((uint64_t)frame);
+        }
+        recv_frames = frames.size();
+
+        // Sending ack ctrl packets
+        frames =
+            prepare_frames_for_ctrl(socket, dest_ah, remote_meta, recv_frames);
+        socket->post_send_wrs_for_ctrl(frames);
+        VLOG(4) << "Sent " << frames.size() << " acks";
+
+        // Check if any ack ctrl packet finishes sending.
+        polled_send_acks = 0;
+        frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
+        CHECK_EQ(frames.size(), 0);
+        VLOG(4) << "Polled " << polled_send_acks << " sent acks";
+    }
 }
 
 void run_client(const char *server_ip) {
@@ -182,7 +246,7 @@ void run_client(const char *server_ip) {
         } while (frames.size() == 0);
         CHECK(frames.size() == 1);
         CHECK(frames[0] == frame);
-        socket->push_frame_desc(frame_desc);
+        socket->push_frame_desc((uint64_t)frame);
         socket->push_pkt_hdr(pkt_hdr);
         socket->push_pkt_data(pkt_data);
         CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxPath);
@@ -195,11 +259,11 @@ void run_client(const char *server_ip) {
         frame = frames[0];
         CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
                      "Hello World") == 0);
-        socket->push_frame_desc(frame_desc);
+        socket->push_frame_desc((uint64_t)frame);
         socket->push_pkt_hdr(pkt_hdr);
         socket->push_pkt_data(pkt_data);
         CHECK(socket->recv_queue_wrs() >=
-              kMaxSendWr * kMaxPath - kMaxRecvDeficitCnt * kMaxPath);
+              kMaxRecvWr * kMaxPath - kMaxRecvWrDeficit * kMaxPath);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -217,13 +281,65 @@ void run_client(const char *server_ip) {
     frame->set_dest_qpn(remote_meta->qpn_list[kMaxPath]);  // ctrl qp
     strcpy((char *)pkt_hdr, "Ctrl Packet");
     socket->post_send_wr(frame);
-    uint32_t finished_sends = 0;
+    uint32_t polled_send_acks = 0;
     do {
-        frames = socket->poll_ctrl_cq(1, finished_sends);
-    } while (finished_sends == 0);
-    CHECK(finished_sends == 1 && frames.size() == 0);
+        frames = socket->poll_ctrl_cq(1, &polled_send_acks);
+    } while (polled_send_acks == 0);
+    CHECK(polled_send_acks == 1 && frames.size() == 0);
     // No need to push pkt_hdr and frame_desc, as poll_ctrl_cq() frees them.
     CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxPath);
+
+    // Benchmarking throughput
+    int i = 0;
+    int inflights = 0;
+
+    start_time = std::chrono::high_resolution_clock::now();
+    while (i < ITERATIONS) {
+        VLOG(4) << "ITERATIONS i: " << i << ", inflights: " << inflights;
+        // Send data packets if allowed.
+        if (inflights < MAX_INFLIGHT) {
+            auto allowed_frames =
+                std::min(MAX_INFLIGHT - inflights, SEND_BATCH_SIZE);
+            frames =
+                prepare_frames(socket, dest_ah, remote_meta, allowed_frames);
+            socket->post_send_wrs(frames);
+
+            i += frames.size();
+            inflights += frames.size();
+            VLOG(4) << "Sent " << frames.size()
+                    << " frames, inflights: " << inflights;
+        }
+
+        // Check if any send finished.
+        frames = socket->poll_send_cq(SEND_BATCH_SIZE);
+        for (auto frame : frames) {
+            socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
+            socket->push_pkt_data(frame->get_pkt_data_addr());
+            socket->push_frame_desc((uint64_t)frame);
+        }
+        VLOG(4) << "Polled " << frames.size() << " send frames";
+
+        // Check if any ack received.
+        polled_send_acks = 0;
+        frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
+        for (auto frame : frames) {
+            socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
+            DCHECK_EQ(frame->get_pkt_data_len(), 0) << frame->get_pkt_hdr_len();
+            socket->push_frame_desc((uint64_t)frame);
+        }
+        CHECK_EQ(polled_send_acks, 0);
+        inflights -= frames.size();
+        VLOG(4) << "Polled " << frames.size()
+                << " acks, inflights: " << inflights;
+    }
+    end_time = std::chrono::high_resolution_clock::now();
+
+    duration_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
+    LOG(INFO) << "Throughput: " << ITERATIONS * 1.0 / duration_us.count()
+              << " Mops/s " << " bandwidth: "
+              << ITERATIONS * 1.0 / duration_us.count() * EFA_MTU * 8 / 1000
+              << " Gbps";
 }
 
 // TO RUN THE TEST:

@@ -382,7 +382,7 @@ class EFASocket {
     struct ibv_qp *ctrl_qp_;
 
     // For fast CQ polling.
-    struct ibv_wc wc_[kMaxBatchCQ];
+    struct ibv_wc wc_[kMaxPollBatch];
 
     EFASocket(int dev_idx, int socket_id);
 
@@ -391,7 +391,7 @@ class EFASocket {
 
     uint16_t next_qp_idx_for_send_;
     inline uint16_t get_next_qp_idx_for_send() {
-        next_qp_idx_for_send_ = (next_qp_idx_for_send_++) % kMaxQPForSend;
+        next_qp_idx_for_send_ = (next_qp_idx_for_send_ + 1) % kMaxQPForSend;
         return next_qp_idx_for_send_;
     }
 
@@ -403,10 +403,13 @@ class EFASocket {
     PktDataBuffPool *pkt_data_pool_;
     FrameDescBuffPool *frame_desc_pool_;
 
+    struct ibv_send_wr send_wr_vec_[kMaxChainedWr];
+    struct ibv_sge send_sge_vec_[kMaxChainedWr][2];
+
     // How many recv_wrs are lacking for each qp to be full?
     uint16_t deficit_cnt_recv_wrs_[kMaxPath + 1];
-    struct ibv_recv_wr recv_wr_vec_[kMaxRecvDeficitCnt];
-    struct ibv_sge recv_sge_vec_[kMaxRecvDeficitCnt][2];
+    struct ibv_recv_wr recv_wr_vec_[kMaxChainedWr];
+    struct ibv_sge recv_sge_vec_[kMaxChainedWr][2];
 
     inline uint32_t dev_idx() const { return dev_idx_; }
     inline uint32_t socket_id() const { return socket_id_; }
@@ -416,6 +419,7 @@ class EFASocket {
     // dynamically chooses normal qp and ctrl_qp based on pkt_data_len_.
     uint32_t post_send_wr(FrameDesc *frame);
     uint32_t post_send_wrs(std::vector<FrameDesc *> &frames);
+    uint32_t post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames);
 
     void post_recv_wrs(uint32_t budget, uint16_t qp_idx);
     void post_recv_wrs_for_ctrl(uint32_t budget);
@@ -426,7 +430,7 @@ class EFASocket {
     std::vector<FrameDesc *> poll_recv_cq(uint32_t budget);
     // This internally frees FrameDesc for sending acks, returns received acks.
     std::vector<FrameDesc *> poll_ctrl_cq(uint32_t budget,
-                                          uint32_t &finished_sends);
+                                          uint32_t *polled_send_acks);
 
     std::string to_string();
     void shutdown();
