@@ -300,7 +300,7 @@ struct EFADevice {
     struct ibv_port_attr port_attr;
 
     uint8_t dev_idx;
-    uint8_t ib_port_num;
+    uint8_t efa_port_num;
     union ibv_gid gid;
 
     struct ibv_pd *pd;
@@ -315,7 +315,7 @@ struct EFADevice {
         struct ibv_ah_attr ah_attr = {};
 
         ah_attr.is_global = 1;  // Enable Global Routing Header (GRH)
-        ah_attr.port_num = IB_PORT_NUM;
+        ah_attr.port_num = EFA_PORT_NUM;
         ah_attr.grh.sgid_index = EFA_GID_IDX;  // Local GID index
         ah_attr.grh.dgid = remote_gid;         // Destination GID
         ah_attr.grh.flow_label = 0;
@@ -362,7 +362,8 @@ class EFAFactory {
 
 struct ConnMeta {
     // data qps + ctrl qp.
-    uint32_t qpn_list[kMaxPath + 1];
+    uint32_t qpn_list[kMaxPath];
+    uint32_t qpn_list_ctrl[kMaxPathForCtrl];
     union ibv_gid gid;
 };
 
@@ -371,18 +372,51 @@ class EFASocket {
     struct ibv_pd *pd_;
     union ibv_gid gid_;
 
-    // TODO(yang): considering merging send and recv cq into one.
+    // Separating send and recv cq to allow better budget ctrl
     struct ibv_cq *send_cq_;
     struct ibv_cq *recv_cq_;
     struct ibv_qp *qp_list_[kMaxPath];
 
-    // TODO(yang): considering removing special ctrl cq and qp---then we need to
-    // have same size pkthdr for both data and ack packet.
+    // Separating ctrl and data qp, so we can have different sizes for data
+    // pkthdr and ack pkthdr.
     struct ibv_cq *ctrl_cq_;
-    struct ibv_qp *ctrl_qp_;
+    struct ibv_qp *ctrl_qp_list_[kMaxPathForCtrl];
+
+    // Round-robin index for choosing src_qp to send data/acl packets; this is
+    // to fully utilize the micro-cores on EFA NICs.
+    uint16_t next_qp_idx_for_send_;
+    uint16_t next_qp_idx_for_send_ctrl_;
+    inline uint16_t get_next_qp_idx_for_send() {
+        next_qp_idx_for_send_ = (next_qp_idx_for_send_ + 1) % kMaxQPForSend;
+        return next_qp_idx_for_send_;
+    }
+    inline uint16_t get_next_qp_idx_for_send_ctrl() {
+        next_qp_idx_for_send_ctrl_ =
+            (next_qp_idx_for_send_ctrl_ + 1) % kMaxQPForSendCtrl;
+        return next_qp_idx_for_send_ctrl_;
+    }
+
+    uint32_t dev_idx_;
+    uint32_t socket_id_;
+    inline uint32_t dev_idx() const { return dev_idx_; }
+    inline uint32_t socket_id() const { return socket_id_; }
+
+    PktHdrBuffPool *pkt_hdr_pool_;
+    PktDataBuffPool *pkt_data_pool_;
+    FrameDescBuffPool *frame_desc_pool_;
 
     // For fast CQ polling.
     struct ibv_wc wc_[kMaxPollBatch];
+
+    struct ibv_send_wr send_wr_vec_[kMaxChainedWr];
+    struct ibv_sge send_sge_vec_[kMaxChainedWr][2];
+
+    struct ibv_recv_wr recv_wr_vec_[kMaxChainedWr];
+    struct ibv_sge recv_sge_vec_[kMaxChainedWr][2];
+
+    // How many recv_wrs are lacking for each qp to be full?
+    uint16_t deficit_cnt_recv_wrs_[kMaxPath];
+    uint16_t deficit_cnt_recv_wrs_for_ctrl_[kMaxPathForCtrl];
 
     EFASocket(int dev_idx, int socket_id);
 
@@ -391,31 +425,7 @@ class EFASocket {
     struct ibv_qp *create_srd_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
                                  uint32_t send_cq_size, uint32_t recv_cq_size);
 
-    uint16_t next_qp_idx_for_send_;
-    inline uint16_t get_next_qp_idx_for_send() {
-        next_qp_idx_for_send_ = (next_qp_idx_for_send_ + 1) % kMaxQPForSend;
-        return next_qp_idx_for_send_;
-    }
-
    public:
-    uint32_t dev_idx_;
-    uint32_t socket_id_;
-
-    PktHdrBuffPool *pkt_hdr_pool_;
-    PktDataBuffPool *pkt_data_pool_;
-    FrameDescBuffPool *frame_desc_pool_;
-
-    struct ibv_send_wr send_wr_vec_[kMaxChainedWr];
-    struct ibv_sge send_sge_vec_[kMaxChainedWr][2];
-
-    // How many recv_wrs are lacking for each qp to be full?
-    uint16_t deficit_cnt_recv_wrs_[kMaxPath + 1];
-    struct ibv_recv_wr recv_wr_vec_[kMaxChainedWr];
-    struct ibv_sge recv_sge_vec_[kMaxChainedWr][2];
-
-    inline uint32_t dev_idx() const { return dev_idx_; }
-    inline uint32_t socket_id() const { return socket_id_; }
-
     // dest_qpn and dest_gid_idx is specified in FrameDesc; src_qp is determined
     // by EFASocket internally to evenly spread the load. This function also
     // dynamically chooses normal qp and ctrl_qp based on pkt_data_len_.
@@ -424,7 +434,7 @@ class EFASocket {
     uint32_t post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames);
 
     void post_recv_wrs(uint32_t budget, uint16_t qp_idx);
-    void post_recv_wrs_for_ctrl(uint32_t budget);
+    void post_recv_wrs_for_ctrl(uint32_t budget, uint16_t qp_idx);
 
     // This polls send_cq_ for data qps; wr_id is FrameDesc*.
     std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
@@ -438,12 +448,14 @@ class EFASocket {
     void shutdown();
     ~EFASocket();
 
-    // Return kMaxPath + 1 QP numbers for client to use.
+    // Return kMaxPath + kMaxPathForCtrl QP numbers for client to use.
     void get_conn_metadata(ConnMeta *meta) {
         for (int i = 0; i < kMaxPath; i++) {
             meta->qpn_list[i] = qp_list_[i]->qp_num;
         }
-        meta->qpn_list[kMaxPath] = ctrl_qp_->qp_num;
+        for (int i = 0; i < kMaxPathForCtrl; i++) {
+            meta->qpn_list_ctrl[i] = ctrl_qp_list_[i]->qp_num;
+        }
         meta->gid = gid_;
     }
 
@@ -488,7 +500,7 @@ class EFASocket {
     inline uint32_t send_queue_wrs() { return send_queue_wrs_; }
     inline uint32_t recv_queue_wrs() { return recv_queue_wrs_; }
 
-   private:
+   private:  // for stats
     uint32_t send_queue_wrs_;
     uint32_t recv_queue_wrs_;
 

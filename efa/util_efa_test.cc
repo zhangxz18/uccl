@@ -94,8 +94,8 @@ std::vector<FrameDesc *> prepare_frames_for_ctrl(EFASocket *socket,
         auto frame = FrameDesc::Create(
             frame_desc, pkt_hdr, kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
         frame->set_dest_ah(dest_ah);
-        auto path_id = kMaxPath;
-        frame->set_dest_qpn(remote_meta->qpn_list[path_id]);
+        auto path_id = IntRand(0, kMaxPathForCtrl - 1);
+        frame->set_dest_qpn(remote_meta->qpn_list_ctrl[path_id]);
         frames.push_back(frame);
     }
     return frames;
@@ -179,16 +179,20 @@ void run_server() {
     } while (frames.size() == 0);
     CHECK(frames.size() == 1 && polled_send_acks == 0);
     frame = frames[0];
-    // CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
-    //              "Ctrl Packet") == 0);
+#ifdef USE_SRD_FOR_CTRL
+    CHECK(strcmp((char *)(frame->get_pkt_hdr_addr()), "Ctrl Packet") == 0);
+#else
+    CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
+                 "Ctrl Packet") == 0);
+#endif
     socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
     socket->push_frame_desc((uint64_t)frame);
     CHECK(socket->recv_queue_wrs() >=
           kMaxRecvWr * kMaxPath - kMaxRecvWrDeficit * kMaxPath);
 
     // Benchmarking throughput
-    int recv_frames = 0;
-    while (true) {
+    int i = 0;
+    while (i < ITERATIONS) {
         // Receiving data packets
         frames = socket->poll_recv_cq(RECV_BATCH_SIZE);
         VLOG(4) << "Received " << frames.size() << " frames";
@@ -197,7 +201,7 @@ void run_server() {
             socket->push_pkt_data(frame->get_pkt_data_addr());
             socket->push_frame_desc((uint64_t)frame);
         }
-        recv_frames = frames.size();
+        auto recv_frames = frames.size();
 
         // Sending ack ctrl packets
         frames =
@@ -210,6 +214,8 @@ void run_server() {
         frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
         CHECK_EQ(frames.size(), 0);
         VLOG(4) << "Polled " << polled_send_acks << " sent acks";
+
+        i += recv_frames;
     }
 }
 
@@ -278,7 +284,7 @@ void run_client(const char *server_ip) {
     frame = FrameDesc::Create(frame_desc, pkt_hdr,
                               kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
     frame->set_dest_ah(dest_ah);
-    frame->set_dest_qpn(remote_meta->qpn_list[kMaxPath]);  // ctrl qp
+    frame->set_dest_qpn(remote_meta->qpn_list_ctrl[0]);  // ctrl qp
     strcpy((char *)pkt_hdr, "Ctrl Packet");
     socket->post_send_wr(frame);
     uint32_t polled_send_acks = 0;

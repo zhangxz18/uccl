@@ -12,7 +12,7 @@
 // #define USE_TCP
 // #define ENABLE_CSUM
 // #define RTT_STATS
-// #define USE_SRD
+// #define USE_SRD_FOR_CTRL
 
 enum class CCType {
     kTimely,
@@ -36,39 +36,36 @@ static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #elif defined(G6E)
 static const uint8_t NUM_DEVICES = 4;
-static const uint8_t EFA_GID = 0;
+static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[NUM_DEVICES] = {
     "rdmap155s0", "rdmap156s0", "rdmap188s0", "rdmap189s0"};
 static const std::string ENA_DEVICE_NAME_LIST[NUM_DEVICES] = {
     "enp135s0", "enp136s0", "enp170s0", "enp171s0"};
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
-static const uint8_t IB_PORT_NUM = 1;
+static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
 static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_UD_ADDITION.
-#ifdef USE_SRD
-static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
-#else
-static const uint32_t EFA_UD_ADDITION = 40;  // Auto-added by EFA during recv.
-#endif
+static const uint32_t EFA_UD_ADDITION = 40;    // Auto-added by EFA during recv.
+static const uint32_t EFA_MAX_QPS = 256;       // Max QPs per EFA device.
 /// Interface configuration.
 
-static const uint32_t kMaxSendWr = 1024;
-static const uint32_t kMaxRecvWr = 128;
-static const uint32_t kMaxSendRecvWrForCtrl = 2048;
-static const uint32_t kMaxCqeTotal = 16384;
-static const uint32_t kMaxPollBatch = 16;
-static const uint32_t kMaxQPForSend = 8;
-static const uint32_t kMaxRecvWrDeficit = 32;
-static const uint32_t kMaxChainedWr = 32;
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 static const uint32_t kNumEnginesPerDev = 1;  // # of engines per device.
-static const uint32_t kMaxPath = 256 - 1;     // We need to reserve one for
-                                              // the control QP.
-static const uint32_t kNumPktPerChunk = 4;    // # of 9KB packets per chunk.
-static const uint32_t kMaxUnackedPktsPP = 1u;
+static const uint32_t kMaxPathForCtrl = 8;    // # of paths/QPs for control.
+static const uint32_t kMaxPath =
+    EFA_MAX_QPS - kMaxPathForCtrl;  // # of paths/QPs for data per engine.
+static const uint32_t kMaxSendWr = 1024;
+static const uint32_t kMaxRecvWr = 128;
+static const uint32_t kMaxSendRecvWrForCtrl = 1024;
+static const uint32_t kMaxCqeTotal = 16384;
+static const uint32_t kMaxPollBatch = 16;
+static const uint32_t kMaxRecvWrDeficit = 32;
+static const uint32_t kMaxChainedWr = 32;
+static const uint32_t kMaxQPForSend = 8;
+static const uint32_t kMaxQPForSendCtrl = 8;
 
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
@@ -79,6 +76,8 @@ static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 32;
 
 // CC parameters.
+static const uint32_t kNumPktPerChunk = 4;  // # of 9KB packets per chunk.
+static const uint32_t kMaxUnackedPktsPP = 1u;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 10;
 static const uint32_t kMaxTwPkts = 1024;
