@@ -131,8 +131,8 @@ error:
     throw std::runtime_error("Failed to initialize EFAFactory");
 }
 
-EFASocket *EFAFactory::CreateSocket(int dev_idx, int socket_id) {
-    auto socket = new EFASocket(dev_idx, socket_id);
+EFASocket *EFAFactory::CreateSocket(int gpu_idx, int dev_idx, int socket_id) {
+    auto socket = new EFASocket(gpu_idx, dev_idx, socket_id);
     std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
     efa_ctl.socket_q_.push_back(socket);
     return socket;
@@ -155,8 +155,10 @@ void EFAFactory::Shutdown() {
     efa_ctl.dev_map.clear();
 }
 
-EFASocket::EFASocket(int dev_idx, int socket_id)
+EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_id)
     : next_qp_idx_for_send_(0),
+      next_qp_idx_for_send_ctrl_(0),
+      gpu_idx_(gpu_idx),
       dev_idx_(dev_idx),
       socket_id_(socket_id),
       send_queue_wrs_(0),
@@ -184,6 +186,9 @@ EFASocket::EFASocket(int dev_idx, int socket_id)
                    IBV_ACCESS_LOCAL_WRITE);
     DCHECK(pkt_hdr_mr_ != nullptr) << "ibv_reg_mr failed";
     pkt_hdr_pool_ = new PktHdrBuffPool(pkt_hdr_mr_);
+
+    auto ret = cudaSetDevice(gpu_idx);
+    CHECK(ret == cudaSuccess) << "cudaSetDevice failed";
 
     // Allocate memory for packet data.
     void *pkt_data_buf_ = nullptr;

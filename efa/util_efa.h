@@ -349,7 +349,7 @@ class EFAFactory {
 
     // dev_idx from [1, ..., NUM_DEVICES];
     // socket_id from [0, ..., kNumEnginesPerDev-1].
-    static EFASocket *CreateSocket(int dev_idx, int socket_id);
+    static EFASocket *CreateSocket(int gpu_idx, int dev_idx, int socket_id);
 
     // Getting a pointer to the struct EFADevice.
     static struct EFADevice *GetEFADevice(int dev_idx);
@@ -396,8 +396,10 @@ class EFASocket {
         return next_qp_idx_for_send_ctrl_;
     }
 
+    uint32_t gpu_idx_;
     uint32_t dev_idx_;
     uint32_t socket_id_;
+    inline uint32_t gpu_idx() const { return gpu_idx_; }
     inline uint32_t dev_idx() const { return dev_idx_; }
     inline uint32_t socket_id() const { return socket_id_; }
 
@@ -418,7 +420,7 @@ class EFASocket {
     uint16_t deficit_cnt_recv_wrs_[kMaxPath];
     uint16_t deficit_cnt_recv_wrs_for_ctrl_[kMaxPathForCtrl];
 
-    EFASocket(int dev_idx, int socket_id);
+    EFASocket(int gpu_idx, int dev_idx, int socket_id);
 
     struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
                              uint32_t send_cq_size, uint32_t recv_cq_size);

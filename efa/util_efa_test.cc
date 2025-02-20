@@ -19,6 +19,9 @@ using namespace uccl;
 #define MAX_INFLIGHT 1024u
 // #define RESPONDE_ACK
 
+#define EFA_DEV_ID 3
+#define GPU_ID (EFA_DEV_ID * 2)
+
 // Exchange QPNs and GIDs via TCP
 void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
                    ConnMeta *remote_metadata) {
@@ -103,14 +106,14 @@ std::vector<FrameDesc *> prepare_frames_for_ctrl(EFASocket *socket,
 }
 
 void run_server() {
-    auto *socket = EFAFactory::CreateSocket(0, 0);
+    auto *socket = EFAFactory::CreateSocket(GPU_ID, EFA_DEV_ID, 0);
 
     auto local_meta = new ConnMeta();
     socket->get_conn_metadata(local_meta);
     auto remote_meta = new ConnMeta();
     exchange_qpns(nullptr, local_meta, remote_meta);
 
-    auto *dev = EFAFactory::GetEFADevice(0);
+    auto *dev = EFAFactory::GetEFADevice(EFA_DEV_ID);
     auto *dest_ah = dev->create_ah(remote_meta->gid);
 
     std::vector<FrameDesc *> frames;
@@ -233,14 +236,14 @@ void run_server() {
 }
 
 void run_client(const char *server_ip) {
-    auto *socket = EFAFactory::CreateSocket(0, 0);
+    auto *socket = EFAFactory::CreateSocket(GPU_ID, EFA_DEV_ID, 0);
 
     auto local_meta = new ConnMeta();
     socket->get_conn_metadata(local_meta);
     auto remote_meta = new ConnMeta();
     exchange_qpns(server_ip, local_meta, remote_meta);
 
-    auto *dev = EFAFactory::GetEFADevice(0);
+    auto *dev = EFAFactory::GetEFADevice(EFA_DEV_ID);
     auto *dest_ah = dev->create_ah(remote_meta->gid);
 
     uint64_t frame_desc, pkt_hdr, pkt_data;
