@@ -16,7 +16,8 @@ using namespace uccl;
 
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 #define ITERATIONS 10240
-#define MAX_INFLIGHT 512u
+#define MAX_INFLIGHT 1024u
+// #define RESPONDE_ACK
 
 // Exchange QPNs and GIDs via TCP
 void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
@@ -179,12 +180,8 @@ void run_server() {
     } while (frames.size() == 0);
     CHECK(frames.size() == 1 && polled_send_acks == 0);
     frame = frames[0];
-#ifdef USE_SRD_FOR_CTRL
-    CHECK(strcmp((char *)(frame->get_pkt_hdr_addr()), "Ctrl Packet") == 0);
-#else
     CHECK(strcmp((char *)(frame->get_pkt_hdr_addr() + EFA_UD_ADDITION),
                  "Ctrl Packet") == 0);
-#endif
     socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
     socket->push_frame_desc((uint64_t)frame);
     CHECK(socket->recv_queue_wrs() >=
@@ -203,6 +200,7 @@ void run_server() {
         }
         auto recv_frames = frames.size();
 
+#ifdef RESPONDE_ACK
         // Sending ack ctrl packets
         frames =
             prepare_frames_for_ctrl(socket, dest_ah, remote_meta, recv_frames);
@@ -214,6 +212,21 @@ void run_server() {
         frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
         CHECK_EQ(frames.size(), 0);
         VLOG(4) << "Polled " << polled_send_acks << " sent acks";
+#else
+        // Sending data packets back
+        frames = prepare_frames(socket, dest_ah, remote_meta, recv_frames);
+        socket->post_send_wrs(frames);
+        VLOG(4) << "Sent " << frames.size() << " frames";
+
+        // Check if any send finished.
+        frames = socket->poll_send_cq(RECV_BATCH_SIZE);
+        for (auto frame : frames) {
+            socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
+            socket->push_pkt_data(frame->get_pkt_data_addr());
+            socket->push_frame_desc((uint64_t)frame);
+        }
+        VLOG(4) << "Polled " << frames.size() << " send frames";
+#endif
 
         i += recv_frames;
     }
@@ -325,6 +338,7 @@ void run_client(const char *server_ip) {
         }
         VLOG(4) << "Polled " << frames.size() << " send frames";
 
+#ifdef RESPONDE_ACK
         // Check if any ack received.
         polled_send_acks = 0;
         frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
@@ -334,9 +348,19 @@ void run_client(const char *server_ip) {
             socket->push_frame_desc((uint64_t)frame);
         }
         CHECK_EQ(polled_send_acks, 0);
+#else
+        // Check if any data packets received.
+        frames = socket->poll_recv_cq(RECV_BATCH_SIZE);
+        for (auto frame : frames) {
+            socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
+            socket->push_pkt_data(frame->get_pkt_data_addr());
+            socket->push_frame_desc((uint64_t)frame);
+        }
+#endif
+
         inflights -= frames.size();
         VLOG(4) << "Polled " << frames.size()
-                << " acks, inflights: " << inflights;
+                << " frames, inflights: " << inflights;
     }
     end_time = std::chrono::high_resolution_clock::now();
 

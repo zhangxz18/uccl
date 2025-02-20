@@ -12,7 +12,7 @@
 // #define USE_TCP
 // #define ENABLE_CSUM
 // #define RTT_STATS
-// #define USE_SRD_FOR_CTRL
+// #define USE_SRD
 
 enum class CCType {
     kTimely,
@@ -46,26 +46,31 @@ static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
 static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_UD_ADDITION.
-static const uint32_t EFA_UD_ADDITION = 40;    // Auto-added by EFA during recv.
 static const uint32_t EFA_MAX_QPS = 256;       // Max QPs per EFA device.
+#ifdef USE_SRD
+static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
+#else
+static const uint32_t EFA_UD_ADDITION = 40;  // Auto-added by EFA during recv.
+#endif
 /// Interface configuration.
 
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 static const uint32_t kNumEnginesPerDev = 1;  // # of engines per device.
-static const uint32_t kMaxPathForCtrl = 8;    // # of paths/QPs for control.
-static const uint32_t kMaxPath =
-    EFA_MAX_QPS - kMaxPathForCtrl;  // # of paths/QPs for data per engine.
+static const uint32_t kMaxPath = 16;  // # of paths/QPs for data per engine.
+static const uint32_t kMaxPathForCtrl = 16;  // # of paths/QPs for control.
+static_assert(kMaxPath + kMaxPathForCtrl <= EFA_MAX_QPS,
+              "kMaxPath + kMaxPathForCtrl too large");
+static const uint32_t kMaxQPForSend = 16;
+static const uint32_t kMaxQPForSendCtrl = 16;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;
 static const uint32_t kMaxCqeTotal = 16384;
-static const uint32_t kMaxPollBatch = 16;
+static const uint32_t kMaxPollBatch = 32;
 static const uint32_t kMaxRecvWrDeficit = 32;
 static const uint32_t kMaxChainedWr = 32;
-static const uint32_t kMaxQPForSend = 8;
-static const uint32_t kMaxQPForSendCtrl = 8;
 
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
