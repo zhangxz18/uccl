@@ -38,7 +38,6 @@ void EFAFactory::InitDev(int dev_idx) {
 
     // Find the device by name.
     for (i = 0; i < nb_devices; i++) {
-        LOG(INFO) << "Device: " << ibv_get_device_name(device_list[i]);
         if (strcmp(ibv_get_device_name(device_list[i]), dev->ib_name) == 0) {
             break;
         }
@@ -48,8 +47,8 @@ void EFAFactory::InitDev(int dev_idx) {
         goto free_devices;
     }
     DCHECK(i == dev_idx);
-    LOG(INFO) << "Found device: " << dev->ib_name << " at index " << i
-              << " with gid_idx " << EFA_GID_IDX;
+    LOG(INFO) << "Found device: " << dev->ib_name << " at dev_idx " << i
+              << " with gid_idx " << (uint32_t)EFA_GID_IDX;
 
     // Open the device.
     memset(&dev_attr, 0, sizeof(dev_attr));
@@ -118,7 +117,7 @@ void EFAFactory::InitDev(int dev_idx) {
             !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
         ibv_dealloc_pd(pd);
 
-        LOG(INFO) << "DMA-BUF support: " << dev->dma_buf_support;
+        VLOG(5) << "DMA-BUF support: " << dev->dma_buf_support;
     }
 
     efa_ctl.dev_map.insert({dev_idx, dev});
@@ -160,10 +159,12 @@ EFASocket::EFASocket(int dev_idx, int socket_id)
     : next_qp_idx_for_send_(0),
       dev_idx_(dev_idx),
       socket_id_(socket_id),
-      unpolled_send_wrs_(0),
+      send_queue_wrs_(0),
       recv_queue_wrs_(0) {
     LOG(INFO) << "[AF_XDP] creating dev_idx_ " << dev_idx_ << " socket_id "
               << socket_id;
+
+    memset(deficit_cnt_recv_wrs_, 0, sizeof(deficit_cnt_recv_wrs_));
 
     auto *factory_dev = EFAFactory::GetEFADevice(dev_idx);
     context_ = factory_dev->context;
@@ -236,9 +237,14 @@ struct ibv_qp *EFASocket::create_qp(struct ibv_cq *send_cq,
     qp_attr.cap.max_send_sge = 2;
     qp_attr.cap.max_recv_sge = 2;
 
+#ifdef USE_SRD
     qp_attr.qp_type = IBV_QPT_DRIVER;
     struct ibv_qp *qp = qp =
         efadv_create_driver_qp(pd_, &qp_attr, EFADV_QP_DRIVER_TYPE_SRD);
+#else
+    qp_attr.qp_type = IBV_QPT_UD;
+    struct ibv_qp *qp = ibv_create_qp(pd_, &qp_attr);
+#endif
 
     if (!qp) {
         perror("Failed to create QP");
@@ -275,7 +281,7 @@ struct ibv_qp *EFASocket::create_qp(struct ibv_cq *send_cq,
     return qp;
 }
 
-uint32_t EFASocket::send_packet(FrameDesc *frame) {
+uint32_t EFASocket::post_send_wr(FrameDesc *frame) {
     struct ibv_sge sge[2] = {{0}, {0}};
     struct ibv_send_wr send_wr = {0}, *bad_send_wr;
     struct ibv_qp *src_qp;
@@ -302,6 +308,7 @@ uint32_t EFASocket::send_packet(FrameDesc *frame) {
         src_qp = qp_list_[src_qp_idx];
 
         frame->set_src_qp_idx(src_qp_idx);
+        send_queue_wrs_++;
     }
 
     send_wr.wr_id = (uint64_t)frame;
@@ -317,11 +324,10 @@ uint32_t EFASocket::send_packet(FrameDesc *frame) {
         exit(1);
     }
 
-    unpolled_send_wrs_++;
     return 1;
 }
 
-uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
+uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames) {
     struct ibv_sge sge[2] = {{0}, {0}};
     struct ibv_send_wr send_wr = {0}, *bad_send_wr;
     struct ibv_qp *src_qp;
@@ -349,6 +355,7 @@ uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
             src_qp = qp_list_[src_qp_idx];
 
             frame->set_src_qp_idx(src_qp_idx);
+            send_queue_wrs_++;
         }
 
         send_wr.wr_id = (uint64_t)frame;
@@ -366,13 +373,118 @@ uint32_t EFASocket::send_packets(std::vector<FrameDesc *> &frames) {
         }
     }
 
-    unpolled_send_wrs_ += frames.size();
     return frames.size();
+}
+
+void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
+    auto &deficit_cnt = deficit_cnt_recv_wrs_[qp_idx];
+    deficit_cnt += budget;
+    if (deficit_cnt < kMaxRecvDeficitCnt) return;
+
+    int ret;
+    uint64_t pkt_hdr_buf, pkt_data_buf, frame_desc_buf;
+    auto *qp = qp_list_[qp_idx];
+
+    auto *wr_head = &recv_wr_vec_[0];
+    for (int i = 0; i < deficit_cnt; i++) {
+        ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
+        ret |= pkt_data_pool_->alloc_buff(&pkt_data_buf);
+        ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
+        DCHECK(ret == 0);
+
+        auto *frame_desc = FrameDesc::Create(frame_desc_buf, pkt_hdr_buf,
+                                             EFA_UD_ADDITION + kUcclPktHdrLen,
+                                             pkt_data_buf, kUcclPktdataLen, 0);
+        frame_desc->set_src_qp_idx(qp_idx);
+
+        // recv size does not need to exactly match send size. But we need limit
+        // the hdr sge to exactly match hdr size, so that we can split hdr and
+        // data between GPU and CPU.
+        auto *sge = recv_sge_vec_[i % kMaxRecvDeficitCnt];
+        auto *wr = &recv_wr_vec_[i % kMaxRecvDeficitCnt];
+
+        sge[0] = {(uintptr_t)pkt_hdr_buf, EFA_UD_ADDITION + kUcclPktHdrLen,
+                  get_pkt_hdr_lkey()};
+        sge[1] = {(uintptr_t)pkt_data_buf, kUcclPktdataLen,
+                  get_pkt_data_lkey()};
+
+        wr->wr_id = (uint64_t)frame_desc;
+        wr->num_sge = 2;
+        wr->sg_list = sge;
+
+        bool is_last =
+            (i + 1) % kMaxRecvDeficitCnt == 0 || (i + 1) == deficit_cnt;
+        wr->next =
+            is_last ? nullptr : &recv_wr_vec_[(i + 1) % kMaxRecvDeficitCnt];
+
+        if (is_last) {
+            struct ibv_recv_wr *bad_wr;
+            // Post receive buffer
+            if (ibv_post_recv(qp, wr_head, &bad_wr)) {
+                perror("Failed to post recv");
+                exit(1);
+            }
+            if (i + 1 != deficit_cnt)
+                wr_head = &recv_wr_vec_[(i + 1) % kMaxRecvDeficitCnt];
+        }
+    }
+
+    recv_queue_wrs_ += deficit_cnt;
+    deficit_cnt = 0;
+}
+
+void EFASocket::post_recv_wrs_for_ctrl(uint32_t budget) {
+    auto &deficit_cnt = deficit_cnt_recv_wrs_[kMaxPath];
+    deficit_cnt += budget;
+    if (deficit_cnt < kMaxRecvDeficitCnt) return;
+
+    int ret;
+    uint64_t pkt_hdr_buf, frame_desc_buf;
+    auto *qp = ctrl_qp_;
+
+    auto *wr_head = &recv_wr_vec_[0];
+    for (int i = 0; i < budget; i++) {
+        ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
+        ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
+        DCHECK(ret == 0);
+
+        auto *frame_desc = FrameDesc::Create(
+            frame_desc_buf, pkt_hdr_buf,
+            EFA_UD_ADDITION + kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
+        frame_desc->set_src_qp_idx(kMaxPath);
+
+        auto *sge = recv_sge_vec_[i % kMaxRecvDeficitCnt];
+        auto *wr = &recv_wr_vec_[i % kMaxRecvDeficitCnt];
+
+        // recv size does not need to exactly match send size.
+        sge[0] = {(uintptr_t)pkt_hdr_buf,
+                  EFA_UD_ADDITION + kUcclPktHdrLen + kUcclSackHdrLen,
+                  get_pkt_hdr_lkey()};
+
+        wr->wr_id = (uint64_t)frame_desc;
+        wr->num_sge = 1;
+        wr->sg_list = sge;
+
+        bool is_last =
+            (i + 1) % kMaxRecvDeficitCnt == 0 || (i + 1) == deficit_cnt;
+        wr->next =
+            is_last ? nullptr : &recv_wr_vec_[(i + 1) % kMaxRecvDeficitCnt];
+
+        if (is_last) {
+            struct ibv_recv_wr *bad_wr;
+            // Post receive buffer
+            if (ibv_post_recv(qp, wr_head, &bad_wr)) {
+                perror("Failed to post recv");
+                exit(1);
+            }
+            if (i + 1 != deficit_cnt)
+                wr_head = &recv_wr_vec_[(i + 1) % kMaxRecvDeficitCnt];
+        }
+    }
 }
 
 std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
     std::vector<FrameDesc *> frames;
-    frames.reserve(budget);
 
     while (frames.size() < budget) {
         int ne = ibv_poll_cq(send_cq_, kMaxBatchCQ, wc_);
@@ -394,13 +506,12 @@ std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
         if (ne < kMaxBatchCQ) break;
     }
 
-    unpolled_send_wrs_ -= frames.size();
+    send_queue_wrs_ -= frames.size();
     return frames;
 }
 
 std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
     std::vector<FrameDesc *> frames;
-    frames.reserve(budget);
 
     while (frames.size() < budget) {
         int ne = ibv_poll_cq(recv_cq_, kMaxBatchCQ, wc_);
@@ -418,7 +529,6 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
             frames.push_back(frame);
 
             auto src_qp_idx = frame->get_src_qp_idx();
-            // TODO(yang): Making this chained?
             post_recv_wrs(1, src_qp_idx);
         }
 
@@ -427,16 +537,14 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
     }
 
     recv_queue_wrs_ -= frames.size();
-
     return frames;
 }
 
-std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget) {
+std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget,
+                                                 uint32_t &finished_sends) {
     std::vector<FrameDesc *> frames;
-    frames.reserve(budget);
-    uint32_t polled_send_wrs = 0;
 
-    while (frames.size() < budget) {
+    while (frames.size() + finished_sends < budget) {
         int ne = ibv_poll_cq(ctrl_cq_, kMaxBatchCQ, wc_);
         DCHECK(ne >= 0) << "recv_acks ibv_poll_cq error";
 
@@ -450,15 +558,11 @@ std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget) {
 
             if (wc_[i].opcode == IBV_WC_RECV) {
                 frames.push_back(frame);
-
-                auto src_qp_idx = frame->get_src_qp_idx();
-                // TODO(yang): Making this chained?
-                post_recv_wrs_for_ctrl(1);
             } else if (wc_[i].opcode == IBV_WC_SEND) {
                 auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
                 pkt_hdr_pool_->free_buff(pkt_hdr_addr);
                 frame_desc_pool_->free_buff((uint64_t)frame);
-                polled_send_wrs++;
+                finished_sends++;
             } else {
                 DCHECK(false) << "Wrong wc_[i].opcode: " << wc_[i].opcode;
             }
@@ -468,81 +572,10 @@ std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget) {
         if (ne < kMaxBatchCQ) break;
     }
 
-    recv_queue_wrs_ -= frames.size();
-    unpolled_send_wrs_ -= polled_send_wrs;
+    if (frames.size()) {
+        post_recv_wrs_for_ctrl(frames.size());
+    }
     return frames;
-}
-
-void EFASocket::post_recv_wrs(uint32_t budget, uint32_t qp_idx) {
-    int ret;
-    uint64_t pkt_hdr_buf, pkt_data_buf, frame_desc_buf;
-    auto *qp = qp_list_[qp_idx];
-
-    for (int i = 0; i < budget; i++) {
-        ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
-        ret |= pkt_data_pool_->alloc_buff(&pkt_data_buf);
-        ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
-        DCHECK(ret == 0);
-
-        auto *frame_desc = FrameDesc::Create(
-            frame_desc_buf, pkt_hdr_buf, pkt_data_buf,
-            PktHdrBuffPool::kPktHdrSize, PktDataBuffPool::kPktDataSize, 0);
-        frame_desc->set_src_qp_idx(qp_idx);
-
-        // recv size does not need to exactly match send size. But we need limit
-        // the hdr sge to exactly match hdr size, so that we can split hdr and
-        // data between GPU and CPU.
-        struct ibv_sge sge[2] = {
-            {(uintptr_t)pkt_hdr_buf, EFA_GRH_SIZE + kUcclPktHdrLen,
-             get_pkt_hdr_lkey()},
-            {(uintptr_t)pkt_data_buf, kUcclPktdataLen, get_pkt_data_lkey()}};
-
-        struct ibv_recv_wr wr = {}, *bad_wr;
-        wr.wr_id = (uint64_t)frame_desc;
-        wr.num_sge = 2;
-        wr.sg_list = sge;
-
-        // Post receive buffer
-        if (ibv_post_recv(qp, &wr, &bad_wr)) {
-            perror("Failed to post recv");
-            exit(1);
-        }
-    }
-
-    recv_queue_wrs_ += budget;
-}
-void EFASocket::post_recv_wrs_for_ctrl(uint32_t budget) {
-    int ret;
-    uint64_t pkt_hdr_buf, frame_desc_buf;
-    auto *qp = ctrl_qp_;
-
-    for (int i = 0; i < budget; i++) {
-        ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
-        ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
-        DCHECK(ret == 0);
-
-        auto *frame_desc = FrameDesc::Create(frame_desc_buf, pkt_hdr_buf, 0,
-                                             PktHdrBuffPool::kPktHdrSize, 0, 0);
-        frame_desc->set_src_qp_idx(kMaxPath);
-
-        // recv size does not need to exactly match send size.
-        struct ibv_sge sge[1] = {{(uintptr_t)pkt_hdr_buf,
-                                  PktHdrBuffPool::kPktHdrSize,
-                                  get_pkt_hdr_lkey()}};
-
-        struct ibv_recv_wr wr = {}, *bad_wr;
-        wr.wr_id = (uint64_t)frame_desc;
-        wr.num_sge = 1;
-        wr.sg_list = sge;
-
-        // Post receive buffer
-        if (ibv_post_recv(qp, &wr, &bad_wr)) {
-            perror("Failed to post recv");
-            exit(1);
-        }
-    }
-
-    recv_queue_wrs_ += budget;
 }
 
 std::string EFASocket::to_string() {
@@ -551,7 +584,7 @@ std::string EFASocket::to_string() {
         "free pkt hdr: %u, free pkt data: %u, free frame desc: %u, unpulled tx "
         "pkts: %u, fill queue entries: %u",
         pkt_hdr_pool_->avail_slots(), pkt_data_pool_->avail_slots(),
-        frame_desc_pool_->avail_slots(), unpolled_send_wrs_, recv_queue_wrs_);
+        frame_desc_pool_->avail_slots(), send_queue_wrs_, recv_queue_wrs_);
     if (socket_id_ == 0) {
         auto now = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -578,9 +611,8 @@ std::string EFASocket::to_string() {
 
 void EFASocket::shutdown() {
     // pull_completion_queue to make sure all frames are tx successfully.
-    while (unpolled_send_wrs_) {
+    while (send_queue_wrs_) {
         std::ignore = poll_send_cq(kMaxBatchCQ);
-        std::ignore = poll_ctrl_cq(kMaxBatchCQ);
     }
 }
 

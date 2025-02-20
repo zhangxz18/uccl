@@ -18,7 +18,7 @@
 #define BUFFER_SIZE2 (MTU - BUFFER_SIZE1)
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 #define USE_GDR 1
-#define USE_SRD 1
+#define USE_SRD 0
 
 #if USE_SRD == 0
 #define UD_ADDITION (40)

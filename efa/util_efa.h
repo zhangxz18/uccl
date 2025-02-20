@@ -120,8 +120,8 @@ class BuffPool {
 
 class PktHdrBuffPool : public BuffPool {
    public:
-    // This should cover EFA_GRH_SIZE + data packet hdr
-    // or EFA_GRH_SIZE + ack packet hdr + sack packet hdr.
+    // This should cover EFA_UD_ADDITION + data packet hdr
+    // or EFA_UD_ADDITION + ack packet hdr + sack packet hdr.
     static constexpr uint32_t kPktHdrSize = 256;
     static constexpr uint32_t kNumPktHdr = NUM_FRAMES;
     static_assert((kNumPktHdr & (kNumPktHdr - 1)) == 0,
@@ -131,7 +131,7 @@ class PktHdrBuffPool : public BuffPool {
 
     ~PktHdrBuffPool() = default;
 };
-static_assert(EFA_GRH_SIZE + kUcclPktHdrLen + kUcclSackHdrLen <
+static_assert(EFA_UD_ADDITION + kUcclPktHdrLen + kUcclSackHdrLen <
                   PktHdrBuffPool::kPktHdrSize,
               "uccl pkt hdr and sack hdr too large");
 
@@ -150,10 +150,10 @@ class PktDataBuffPool : public BuffPool {
 
 class FrameDesc {
     uint64_t pkt_hdr_addr_;   // in CPU memory.
-    uint64_t pkt_data_addr_;  // in GPU memory.
     uint32_t pkt_hdr_len_;    // the length of packet hdr.
+    uint64_t pkt_data_addr_;  // in GPU memory.
     uint32_t pkt_data_len_;   // the length of packet data.
-    uint32_t src_qp_idx_;     // src QP to use for this frame.
+    uint16_t src_qp_idx_;     // src QP to use for this frame.
     uint16_t dest_qpn_;       // dest QP to use for this frame.
     struct ibv_ah *dest_ah_;  // dest ah to use for this frame.
 
@@ -165,43 +165,56 @@ class FrameDesc {
 
     struct list_head frame_link_;
 
-    FrameDesc(uint64_t pkt_hdr_addr, uint64_t pkt_data_addr,
-              uint32_t pkt_hdr_len, uint32_t pkt_data_len, uint8_t msg_flags)
+    FrameDesc(uint64_t pkt_hdr_addr, uint32_t pkt_hdr_len,
+              uint64_t pkt_data_addr, uint32_t pkt_data_len, uint8_t msg_flags)
         : pkt_hdr_addr_(pkt_hdr_addr),
-          pkt_data_addr_(pkt_data_addr),
           pkt_hdr_len_(pkt_hdr_len),
+          pkt_data_addr_(pkt_data_addr),
           pkt_data_len_(pkt_data_len),
           msg_flags_(msg_flags) {
         INIT_LIST_HEAD(&frame_link_);
-        src_qp_idx_ = UINT32_MAX;
+        src_qp_idx_ = UINT16_MAX;
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
     }
 
    public:
     static FrameDesc *Create(uint64_t frame_desc_addr, uint64_t pkt_hdr_addr,
-                             uint64_t pkt_data_addr, uint32_t pkt_hdr_len,
+                             uint32_t pkt_hdr_len, uint64_t pkt_data_addr,
                              uint32_t pkt_data_len, uint8_t msg_flags = 0) {
         return new (reinterpret_cast<void *>(frame_desc_addr)) FrameDesc(
-            pkt_hdr_addr, pkt_data_addr, pkt_hdr_len, pkt_data_len, msg_flags);
+            pkt_hdr_addr, pkt_hdr_len, pkt_data_addr, pkt_data_len, msg_flags);
     }
     uint64_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
-    uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
-    uint8_t get_pkt_hdr_len() const { return pkt_hdr_len_; }
-    uint8_t get_pkt_data_len() const { return pkt_data_len_; }
+    void set_pkt_hdr_addr(uint64_t pkt_hdr_addr) {
+        pkt_hdr_addr_ = pkt_hdr_addr;
+    }
 
-    uint32_t get_src_qp_idx() const { return src_qp_idx_; }
-    void set_src_qp_idx(uint32_t src_qp_idx) { src_qp_idx_ = src_qp_idx; }
+    uint32_t get_pkt_hdr_len() const { return pkt_hdr_len_; }
+    void set_pkt_hdr_len(uint32_t pkt_hdr_len) { pkt_hdr_len_ = pkt_hdr_len; }
+
+    uint64_t get_pkt_data_addr() const { return pkt_data_addr_; }
+    void set_pkt_data_addr(uint64_t pkt_data_addr) {
+        pkt_data_addr_ = pkt_data_addr;
+    }
+
+    uint32_t get_pkt_data_len() const { return pkt_data_len_; }
+    void set_pkt_data_len(uint32_t pkt_data_len) {
+        pkt_data_len_ = pkt_data_len;
+    }
+
+    uint16_t get_msg_flags() const { return msg_flags_; }
+    void set_msg_flags(uint16_t flags) { msg_flags_ = flags; }
+    void add_msg_flags(uint16_t flags) { msg_flags_ |= flags; }
+
+    uint16_t get_src_qp_idx() const { return src_qp_idx_; }
+    void set_src_qp_idx(uint16_t src_qp_idx) { src_qp_idx_ = src_qp_idx; }
 
     uint16_t get_dest_qpn() const { return dest_qpn_; }
     void set_dest_qpn(uint16_t dest_qpn) { dest_qpn_ = dest_qpn; }
 
     struct ibv_ah *get_dest_ah() const { return dest_ah_; }
     void set_dest_ah(struct ibv_ah *dest_ah) { dest_ah_ = dest_ah; }
-
-    uint16_t get_msg_flags() const { return msg_flags_; }
-    void set_msg_flags(uint16_t flags) { msg_flags_ = flags; }
-    void add_msg_flags(uint16_t flags) { msg_flags_ |= flags; }
 
     // Returns true if this is the first in a message.
     bool is_first() const { return (msg_flags_ & UCCL_MSGBUF_FLAGS_SYN) != 0; }
@@ -236,7 +249,7 @@ class FrameDesc {
         pkt_hdr_len_ = 0;
         pkt_data_len_ = 0;
         msg_flags_ = 0;
-        src_qp_idx_ = UINT32_MAX;
+        src_qp_idx_ = UINT16_MAX;
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
         INIT_LIST_HEAD(&frame_link_);
@@ -376,8 +389,8 @@ class EFASocket {
     struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
                              uint32_t send_cq_size, uint32_t recv_cq_size);
 
-    uint32_t next_qp_idx_for_send_;
-    inline uint32_t get_next_qp_idx_for_send() {
+    uint16_t next_qp_idx_for_send_;
+    inline uint16_t get_next_qp_idx_for_send() {
         next_qp_idx_for_send_ = (next_qp_idx_for_send_++) % kMaxQPForSend;
         return next_qp_idx_for_send_;
     }
@@ -390,24 +403,30 @@ class EFASocket {
     PktDataBuffPool *pkt_data_pool_;
     FrameDescBuffPool *frame_desc_pool_;
 
+    // How many recv_wrs are lacking for each qp to be full?
+    uint16_t deficit_cnt_recv_wrs_[kMaxPath + 1];
+    struct ibv_recv_wr recv_wr_vec_[kMaxRecvDeficitCnt];
+    struct ibv_sge recv_sge_vec_[kMaxRecvDeficitCnt][2];
+
     inline uint32_t dev_idx() const { return dev_idx_; }
     inline uint32_t socket_id() const { return socket_id_; }
 
     // dest_qpn and dest_gid_idx is specified in FrameDesc; src_qp is determined
     // by EFASocket internally to evenly spread the load. This function also
     // dynamically chooses normal qp and ctrl_qp based on pkt_data_len_.
-    uint32_t send_packet(FrameDesc *frame);
-    uint32_t send_packets(std::vector<FrameDesc *> &frames);
+    uint32_t post_send_wr(FrameDesc *frame);
+    uint32_t post_send_wrs(std::vector<FrameDesc *> &frames);
 
-    // This polls send_cq_ for data qps;
-    std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
-    // This polls recv_cq_ for data qps; wr_id is FrameDesc*
-    std::vector<FrameDesc *> poll_recv_cq(uint32_t budget);
-    // This will internally free FrameDesc that was used to send acks.
-    std::vector<FrameDesc *> poll_ctrl_cq(uint32_t budget);
-
-    void post_recv_wrs(uint32_t budget, uint32_t qp_idx);
+    void post_recv_wrs(uint32_t budget, uint16_t qp_idx);
     void post_recv_wrs_for_ctrl(uint32_t budget);
+
+    // This polls send_cq_ for data qps; wr_id is FrameDesc*.
+    std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
+    // This polls recv_cq_ for data qps; wr_id is FrameDesc*.
+    std::vector<FrameDesc *> poll_recv_cq(uint32_t budget);
+    // This internally frees FrameDesc for sending acks, returns received acks.
+    std::vector<FrameDesc *> poll_ctrl_cq(uint32_t budget,
+                                          uint32_t &finished_sends);
 
     std::string to_string();
     void shutdown();
@@ -420,13 +439,6 @@ class EFASocket {
         }
         meta->qpn_list[kMaxPath] = ctrl_qp_->qp_num;
         meta->gid = gid_;
-    }
-
-    inline uint32_t send_queue_free_entries() {
-        return kMaxSendWr - unpolled_send_wrs_;
-    }
-    inline uint64_t send_queue_estimated_latency_ns() {
-        return unpolled_send_wrs_ * EFA_MTU * 1000000000UL / kLinkBandwidth;
     }
 
     inline uint64_t pop_pkt_hdr() {
@@ -461,8 +473,17 @@ class EFASocket {
         frame_desc_pool_->free_buff(pkt_frame_desc);
     }
 
+    inline uint32_t send_queue_free_space() {
+        return kMaxSendWr * kMaxPath - send_queue_wrs_;
+    }
+    inline uint64_t send_queue_estimated_latency_ns() {
+        return send_queue_wrs_ * EFA_MTU * 1000000000UL / kLinkBandwidth;
+    }
+    inline uint32_t send_queue_wrs() { return send_queue_wrs_; }
+    inline uint32_t recv_queue_wrs() { return recv_queue_wrs_; }
+
    private:
-    uint32_t unpolled_send_wrs_;
+    uint32_t send_queue_wrs_;
     uint32_t recv_queue_wrs_;
 
     std::chrono::time_point<std::chrono::high_resolution_clock> last_stat_;

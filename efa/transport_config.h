@@ -12,6 +12,7 @@
 // #define USE_TCP
 // #define ENABLE_CSUM
 // #define RTT_STATS
+// #define USE_SRD
 
 enum class CCType {
     kTimely,
@@ -44,8 +45,12 @@ static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
 static const uint8_t IB_PORT_NUM = 1;
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
-static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_GRH_SIZE.
-static const uint32_t EFA_GRH_SIZE = 40;       // Auto-added by EFA during recv.
+static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_UD_ADDITION.
+#ifdef USE_SRD
+static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
+#else
+static const uint32_t EFA_UD_ADDITION = 40;  // Auto-added by EFA during recv.
+#endif
 /// Interface configuration.
 
 static const uint32_t kMaxSendWr = 128;
@@ -54,6 +59,7 @@ static const uint32_t kMaxSendRecvWrForCtrl = 2048;
 static const uint32_t kMaxCqeTotal = 16384;
 static const uint32_t kMaxBatchCQ = 16;
 static const uint32_t kMaxQPForSend = 4;
+static const uint32_t kMaxRecvDeficitCnt = 32;
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 

@@ -286,7 +286,7 @@ void UcclFlow::rx_messages() {
                     msgbuf->mark_txpulltime_free();
                     // Reverse so to send back
                     reverse_packet_l2l3(msgbuf);
-                    socket_->send_packet(
+                    socket_->post_send_wr(
                         {msgbuf->get_frame_offset(), msgbuf->get_frame_len()});
                 } else {
                     socket_->push_frame(msgbuf->get_frame_offset());
@@ -318,7 +318,7 @@ void UcclFlow::rx_messages() {
             EFASocket::frame_desc ack_frame = craft_ackpacket(
                 path_id, dst_port_reverse, pcb_.seqno(), pcb_.ackno(),
                 net_flags, timestamp1, timestamp2);
-            socket_->send_packet(ack_frame);
+            socket_->post_send_wr(ack_frame);
         }
     }
 
@@ -434,7 +434,7 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
             auto unacked_pkt_budget =
                 kMaxUnackedPktsPerEngine - num_unacked_pkts;
             auto txq_free_entries =
-                socket_->send_queue_free_entries(unacked_pkt_budget);
+                socket_->send_queue_free_space(unacked_pkt_budget);
             auto hard_budget =
                 std::min(std::min(txq_free_entries, unacked_pkt_budget),
                          (uint32_t)kSackBitmapSize);
@@ -483,7 +483,7 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
                         << missing_frames_.size() << " missing packets";
                 // TODO(yang): handling the cases where the number of
                 // missing frames is larger than the free send_queue size.
-                socket_->send_packets(missing_frames_);
+                socket_->post_send_wrs(missing_frames_);
                 missing_frames_.clear();
             }
         }
@@ -553,7 +553,7 @@ void UcclFlow::fast_retransmit() {
             msgbuf->get_pkt_addr() + kNetHdrLen);
         DCHECK_EQ(seqno, ucclh->seqno.value());
         msgbuf->mark_not_txpulltime_free();
-        socket_->send_packet(
+        socket_->post_send_wr(
             {msgbuf->get_frame_offset(), msgbuf->get_frame_len()});
         pcb_.add_to_rto_wheel(msgbuf, seqno);
         pcb_.fast_rexmits++;
@@ -570,7 +570,7 @@ void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
 #endif
     prepare_datapacket(msgbuf, path_id, seqno, UcclPktHdr::UcclFlags::kData);
     msgbuf->mark_not_txpulltime_free();
-    socket_->send_packet({msgbuf->get_frame_offset(), msgbuf->get_frame_len()});
+    socket_->post_send_wr({msgbuf->get_frame_offset(), msgbuf->get_frame_len()});
     pcb_.add_to_rto_wheel(msgbuf, seqno);
     pcb_.rto_rexmits++;
     pcb_.rto_rexmits_consectutive++;
@@ -598,10 +598,10 @@ void UcclFlow::transmit_pending_packets() {
 
     // auto unacked_pkt_budget = kMaxUnackedPktsPerEngine - num_unacked_pkts;
     // auto txq_free_entries =
-    //     socket_->send_queue_free_entries(unacked_pkt_budget);
+    //     socket_->send_queue_free_space(unacked_pkt_budget);
     // auto hard_budget = std::min(txq_free_entries, unacked_pkt_budget);
 
-    auto hard_budget = socket_->send_queue_free_entries();
+    auto hard_budget = socket_->send_queue_free_space();
 
     uint32_t permitted_packets = 0;
 
@@ -695,7 +695,7 @@ void UcclFlow::transmit_pending_packets() {
     }
     VLOG(3) << "tx packets " << pending_tx_frames_.size();
 
-    socket_->send_packets(pending_tx_frames_);
+    socket_->post_send_wrs(pending_tx_frames_);
     pending_tx_frames_.clear();
 }
 
@@ -1258,7 +1258,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
          i = (i + 1) % (65536 - BASE_PORT) + BASE_PORT) {
         uint16_t dst_port = i;
         auto frame = flow->craft_rssprobe_packet(dst_port);
-        socket_->send_packet(frame);
+        socket_->post_send_wr(frame);
 
         auto frames = socket_->poll_recv_cq(RECV_BATCH_SIZE);
         for (auto &frame : frames) {
@@ -1278,7 +1278,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
                     msgbuf->mark_txpulltime_free();
                     // Reverse so to send back
                     flow->reverse_packet_l2l3(msgbuf);
-                    socket_->send_packet(
+                    socket_->post_send_wr(
                         {msgbuf->get_frame_offset(), msgbuf->get_frame_len()});
                 } else {
                     socket_->push_frame(frame.frame_offset);
