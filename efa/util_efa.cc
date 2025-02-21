@@ -341,7 +341,7 @@ struct ibv_qp *EFASocket::create_srd_qp(struct ibv_cq *send_cq,
     return qp;
 }
 
-uint32_t EFASocket::post_send_wr(FrameDesc *frame) {
+uint32_t EFASocket::post_send_wr(FrameDesc *frame, uint16_t src_qp_idx) {
     struct ibv_sge sge[2] = {{0}, {0}};
     struct ibv_send_wr send_wr = {0}, *bad_send_wr;
     struct ibv_qp *src_qp;
@@ -355,11 +355,8 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame) {
                   get_pkt_hdr_lkey()};
         send_wr.num_sge = 1;
 
-        auto src_qp_idx = frame->get_src_qp_idx();
-        if (src_qp_idx == UINT16_MAX) {
-            src_qp_idx = get_next_qp_idx_for_send_ctrl();
-            frame->set_src_qp_idx(src_qp_idx);
-        }
+        DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
+        frame->set_src_qp_idx(src_qp_idx);
         src_qp = ctrl_qp_list_[src_qp_idx];
     } else {
         // This is a data packet.
@@ -369,11 +366,8 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame) {
                   get_pkt_data_lkey()};
         send_wr.num_sge = 2;
 
-        auto src_qp_idx = frame->get_src_qp_idx();
-        if (src_qp_idx == UINT16_MAX) {
-            src_qp_idx = get_next_qp_idx_for_send();
-            frame->set_src_qp_idx(src_qp_idx);
-        }
+        DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
+        frame->set_src_qp_idx(src_qp_idx);
         src_qp = qp_list_[src_qp_idx];
 
         send_queue_wrs_++;
@@ -395,19 +389,16 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame) {
     return 1;
 }
 
-uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames) {
+uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
+                                  uint16_t src_qp_idx) {
     int i = 0;
     auto *wr_head = &send_wr_vec_[0];
-    // TODO(yang): how to do chaining while using different paths?
-    // Approach 1: using fixed src_qp_idx for all frames, and let the transport
-    // choose the dest qpn. The transport needs to know the src_qp_idx we choose
-    // so it can maintain per-path state. Here path_id = <src_qpn, dst_qpn>.
-    auto src_qp_idx = get_next_qp_idx_for_send();
 
     for (auto *frame : frames) {
         auto dest_ah = frame->get_dest_ah();
         auto dest_qpn = frame->get_dest_qpn();
         DCHECK(frame->get_pkt_data_len() != 0);
+        DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
         frame->set_src_qp_idx(src_qp_idx);
         VLOG(3) << "post_send_wrs i " << i << " src_qp_idx " << src_qp_idx;
 
@@ -440,7 +431,6 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames) {
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
-                src_qp_idx = get_next_qp_idx_for_send();
             }
         }
 
@@ -451,15 +441,16 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames) {
     return frames.size();
 }
 
-uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames) {
+uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
+                                           uint16_t src_qp_idx) {
     int i = 0;
     auto *wr_head = &send_wr_vec_[0];
-    auto src_qp_idx = get_next_qp_idx_for_send();
 
     for (auto *frame : frames) {
         auto dest_ah = frame->get_dest_ah();
         auto dest_qpn = frame->get_dest_qpn();
         DCHECK(frame->get_pkt_data_len() == 0);
+        DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
         frame->set_src_qp_idx(src_qp_idx);  // indicating ctrl qp
 
         auto *sge = send_sge_vec_[i % kMaxChainedWr];
@@ -490,7 +481,6 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames) {
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
-                src_qp_idx = get_next_qp_idx_for_send();
             }
         }
 
@@ -664,11 +654,12 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
     return frames;
 }
 
-std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget,
-                                                 uint32_t *polled_send_acks) {
+std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
+    uint32_t budget) {
     std::vector<FrameDesc *> recv_frames;
+    uint32_t polled_send_acks = 0;
 
-    while (recv_frames.size() + *polled_send_acks < budget) {
+    while (recv_frames.size() + polled_send_acks < budget) {
         int ne = ibv_poll_cq(ctrl_cq_, kMaxPollBatch, wc_);
         DCHECK(ne >= 0) << "recv_acks ibv_poll_cq error";
 
@@ -692,7 +683,7 @@ std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget,
                 pkt_hdr_pool_->free_buff(pkt_hdr_addr);
                 frame_desc_pool_->free_buff((uint64_t)frame);
 
-                (*polled_send_acks)++;
+                polled_send_acks++;
             } else {
                 DCHECK(false) << "Wrong wc_[i].opcode: " << wc_[i].opcode;
             }
@@ -702,7 +693,7 @@ std::vector<FrameDesc *> EFASocket::poll_ctrl_cq(uint32_t budget,
         if (ne < kMaxPollBatch) break;
     }
 
-    return recv_frames;
+    return {recv_frames, polled_send_acks};
 }
 
 std::string EFASocket::to_string() {

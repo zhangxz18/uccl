@@ -382,20 +382,6 @@ class EFASocket {
     struct ibv_cq *ctrl_cq_;
     struct ibv_qp *ctrl_qp_list_[kMaxPathForCtrl];
 
-    // Round-robin index for choosing src_qp to send data/acl packets; this is
-    // to fully utilize the micro-cores on EFA NICs.
-    uint16_t next_qp_idx_for_send_;
-    uint16_t next_qp_idx_for_send_ctrl_;
-    inline uint16_t get_next_qp_idx_for_send() {
-        next_qp_idx_for_send_ = (next_qp_idx_for_send_ + 1) % kMaxQPForSend;
-        return next_qp_idx_for_send_;
-    }
-    inline uint16_t get_next_qp_idx_for_send_ctrl() {
-        next_qp_idx_for_send_ctrl_ =
-            (next_qp_idx_for_send_ctrl_ + 1) % kMaxQPForSendCtrl;
-        return next_qp_idx_for_send_ctrl_;
-    }
-
     uint32_t gpu_idx_;
     uint32_t dev_idx_;
     uint32_t socket_id_;
@@ -420,6 +406,11 @@ class EFASocket {
     uint16_t deficit_cnt_recv_wrs_[kMaxPath];
     uint16_t deficit_cnt_recv_wrs_for_ctrl_[kMaxPathForCtrl];
 
+    // Round-robin index for choosing src_qp to send data/acl packets; this is
+    // to fully utilize the micro-cores on EFA NICs.
+    uint16_t next_qp_idx_for_send_;
+    uint16_t next_qp_idx_for_send_ctrl_;
+
     EFASocket(int gpu_idx, int dev_idx, int socket_id);
 
     struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
@@ -431,10 +422,16 @@ class EFASocket {
     // dest_qpn and dest_gid_idx is specified in FrameDesc; src_qp is determined
     // by EFASocket internally to evenly spread the load. This function also
     // dynamically chooses normal qp and ctrl_qp based on pkt_data_len_.
-    uint32_t post_send_wr(FrameDesc *frame);
-    uint32_t post_send_wrs(std::vector<FrameDesc *> &frames);
-    uint32_t post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames);
+    uint32_t post_send_wr(FrameDesc *frame, uint16_t src_qp_idx);
+    uint32_t post_send_wrs(std::vector<FrameDesc *> &frames,
+                           uint16_t src_qp_idx);
+    uint32_t post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
+                                    uint16_t src_qp_idx);
 
+    // To do chaining while using different paths, we need to use fixed
+    // src_qp_idx for all frames, and let the transport choose different dest
+    // qpns. The transport needs to supply the src_qp_idx so it can maintain
+    // per-path state. Here path_id = <src_qpn, dst_qpn>.
     void post_recv_wrs(uint32_t budget, uint16_t qp_idx);
     void post_recv_wrs_for_ctrl(uint32_t budget, uint16_t qp_idx);
 
@@ -442,9 +439,20 @@ class EFASocket {
     std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
     // This polls recv_cq_ for data qps; wr_id is FrameDesc*.
     std::vector<FrameDesc *> poll_recv_cq(uint32_t budget);
-    // This internally frees FrameDesc for sending acks, returns received acks.
-    std::vector<FrameDesc *> poll_ctrl_cq(uint32_t budget,
-                                          uint32_t *polled_send_acks);
+    // This returns 1) received acks and 2) num of polled sent acks (it
+    // internally frees FrameDesc for sent acks)
+    std::tuple<std::vector<FrameDesc *>, uint32_t> poll_ctrl_cq(
+        uint32_t budget);
+
+    inline uint16_t get_next_qp_idx_for_send() {
+        next_qp_idx_for_send_ = (next_qp_idx_for_send_ + 1) % kMaxQPForSend;
+        return next_qp_idx_for_send_;
+    }
+    inline uint16_t get_next_qp_idx_for_send_ctrl() {
+        next_qp_idx_for_send_ctrl_ =
+            (next_qp_idx_for_send_ctrl_ + 1) % kMaxQPForSendCtrl;
+        return next_qp_idx_for_send_ctrl_;
+    }
 
     std::string to_string();
     void shutdown();

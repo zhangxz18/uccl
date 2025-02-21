@@ -58,12 +58,12 @@ static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 static const uint32_t kNumEnginesPerDev = 1;  // # of engines per device.
-static const uint32_t kMaxPath = 16;  // # of paths/QPs for data per engine.
-static const uint32_t kMaxPathForCtrl = 16;  // # of paths/QPs for control.
+static const uint32_t kMaxPath = 32;  // # of paths/QPs for data per engine.
+static const uint32_t kMaxPathForCtrl = 32;  // # of paths/QPs for control.
 static_assert(kMaxPath + kMaxPathForCtrl <= EFA_MAX_QPS,
               "kMaxPath + kMaxPathForCtrl too large");
-static const uint32_t kMaxQPForSend = 16;
-static const uint32_t kMaxQPForSendCtrl = 16;
+static const uint32_t kMaxQPForSend = 8;
+static const uint32_t kMaxQPForSendCtrl = 8;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;

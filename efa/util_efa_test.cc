@@ -17,10 +17,9 @@ using namespace uccl;
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 #define ITERATIONS 10240
 #define MAX_INFLIGHT 1024u
-// #define RESPONDE_ACK
-
 #define EFA_DEV_ID 3
 #define GPU_ID (EFA_DEV_ID * 2)
+// #define RESPONDE_ACK
 
 // Exchange QPNs and GIDs via TCP
 void exchange_qpns(const char *peer_ip, ConnMeta *local_metadata,
@@ -146,7 +145,7 @@ void run_server() {
         strcpy((char *)frame->get_pkt_hdr_addr(), "Hello World");
         frame->set_dest_ah(dest_ah);
         frame->set_dest_qpn(remote_meta->qpn_list[0]);
-        socket->post_send_wr(frame);
+        socket->post_send_wr(frame, socket->get_next_qp_idx_for_send());
 
         mid_time = std::chrono::high_resolution_clock::now();
         duration1 += mid_time - start_time;
@@ -179,7 +178,7 @@ void run_server() {
     // Receiving an ack ctrl packet.
     uint32_t polled_send_acks = 0;
     do {
-        frames = socket->poll_ctrl_cq(1, &polled_send_acks);
+        std::tie(frames, polled_send_acks) = socket->poll_ctrl_cq(1);
     } while (frames.size() == 0);
     CHECK(frames.size() == 1 && polled_send_acks == 0);
     frame = frames[0];
@@ -207,18 +206,19 @@ void run_server() {
         // Sending ack ctrl packets
         frames =
             prepare_frames_for_ctrl(socket, dest_ah, remote_meta, recv_frames);
-        socket->post_send_wrs_for_ctrl(frames);
+        socket->post_send_wrs_for_ctrl(frames,
+                                       socket->get_next_qp_idx_for_send_ctrl());
         VLOG(4) << "Sent " << frames.size() << " acks";
 
         // Check if any ack ctrl packet finishes sending.
-        polled_send_acks = 0;
-        frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
+        std::tie(frames, polled_send_acks) =
+            socket->poll_ctrl_cq(RECV_BATCH_SIZE);
         CHECK_EQ(frames.size(), 0);
         VLOG(4) << "Polled " << polled_send_acks << " sent acks";
 #else
         // Sending data packets back
         frames = prepare_frames(socket, dest_ah, remote_meta, recv_frames);
-        socket->post_send_wrs(frames);
+        socket->post_send_wrs(frames, socket->get_next_qp_idx_for_send());
         VLOG(4) << "Sent " << frames.size() << " frames";
 
         // Check if any send finished.
@@ -262,7 +262,7 @@ void run_client(const char *server_ip) {
         frame->set_dest_ah(dest_ah);
         frame->set_dest_qpn(remote_meta->qpn_list[0]);
         strcpy((char *)pkt_hdr, "Hello World");
-        socket->post_send_wr(frame);
+        socket->post_send_wr(frame, socket->get_next_qp_idx_for_send());
         do {
             frames = socket->poll_send_cq(1);
         } while (frames.size() == 0);
@@ -302,10 +302,10 @@ void run_client(const char *server_ip) {
     frame->set_dest_ah(dest_ah);
     frame->set_dest_qpn(remote_meta->qpn_list_ctrl[0]);  // ctrl qp
     strcpy((char *)pkt_hdr, "Ctrl Packet");
-    socket->post_send_wr(frame);
+    socket->post_send_wr(frame, socket->get_next_qp_idx_for_send_ctrl());
     uint32_t polled_send_acks = 0;
     do {
-        frames = socket->poll_ctrl_cq(1, &polled_send_acks);
+        std::tie(frames, polled_send_acks) = socket->poll_ctrl_cq(1);
     } while (polled_send_acks == 0);
     CHECK(polled_send_acks == 1 && frames.size() == 0);
     // No need to push pkt_hdr and frame_desc, as poll_ctrl_cq() frees them.
@@ -324,7 +324,7 @@ void run_client(const char *server_ip) {
                 std::min(MAX_INFLIGHT - inflights, SEND_BATCH_SIZE);
             frames =
                 prepare_frames(socket, dest_ah, remote_meta, allowed_frames);
-            socket->post_send_wrs(frames);
+            socket->post_send_wrs(frames, socket->get_next_qp_idx_for_send());
 
             i += frames.size();
             inflights += frames.size();
@@ -343,8 +343,8 @@ void run_client(const char *server_ip) {
 
 #ifdef RESPONDE_ACK
         // Check if any ack received.
-        polled_send_acks = 0;
-        frames = socket->poll_ctrl_cq(RECV_BATCH_SIZE, &polled_send_acks);
+        std::tie(frames, polled_send_acks) =
+            socket->poll_ctrl_cq(RECV_BATCH_SIZE);
         for (auto frame : frames) {
             socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
             DCHECK_EQ(frame->get_pkt_data_len(), 0) << frame->get_pkt_hdr_len();
