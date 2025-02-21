@@ -363,7 +363,7 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame, uint16_t src_qp_idx) {
         sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
                   get_pkt_hdr_lkey()};
         sge[1] = {frame->get_pkt_data_addr(), frame->get_pkt_data_len(),
-                  get_pkt_data_lkey()};
+                  frame->get_pkt_data_lkey_tx()};
         send_wr.num_sge = 2;
 
         DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
@@ -409,7 +409,7 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
         sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
                   get_pkt_hdr_lkey()};
         sge[1] = {frame->get_pkt_data_addr(), frame->get_pkt_data_len(),
-                  get_pkt_data_lkey()};
+                  frame->get_pkt_data_lkey_tx()};
 
         wr->num_sge = 2;
         wr->wr_id = (uint64_t)frame;
@@ -509,7 +509,7 @@ void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
 
         auto *frame_desc = FrameDesc::Create(
             frame_desc_buf, pkt_hdr_buf, EFA_UD_ADDITION + kUcclPktHdrLen,
-            pkt_data_buf, kUcclPktDataMaxLen, 0);
+            pkt_data_buf, kUcclPktDataMaxLen, get_pkt_data_lkey(), 0);
         frame_desc->set_src_qp_idx(qp_idx);
 
         auto *sge = recv_sge_vec_[i % kMaxChainedWr];
@@ -564,7 +564,7 @@ void EFASocket::post_recv_wrs_for_ctrl(uint32_t budget, uint16_t qp_idx) {
 
         auto *frame_desc = FrameDesc::Create(
             frame_desc_buf, pkt_hdr_buf,
-            EFA_UD_ADDITION + kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
+            EFA_UD_ADDITION + kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0, 0);
         frame_desc->set_src_qp_idx(qp_idx);
 
         auto *sge = recv_sge_vec_[i % kMaxChainedWr];

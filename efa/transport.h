@@ -47,6 +47,10 @@ struct ConnID {
     int boostrap_id;      // Used for bootstrap connection with the peer.
 };
 
+struct Mhandle {
+    struct ibv_mr *mr;
+};
+
 struct alignas(64) PollCtx {
     std::mutex mu;
     std::condition_variable cv;
@@ -95,6 +99,7 @@ class Channel {
         void *data;
         size_t len;
         size_t *len_p;
+        Mhandle mhandle;
         // A list of FrameDesc bw deser_th and engine_th.
         FrameDesc *deser_msgs;
         // Wakeup handler
@@ -505,12 +510,12 @@ class UcclFlow {
     }
 
     // Path ID for each packet indexed by seqno.
-    uint16_t hist_path_id_[kMaxDstQPHistoryPerEngine] = {0};
+    uint16_t hist_path_id_[kMaxPathHistoryPerEngine] = {0};
     inline void set_path_id(uint32_t seqno, uint32_t path_id) {
-        hist_path_id_[seqno & (kMaxDstQPHistoryPerEngine - 1)] = path_id;
+        hist_path_id_[seqno & (kMaxPathHistoryPerEngine - 1)] = path_id;
     }
     inline uint32_t get_path_id(uint32_t seqno) {
-        return hist_path_id_[seqno & (kMaxDstQPHistoryPerEngine - 1)];
+        return hist_path_id_[seqno & (kMaxPathHistoryPerEngine - 1)];
     }
 
     // Measure the distribution of probed RTT.
@@ -700,16 +705,17 @@ class Endpoint {
 
     // Sending the data by leveraging multiple port combinations.
     bool uccl_send(ConnID flow_id, const void *data, const size_t len,
-                   bool busypoll = false);
+                   Mhandle mhandle, bool busypoll = false);
     // Receiving the data by leveraging multiple port combinations.
-    bool uccl_recv(ConnID flow_id, void *data, size_t *len_p,
+    bool uccl_recv(ConnID flow_id, void *data, size_t *len_p, Mhandle mhandle,
                    bool busypoll = false);
 
     // Sending the data by leveraging multiple port combinations.
-    PollCtx *uccl_send_async(ConnID flow_id, const void *data,
-                             const size_t len);
+    PollCtx *uccl_send_async(ConnID flow_id, const void *data, const size_t len,
+                             Mhandle mhandle);
     // Receiving the data by leveraging multiple port combinations.
-    PollCtx *uccl_recv_async(ConnID flow_id, void *data, size_t *len_p);
+    PollCtx *uccl_recv_async(ConnID flow_id, void *data, size_t *len_p,
+                             Mhandle mhandle);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);

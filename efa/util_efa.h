@@ -149,12 +149,14 @@ class PktDataBuffPool : public BuffPool {
 };
 
 class FrameDesc {
-    uint64_t pkt_hdr_addr_;   // in CPU memory.
-    uint32_t pkt_hdr_len_;    // the length of packet hdr.
-    uint64_t pkt_data_addr_;  // in GPU memory.
-    uint32_t pkt_data_len_;   // the length of packet data.
+    uint64_t pkt_hdr_addr_;      // in CPU memory.
+    uint32_t pkt_hdr_len_;       // the length of packet hdr.
+    uint64_t pkt_data_addr_;     // in GPU memory.
+    uint32_t pkt_data_len_;      // the length of packet data.
+    uint32_t pkt_data_lkey_tx_;  // Tx buff may come from app.
+
     uint16_t src_qp_idx_;     // src QP to use for this frame.
-    uint16_t dest_qpn_;       // dest QP to use for this frame.
+    uint16_t dest_qpn_;       // dest QPN to use for this frame.
     struct ibv_ah *dest_ah_;  // dest ah to use for this frame.
 
     // Flags to denote the message buffer state.
@@ -163,27 +165,32 @@ class FrameDesc {
     static const uint8_t UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE = (1 << 2);
     uint8_t msg_flags_;
 
-    struct list_head frame_link_;
+    // Pointing to the next message buffer in the chain.
+    FrameDesc *next_;
 
     FrameDesc(uint64_t pkt_hdr_addr, uint32_t pkt_hdr_len,
-              uint64_t pkt_data_addr, uint32_t pkt_data_len, uint8_t msg_flags)
+              uint64_t pkt_data_addr, uint32_t pkt_data_len,
+              uint32_t pkt_data_lkey_tx, uint8_t msg_flags)
         : pkt_hdr_addr_(pkt_hdr_addr),
           pkt_hdr_len_(pkt_hdr_len),
           pkt_data_addr_(pkt_data_addr),
           pkt_data_len_(pkt_data_len),
+          pkt_data_lkey_tx_(pkt_data_lkey_tx),
           msg_flags_(msg_flags) {
-        INIT_LIST_HEAD(&frame_link_);
         src_qp_idx_ = UINT16_MAX;
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
+        next_ = nullptr;
     }
 
    public:
     static FrameDesc *Create(uint64_t frame_desc_addr, uint64_t pkt_hdr_addr,
                              uint32_t pkt_hdr_len, uint64_t pkt_data_addr,
-                             uint32_t pkt_data_len, uint8_t msg_flags = 0) {
-        return new (reinterpret_cast<void *>(frame_desc_addr)) FrameDesc(
-            pkt_hdr_addr, pkt_hdr_len, pkt_data_addr, pkt_data_len, msg_flags);
+                             uint32_t pkt_data_len, uint32_t pkt_data_lkey,
+                             uint8_t msg_flags) {
+        return new (reinterpret_cast<void *>(frame_desc_addr))
+            FrameDesc(pkt_hdr_addr, pkt_hdr_len, pkt_data_addr, pkt_data_len,
+                      pkt_data_lkey, msg_flags);
     }
     uint64_t get_pkt_hdr_addr() const { return pkt_hdr_addr_; }
     void set_pkt_hdr_addr(uint64_t pkt_hdr_addr) {
@@ -201,6 +208,11 @@ class FrameDesc {
     uint32_t get_pkt_data_len() const { return pkt_data_len_; }
     void set_pkt_data_len(uint32_t pkt_data_len) {
         pkt_data_len_ = pkt_data_len;
+    }
+
+    uint32_t get_pkt_data_lkey_tx() const { return pkt_data_lkey_tx_; }
+    void set_pkt_data_lkey_tx(uint32_t pkt_data_lkey_tx) {
+        pkt_data_lkey_tx_ = pkt_data_lkey_tx;
     }
 
     uint16_t get_msg_flags() const { return msg_flags_; }
@@ -222,13 +234,9 @@ class FrameDesc {
     bool is_last() const { return (msg_flags_ & UCCL_MSGBUF_FLAGS_FIN) != 0; }
 
     // Returns the next message buffer index in the chain.
-    FrameDesc *next() const {
-        return reinterpret_cast<FrameDesc *>(frame_link_.next);
-    }
+    FrameDesc *next() const { return next_; }
     // Set the next message buffer index in the chain.
-    void set_next(FrameDesc *next) {
-        list_add(&next->frame_link_, &frame_link_);
-    }
+    void set_next(FrameDesc *next) { next_ = next; }
 
     void mark_first() { add_msg_flags(UCCL_MSGBUF_FLAGS_SYN); }
     void mark_last() { add_msg_flags(UCCL_MSGBUF_FLAGS_FIN); }
@@ -248,11 +256,12 @@ class FrameDesc {
         pkt_data_addr_ = 0;
         pkt_hdr_len_ = 0;
         pkt_data_len_ = 0;
+        pkt_data_lkey_tx_ = 0;
         msg_flags_ = 0;
         src_qp_idx_ = UINT16_MAX;
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
-        INIT_LIST_HEAD(&frame_link_);
+        next_ = nullptr;
     }
 
     std::string to_string() {
@@ -261,6 +270,7 @@ class FrameDesc {
           << " pkt_data_addr: 0x" << std::hex << pkt_data_addr_
           << " pkt_hdr_len: " << std::dec << pkt_hdr_len_
           << " pkt_data_len: " << std::dec << pkt_data_len_
+          << " pkt_data_lkey_tx: " << std::hex << pkt_data_lkey_tx_
           << " src_qp_idx: " << std::dec << src_qp_idx_
           << " dest_qpn: " << std::dec << dest_qpn_ << " dest_ah_: " << std::hex
           << dest_ah_ << " msg_flags: " << std::dec
@@ -270,10 +280,10 @@ class FrameDesc {
 
     std::string print_chain() {
         std::stringstream s;
-        struct list_head *pos, *n;
-        list_for_each_safe(pos, n, &frame_link_) {
-            auto *cur_desc = list_entry(pos, struct FrameDesc, frame_link_);
-            s << cur_desc->to_string() << "\n";
+        auto *cur = this;
+        while (cur && !cur->is_last()) {
+            s << cur->to_string() << "\n";
+            cur = cur->next_;
         }
         return s.str();
     }
@@ -503,7 +513,7 @@ class EFASocket {
     }
 
     inline uint32_t send_queue_free_space() {
-        return kMaxSendWr * kMaxDstQP - send_queue_wrs_;
+        return kMaxSendWr * kMaxSrcQP - send_queue_wrs_;
     }
     inline uint64_t send_queue_estimated_latency_ns() {
         return send_queue_wrs_ * EFA_MTU * 1000000000UL / kLinkBandwidth;

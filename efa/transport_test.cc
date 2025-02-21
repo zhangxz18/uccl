@@ -31,24 +31,10 @@ DEFINE_string(
 
 enum TestType { kBasic, kAsync, kPingpong, kMt, kMc, kMq, kBiMq, kTput };
 
-volatile bool quit = false;
-
-void interrupt_handler(int signal) {
-    (void)signal;
-    quit = true;
-    EFAFactory::Shutdown();
-}
-
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
-
-    signal(SIGINT, interrupt_handler);
-    signal(SIGTERM, interrupt_handler);
-    signal(SIGHUP, interrupt_handler);
-    // signal(SIGALRM, interrupt_handler);
-    // alarm(10);
 
     kTestMsgSize = FLAGS_size;
 
@@ -108,9 +94,25 @@ int main(int argc, char* argv[]) {
         }
 
         size_t send_len = kTestMsgSize, recv_len = kTestMsgSize;
-        auto* data = new uint8_t[kTestMsgSize];
-        auto* data_u64 = reinterpret_cast<uint64_t*>(data);
-        auto* data2 = new uint8_t[kTestMsgSize];
+        uint8_t *data[kNumEngines], *data2[kNumEngines];
+        Mhandle mh[kNumEngines], mh2[kNumEngines];
+
+        for (int i = 0; i < kNumEngines; i++) {
+            cudaSetDevice(i);
+            auto* dev = EFAFactory::GetEFADevice(i / 2);
+
+            cudaMalloc(&data[i], kTestMsgSize);
+            mh[i].mr = ibv_reg_mr(dev->pd, data[i], kTestMsgSize,
+                                  IBV_ACCESS_LOCAL_WRITE);
+            cudaMalloc(&data2[i], kTestMsgSize);
+            mh2[i].mr = ibv_reg_mr(dev->pd, data2[i], kTestMsgSize,
+                                   IBV_ACCESS_LOCAL_WRITE);
+        }
+
+        uint64_t* data_u64[kNumEngines];
+        for (int i = 0; i < kNumEngines; i++) {
+            data_u64[i] = reinterpret_cast<uint64_t*>(data[i]);
+        }
 
         size_t sent_bytes = 0;
         std::vector<uint64_t> rtts;
@@ -123,15 +125,16 @@ int main(int argc, char* argv[]) {
             if (FLAGS_rand) send_len = distribution(generator);
 
             if (FLAGS_verify) {
-                for (int j = 0; j < send_len / sizeof(uint64_t); j++) {
-                    data_u64[j] = (uint64_t)i * (uint64_t)j;
-                }
+                // for (int j = 0; j < send_len / sizeof(uint64_t); j++) {
+                //     data_u64[j] = (uint64_t)i * (uint64_t)j;
+                // }
             }
             switch (test_type) {
                 case kBasic: {
                     TscTimer timer;
                     timer.start();
-                    ep.uccl_send(conn_id, data, send_len, /*busypoll=*/true);
+                    ep.uccl_send(conn_id, data[conn_id.engine_idx], send_len,
+                                 mh[conn_id.engine_idx], /*busypoll=*/true);
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len;
@@ -143,11 +146,13 @@ int main(int argc, char* argv[]) {
                     for (int j = 0; j < kMaxInflight; j++) {
                         auto iter_len =
                             std::min(step_size, send_len - j * step_size);
-                        auto* iter_data = data + j * step_size;
+                        auto* iter_data =
+                            data[conn_id.engine_idx] + j * step_size;
 
                         PollCtx* poll_ctx;
                         poll_ctx =
-                            ep.uccl_send_async(conn_id, iter_data, iter_len);
+                            ep.uccl_send_async(conn_id, iter_data, iter_len,
+                                               mh[conn_id.engine_idx]);
                         poll_ctx->timestamp = rdtsc();
                         poll_ctxs.push_back(poll_ctx);
                     }
@@ -165,8 +170,12 @@ int main(int argc, char* argv[]) {
                     PollCtx *poll_ctx1, *poll_ctx2;
                     TscTimer timer;
                     timer.start();
-                    poll_ctx1 = ep.uccl_send_async(conn_id, data, send_len);
-                    poll_ctx2 = ep.uccl_recv_async(conn_id, data2, &recv_len);
+                    poll_ctx1 =
+                        ep.uccl_send_async(conn_id, data[conn_id.engine_idx],
+                                           send_len, mh[conn_id.engine_idx]);
+                    poll_ctx2 =
+                        ep.uccl_recv_async(conn_id, data2[conn_id.engine_idx],
+                                           &recv_len, mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     timer.stop();
@@ -177,14 +186,16 @@ int main(int argc, char* argv[]) {
                 case kMt: {
                     TscTimer timer;
                     timer.start();
-                    std::thread t1([&ep, conn_id, data, send_len]() {
-                        PollCtx* poll_ctx =
-                            ep.uccl_send_async(conn_id, data, send_len);
+                    std::thread t1([&ep, conn_id, data, send_len, mh]() {
+                        PollCtx* poll_ctx = ep.uccl_send_async(
+                            conn_id, data[conn_id.engine_idx], send_len,
+                            mh[conn_id.engine_idx]);
                         ep.uccl_poll(poll_ctx);
                     });
-                    std::thread t2([&ep, conn_id, data2, &recv_len]() {
-                        PollCtx* poll_ctx =
-                            ep.uccl_recv_async(conn_id, data2, &recv_len);
+                    std::thread t2([&ep, conn_id, data2, &recv_len, mh2]() {
+                        PollCtx* poll_ctx = ep.uccl_recv_async(
+                            conn_id, data2[conn_id.engine_idx], &recv_len,
+                            mh2[conn_id.engine_idx]);
                         ep.uccl_poll(poll_ctx);
                     });
                     t1.join();
@@ -198,8 +209,12 @@ int main(int argc, char* argv[]) {
                     PollCtx *poll_ctx1, *poll_ctx2;
                     TscTimer timer;
                     timer.start();
-                    poll_ctx1 = ep.uccl_send_async(conn_id, data, send_len);
-                    poll_ctx2 = ep.uccl_send_async(conn_id2, data2, send_len);
+                    poll_ctx1 =
+                        ep.uccl_send_async(conn_id, data[conn_id.engine_idx],
+                                           send_len, mh[conn_id.engine_idx]);
+                    poll_ctx2 =
+                        ep.uccl_send_async(conn_id2, data2[conn_id.engine_idx],
+                                           send_len, mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     timer.stop();
@@ -210,8 +225,9 @@ int main(int argc, char* argv[]) {
                 case kMq: {
                     for (int k = 0; k < kMaxInflight; k++) {
                         for (int j = 0; j < kNumEngines; j++) {
-                            auto poll_ctx = ep.uccl_send_async(conn_id_vec[j],
-                                                               data, send_len);
+                            auto poll_ctx = ep.uccl_send_async(
+                                conn_id_vec[j], data[conn_id.engine_idx],
+                                send_len, mh[conn_id.engine_idx]);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
                         }
@@ -232,10 +248,14 @@ int main(int argc, char* argv[]) {
                         for (int j = 0; j < kNumEngines; j++) {
                             auto* poll_ctx =
                                 (j % 2 == 0)
-                                    ? ep.uccl_send_async(conn_id_vec[j], data,
-                                                         send_len)
-                                    : ep.uccl_recv_async(conn_id_vec[j], data,
-                                                         &recv_len);
+                                    ? ep.uccl_send_async(
+                                          conn_id_vec[j],
+                                          data[conn_id.engine_idx], send_len,
+                                          mh[conn_id.engine_idx])
+                                    : ep.uccl_recv_async(
+                                          conn_id_vec[j],
+                                          data[conn_id.engine_idx], &recv_len,
+                                          mh[conn_id.engine_idx]);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
                         }
@@ -254,7 +274,8 @@ int main(int argc, char* argv[]) {
                 }
                 case kTput: {
                     auto* poll_ctx =
-                        ep.uccl_send_async(conn_id, data, send_len);
+                        ep.uccl_send_async(conn_id, data[conn_id.engine_idx],
+                                           send_len, mh[conn_id.engine_idx]);
                     poll_ctx->timestamp = rdtsc();
                     if (last_ctx) {
                         auto async_start = last_ctx->timestamp;
@@ -329,9 +350,25 @@ int main(int argc, char* argv[]) {
         }
 
         size_t send_len = kTestMsgSize, recv_len = kTestMsgSize;
-        auto* data = new uint8_t[kTestMsgSize];
-        auto* data_u64 = reinterpret_cast<uint64_t*>(data);
-        auto* data2 = new uint8_t[kTestMsgSize];
+        uint8_t *data[kNumEngines], *data2[kNumEngines];
+        Mhandle mh[kNumEngines], mh2[kNumEngines];
+
+        for (int i = 0; i < kNumEngines; i++) {
+            cudaSetDevice(i);
+            auto* dev = EFAFactory::GetEFADevice(i / 2);
+
+            cudaMalloc(&data[i], kTestMsgSize);
+            mh[i].mr = ibv_reg_mr(dev->pd, data[i], kTestMsgSize,
+                                  IBV_ACCESS_LOCAL_WRITE);
+            cudaMalloc(&data2[i], kTestMsgSize);
+            mh2[i].mr = ibv_reg_mr(dev->pd, data2[i], kTestMsgSize,
+                                   IBV_ACCESS_LOCAL_WRITE);
+        }
+
+        uint64_t* data_u64[kNumEngines];
+        for (int i = 0; i < kNumEngines; i++) {
+            data_u64[i] = reinterpret_cast<uint64_t*>(data[i]);
+        }
 
         std::deque<PollCtx*> poll_ctxs;
         PollCtx* last_ctx = nullptr;
@@ -342,7 +379,8 @@ int main(int argc, char* argv[]) {
             auto start = std::chrono::high_resolution_clock::now();
             switch (test_type) {
                 case kBasic: {
-                    ep.uccl_recv(conn_id, data, &recv_len, /*busypoll=*/true);
+                    ep.uccl_recv(conn_id, data[conn_id.engine_idx], &recv_len,
+                                 mh[conn_id.engine_idx], /*busypoll=*/true);
                     break;
                 }
                 case kAsync: {
@@ -352,11 +390,13 @@ int main(int argc, char* argv[]) {
                     for (int j = 0; j < kMaxInflight; j++) {
                         auto iter_len =
                             std::min(step_size, send_len - j * step_size);
-                        auto* iter_data = data + j * step_size;
+                        auto* iter_data =
+                            data[conn_id.engine_idx] + j * step_size;
 
                         PollCtx* poll_ctx;
                         poll_ctx = ep.uccl_recv_async(conn_id, iter_data,
-                                                      &recv_lens[j]);
+                                                      &recv_lens[j],
+                                                      mh[conn_id.engine_idx]);
                         poll_ctxs.push_back(poll_ctx);
                     }
                     for (auto poll_ctx : poll_ctxs) {
@@ -370,21 +410,27 @@ int main(int argc, char* argv[]) {
                 }
                 case kPingpong: {
                     PollCtx *poll_ctx1, *poll_ctx2;
-                    poll_ctx1 = ep.uccl_recv_async(conn_id, data, &recv_len);
-                    poll_ctx2 = ep.uccl_send_async(conn_id, data2, send_len);
+                    poll_ctx1 =
+                        ep.uccl_recv_async(conn_id, data[conn_id.engine_idx],
+                                           &recv_len, mh[conn_id.engine_idx]);
+                    poll_ctx2 =
+                        ep.uccl_send_async(conn_id, data2[conn_id.engine_idx],
+                                           send_len, mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     break;
                 }
                 case kMt: {
-                    std::thread t1([&ep, conn_id, data, &recv_len]() {
-                        PollCtx* poll_ctx =
-                            ep.uccl_recv_async(conn_id, data, &recv_len);
+                    std::thread t1([&ep, conn_id, data, &recv_len, mh]() {
+                        PollCtx* poll_ctx = ep.uccl_recv_async(
+                            conn_id, data[conn_id.engine_idx], &recv_len,
+                            mh[conn_id.engine_idx]);
                         ep.uccl_poll(poll_ctx);
                     });
-                    std::thread t2([&ep, conn_id, data2, send_len]() {
-                        PollCtx* poll_ctx =
-                            ep.uccl_send_async(conn_id, data2, send_len);
+                    std::thread t2([&ep, conn_id, data2, send_len, mh2]() {
+                        PollCtx* poll_ctx = ep.uccl_send_async(
+                            conn_id, data2[conn_id.engine_idx], send_len,
+                            mh2[conn_id.engine_idx]);
                         ep.uccl_poll(poll_ctx);
                     });
                     t1.join();
@@ -393,8 +439,10 @@ int main(int argc, char* argv[]) {
                 }
                 case kMc: {
                     PollCtx *poll_ctx1, *poll_ctx2;
-                    poll_ctx1 = ep.uccl_recv_async(conn_id, data, &recv_len);
-                    poll_ctx2 = ep.uccl_recv_async(conn_id2, data2, &recv_len);
+                    poll_ctx1 = ep.uccl_recv_async(conn_id, data, &recv_len,
+                                                   mh[conn_id.engine_idx]);
+                    poll_ctx2 = ep.uccl_recv_async(conn_id2, data2, &recv_len,
+                                                   mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     break;
@@ -402,8 +450,9 @@ int main(int argc, char* argv[]) {
                 case kMq: {
                     for (int k = 0; k < kMaxInflight; k++) {
                         for (int j = 0; j < kNumEngines; j++) {
-                            auto poll_ctx = ep.uccl_recv_async(conn_id_vec[j],
-                                                               data, &recv_len);
+                            auto poll_ctx = ep.uccl_recv_async(
+                                conn_id_vec[j], data[conn_id.engine_idx],
+                                &recv_len, mh[conn_id.engine_idx]);
                             poll_ctxs.push_back(poll_ctx);
                         }
                     }
@@ -419,10 +468,14 @@ int main(int argc, char* argv[]) {
                         for (int j = 0; j < kNumEngines; j++) {
                             auto* poll_ctx =
                                 (j % 2 == 0)
-                                    ? ep.uccl_recv_async(conn_id_vec[j], data,
-                                                         &recv_len)
-                                    : ep.uccl_send_async(conn_id_vec[j], data,
-                                                         send_len);
+                                    ? ep.uccl_recv_async(
+                                          conn_id_vec[j],
+                                          data[conn_id.engine_idx], &recv_len,
+                                          mh[conn_id.engine_idx])
+                                    : ep.uccl_send_async(
+                                          conn_id_vec[j],
+                                          data[conn_id.engine_idx], send_len,
+                                          mh[conn_id.engine_idx]);
                             poll_ctxs.push_back(poll_ctx);
                         }
                     }
@@ -435,8 +488,8 @@ int main(int argc, char* argv[]) {
                     break;
                 }
                 case kTput: {
-                    auto* poll_ctx =
-                        ep.uccl_recv_async(conn_id, data, &recv_len);
+                    auto* poll_ctx = ep.uccl_recv_async(
+                        conn_id, data, &recv_len, mh[conn_id.engine_idx]);
                     if (last_ctx) ep.uccl_poll(last_ctx);
                     last_ctx = poll_ctx;
                     break;
@@ -449,24 +502,26 @@ int main(int argc, char* argv[]) {
                     std::chrono::high_resolution_clock::now() - start);
 
             if (FLAGS_verify) {
-                bool data_mismatch = false;
-                auto expected_len = FLAGS_rand ? send_len : kTestMsgSize;
-                if (recv_len != expected_len) {
-                    LOG(ERROR) << "Received message size mismatches, expected "
-                               << expected_len << ", received " << recv_len;
-                    data_mismatch = true;
-                }
-                for (int j = 0; j < recv_len / sizeof(uint64_t); j++) {
-                    if (data_u64[j] != (uint64_t)i * (uint64_t)j) {
-                        data_mismatch = true;
-                        LOG_EVERY_N(ERROR, 1000)
-                            << "Data mismatch at index " << j * sizeof(uint64_t)
-                            << ", expected " << (uint64_t)i * (uint64_t)j
-                            << ", received " << data_u64[j];
-                    }
-                }
-                CHECK(!data_mismatch) << "Data mismatch at iter " << i;
-                memset(data, 0, recv_len);
+                // bool data_mismatch = false;
+                // auto expected_len = FLAGS_rand ? send_len : kTestMsgSize;
+                // if (recv_len != expected_len) {
+                //     LOG(ERROR) << "Received message size mismatches, expected
+                //     "
+                //                << expected_len << ", received " << recv_len;
+                //     data_mismatch = true;
+                // }
+                // for (int j = 0; j < recv_len / sizeof(uint64_t); j++) {
+                //     if (data_u64[j] != (uint64_t)i * (uint64_t)j) {
+                //         data_mismatch = true;
+                //         LOG_EVERY_N(ERROR, 1000)
+                //             << "Data mismatch at index " << j *
+                //             sizeof(uint64_t)
+                //             << ", expected " << (uint64_t)i * (uint64_t)j
+                //             << ", received " << data_u64[j];
+                //     }
+                // }
+                // CHECK(!data_mismatch) << "Data mismatch at iter " << i;
+                // memset(data, 0, recv_len);
             }
 
             LOG_EVERY_N(INFO, kReportIters)

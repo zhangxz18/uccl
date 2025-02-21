@@ -53,7 +53,7 @@ static const uint32_t EFA_UD_ADDITION = 40;  // Auto-added by EFA during recv.
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
-static const uint32_t kNumEnginesPerDev = 1;  // # of engines per device.
+static const uint32_t kNumEnginesPerDev = 2;  // # of engines per EFA device.
 static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
 static const uint32_t kMaxDstQP = 32;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxDstQPCtrl = 32;  // # of paths/QPs for control.
@@ -89,11 +89,11 @@ static const std::size_t kFastRexmitDupAckThres = 10;
 static const uint32_t kMaxTwPkts = 1024;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;
 static const uint32_t kSwitchPathThres = 1u;
-static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxDstQP;
-static const uint32_t kMaxDstQPHistoryPerEngine = 4096;
+static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
+static const uint32_t kMaxPathHistoryPerEngine = 4096;
 
-static_assert(kMaxDstQP <= 4096, "kMaxDstQP too large");
-static_assert(kMaxUnackedPktsPerEngine <= kMaxDstQPHistoryPerEngine,
+static_assert(kMaxPath <= 4096, "kMaxPath too large");
+static_assert(kMaxUnackedPktsPerEngine <= kMaxPathHistoryPerEngine,
               "kMaxUnackedPktsPerEngine too large");
-static_assert(is_power_of_two(kMaxDstQPHistoryPerEngine),
-              "kMaxDstQPHistoryPerEngine must be power of 2");
+static_assert(is_power_of_two(kMaxPathHistoryPerEngine),
+              "kMaxPathHistoryPerEngine must be power of 2");

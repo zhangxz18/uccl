@@ -78,7 +78,8 @@ std::vector<FrameDesc *> prepare_frames(EFASocket *socket,
         auto pkt_hdr = socket->pop_pkt_hdr();
         auto pkt_data = socket->pop_pkt_data();
         auto frame = FrameDesc::Create(frame_desc, pkt_hdr, kUcclPktHdrLen,
-                                       pkt_data, kUcclPktDataMaxLen, 0);
+                                       pkt_data, kUcclPktDataMaxLen,
+                                       socket->get_pkt_data_lkey(), 0);
         frame->set_dest_ah(dest_ah);
         auto path_id = IntRand(0, kMaxDstQP - 1);
         frame->set_dest_qpn(remote_meta->qpn_list[path_id]);
@@ -96,7 +97,7 @@ std::vector<FrameDesc *> prepare_frames_for_ctrl(EFASocket *socket,
         auto frame_desc = socket->pop_frame_desc();
         auto pkt_hdr = socket->pop_pkt_hdr();
         auto frame = FrameDesc::Create(
-            frame_desc, pkt_hdr, kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
+            frame_desc, pkt_hdr, kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0, 0);
         frame->set_dest_ah(dest_ah);
         auto path_id = IntRand(0, kMaxDstQPCtrl - 1);
         frame->set_dest_qpn(remote_meta->qpn_list_ctrl[path_id]);
@@ -142,7 +143,8 @@ void run_server() {
         // Send it back.
         frame = FrameDesc::Create(socket->pop_frame_desc(),
                                   socket->pop_pkt_hdr(), kUcclPktHdrLen,
-                                  socket->pop_pkt_data(), kUcclPktDataMaxLen, 0);
+                                  socket->pop_pkt_data(), kUcclPktDataMaxLen,
+                                  socket->get_pkt_data_lkey(), 0);
         strcpy((char *)frame->get_pkt_hdr_addr(), "Hello World");
         frame->set_dest_ah(dest_ah);
         frame->set_dest_qpn(remote_meta->qpn_list[0]);
@@ -159,7 +161,7 @@ void run_server() {
         socket->push_pkt_hdr(frame->get_pkt_hdr_addr());
         socket->push_pkt_data(frame->get_pkt_data_addr());
         socket->push_frame_desc((uint64_t)frame);
-        CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxDstQP);
+        CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxSrcQP);
 
         end_time = std::chrono::high_resolution_clock::now();
         duration2 += end_time - mid_time;
@@ -259,7 +261,8 @@ void run_client(const char *server_ip) {
         pkt_hdr = socket->pop_pkt_hdr();
         pkt_data = socket->pop_pkt_data();
         frame = FrameDesc::Create(frame_desc, pkt_hdr, kUcclPktHdrLen, pkt_data,
-                                  kUcclPktDataMaxLen, 0);
+                                  kUcclPktDataMaxLen,
+                                  socket->get_pkt_data_lkey(), 0);
         frame->set_dest_ah(dest_ah);
         frame->set_dest_qpn(remote_meta->qpn_list[0]);
         strcpy((char *)pkt_hdr, "Hello World");
@@ -272,7 +275,7 @@ void run_client(const char *server_ip) {
         socket->push_frame_desc((uint64_t)frame);
         socket->push_pkt_hdr(pkt_hdr);
         socket->push_pkt_data(pkt_data);
-        CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxDstQP);
+        CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxSrcQP);
 
         // Receiving the packet back
         do {
@@ -299,7 +302,7 @@ void run_client(const char *server_ip) {
     frame_desc = socket->pop_frame_desc();
     pkt_hdr = socket->pop_pkt_hdr();
     frame = FrameDesc::Create(frame_desc, pkt_hdr,
-                              kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0);
+                              kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0, 0);
     frame->set_dest_ah(dest_ah);
     frame->set_dest_qpn(remote_meta->qpn_list_ctrl[0]);  // ctrl qp
     strcpy((char *)pkt_hdr, "Ctrl Packet");
@@ -310,7 +313,7 @@ void run_client(const char *server_ip) {
     } while (polled_send_acks == 0);
     CHECK(polled_send_acks == 1 && frames.size() == 0);
     // No need to push pkt_hdr and frame_desc, as poll_ctrl_cq() frees them.
-    CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxDstQP);
+    CHECK_EQ(socket->send_queue_free_space(), kMaxSendWr * kMaxSrcQP);
 
     // Benchmarking throughput
     int i = 0;
