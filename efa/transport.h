@@ -34,6 +34,7 @@
 #include "util_efa.h"
 #include "util_endian.h"
 #include "util_latency.h"
+#include "util_shared_pool.h"
 #include "util_timer.h"
 
 namespace uccl {
@@ -107,9 +108,8 @@ class Channel {
         };
         Op opcode;
         FlowID flow_id;
+        int socket_fd;
         uint32_t remote_ip;
-        char remote_mac[ETH_ALEN];
-        char padding[2];
         uint32_t remote_engine_idx;
         // Wakeup handler
         PollCtx *poll_ctx;
@@ -173,7 +173,7 @@ class TXTracking {
           num_unacked_msgbufs_(0),
           num_unsent_msgbufs_(0),
           num_tracked_msgbufs_(0) {
-        static const double kMinTxIntervalUs = AFXDP_MTU * 1.0 / kMaxBwPP * 1e6;
+        static const double kMinTxIntervalUs = EFA_MTU * 1.0 / kMaxBwPP * 1e6;
         kMinTxIntervalTsc = us_to_cycles(kMinTxIntervalUs, freq_ghz);
     }
 
@@ -330,18 +330,17 @@ class UcclFlow {
      *
      * @param local_addr Local IP address.
      * @param remote_addr Remote IP address.
-     * @param local_l2_addr Local L2 address.
-     * @param remote_l2_addr Remote L2 address.
      * @param EFASocket object for packet IOs.
      * @param FlowID Connection ID for the flow.
      */
-    UcclFlow(const uint32_t local_addr, const uint32_t remote_addr,
-             const char local_l2_addr[ETH_ALEN],
-             const char remote_l2_addr[ETH_ALEN], uint32_t local_engine_idx,
-             uint32_t remote_engine_idx, EFASocket *socket, Channel *channel,
-             FlowID flow_id)
-        : local_addr_(local_addr),
-          remote_addr_(remote_addr),
+    UcclFlow(std::string local_ip_str, std::string remote_ip_str,
+             ConnMeta *local_meta, ConnMeta *remote_meta,
+             uint32_t local_engine_idx, uint32_t remote_engine_idx,
+             EFASocket *socket, Channel *channel, FlowID flow_id)
+        : remote_ip_str_(remote_ip_str),
+          local_ip_str_(local_ip_str),
+          local_meta_(local_meta),
+          remote_meta_(remote_meta),
           local_engine_idx_(local_engine_idx),
           remote_engine_idx_(remote_engine_idx),
           socket_(CHECK_NOTNULL(socket)),
@@ -352,10 +351,6 @@ class UcclFlow {
           timely_g_(),
           tx_tracking_(socket, channel),
           rx_tracking_(socket, channel) {
-        // Copy MAC addresses.
-        memcpy(local_l2_addr_, local_l2_addr, ETH_ALEN);
-        memcpy(remote_l2_addr_, remote_l2_addr, ETH_ALEN);
-
         timely_g_.init(&pcb_);
         if constexpr (kCCType == CCType::kTimelyPP) {
             timely_pp_ = new swift::TimelyCtl[kMaxPath];
@@ -370,6 +365,8 @@ class UcclFlow {
         }
     }
     ~UcclFlow() {
+        delete local_meta_;
+        delete remote_meta_;
         if constexpr (kCCType == CCType::kTimelyPP) delete[] timely_pp_;
         if constexpr (kCCType == CCType::kCubicPP) delete[] cubic_pp_;
     }
@@ -447,25 +444,20 @@ class UcclFlow {
      */
     void deserialize_and_append_to_txtracking();
 
-    void prepare_l2header(uint8_t *pkt_addr) const;
-    void prepare_l3header(uint8_t *pkt_addr, uint32_t payload_bytes) const;
-    void prepare_l4header(uint8_t *pkt_addr, uint32_t payload_bytes,
-                          uint16_t dst_port) const;
-
     void prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id, uint32_t seqno,
                             const UcclPktHdr::UcclFlags net_flags);
-    EFASocket::frame_desc craft_ackpacket(uint32_t path_id, uint16_t dst_port,
-                                          uint32_t seqno, uint32_t ackno,
-                                          const UcclPktHdr::UcclFlags net_flags,
-                                          uint64_t ts1, uint64_t ts2);
-    EFASocket::frame_desc craft_rssprobe_packet(uint16_t dst_port);
-    void reverse_packet_l2l3(FrameDesc *msgbuf);
+    FrameDesc *craft_ackpacket(uint32_t path_id, uint32_t seqno, uint32_t ackno,
+                               const UcclPktHdr::UcclFlags net_flags,
+                               uint64_t ts1, uint64_t ts2);
+
+    std::string local_ip_str_;
+    std::string remote_ip_str_;
 
     // The following is used to fill packet headers.
-    uint32_t local_addr_;
-    uint32_t remote_addr_;
-    char local_l2_addr_[ETH_ALEN];
-    char remote_l2_addr_[ETH_ALEN];
+    ConnMeta *local_meta_;
+    ConnMeta *remote_meta_;
+    struct ibv_ah *remote_ah_;
+
     // Which engine (also NIC queue and xsk) this flow belongs to.
     uint32_t local_engine_idx_;
     uint32_t remote_engine_idx_;
@@ -477,9 +469,9 @@ class UcclFlow {
     // FlowID of this flow.
     FlowID flow_id_;
     // Accumulated data frames to be sent.
-    std::vector<EFASocket::frame_desc> pending_tx_frames_;
+    std::vector<FrameDesc *> pending_tx_frames_;
     // Missing data frames to be sent.
-    std::vector<EFASocket::frame_desc> missing_frames_;
+    std::vector<FrameDesc *> missing_frames_;
     // Frames that are pending rx processing in a batch.
     std::deque<FrameDesc *> pending_rx_msgbufs_;
 
@@ -494,24 +486,63 @@ class UcclFlow {
     swift::TimelyCtl *timely_pp_;
     swift::CubicCtl *cubic_pp_;
 
+    inline std::tuple<uint16_t, uint16_t> path_id_to_src_dst_qp(
+        uint32_t path_id) {
+        return {path_id / kMaxDstQP, path_id % kMaxDstQP};
+    }
+    inline uint32_t src_dst_qp_to_path_id(uint16_t src_qp, uint16_t dst_qp) {
+        DCHECK(src_qp < kMaxSrcQP && dst_qp < kMaxDstQP);
+        return src_qp * kMaxDstQP + dst_qp;
+    }
+    inline std::tuple<uint16_t, uint16_t> path_id_to_src_dst_qp_for_ctrl(
+        uint32_t path_id) {
+        return {path_id / kMaxDstQPCtrl, path_id % kMaxDstQPCtrl};
+    }
+    inline uint32_t src_dst_qp_to_path_id_for_ctrl(uint16_t src_qp,
+                                                   uint16_t dst_qp) {
+        DCHECK(src_qp < kMaxSrcQPCtrl && dst_qp < kMaxDstQPCtrl);
+        return src_qp * kMaxDstQPCtrl + dst_qp;
+    }
+
     // Path ID for each packet indexed by seqno.
-    uint16_t hist_path_id_[kMaxPathHistoryPerEngine] = {0};
+    uint16_t hist_path_id_[kMaxDstQPHistoryPerEngine] = {0};
     inline void set_path_id(uint32_t seqno, uint32_t path_id) {
-        hist_path_id_[seqno & (kMaxPathHistoryPerEngine - 1)] = path_id;
+        hist_path_id_[seqno & (kMaxDstQPHistoryPerEngine - 1)] = path_id;
     }
     inline uint32_t get_path_id(uint32_t seqno) {
-        return hist_path_id_[seqno & (kMaxPathHistoryPerEngine - 1)];
+        return hist_path_id_[seqno & (kMaxDstQPHistoryPerEngine - 1)];
     }
 
     // Measure the distribution of probed RTT.
     Latency rtt_stats_;
     uint64_t rtt_probe_count_ = 0;
 
-    /****** Maintaining per-path RTT for entropy-based path selection ******/
-    // Destination ports with remote_engine_idx_ as the target socket_id.
-    std::vector<uint16_t> dst_ports_;
     // RTT in tsc, indexed by path_id.
     size_t port_path_rtt_[kMaxPath] = {0};
+
+    // For ctrl, its path is derived from data path_id.
+    inline uint16_t get_src_qp_rr() {
+        static uint16_t next_src_qp = 0;
+        return (next_src_qp++) % kMaxSrcQP;
+    }
+
+    inline uint16_t get_dst_qp_pow2(uint16_t src_qp_idx) {
+#ifdef PATH_SELECTION
+        auto idx_u32 = U32Rand(0, UINT32_MAX);
+        auto idx1 = idx_u32 % kMaxDstQP;
+        auto idx2 = (idx_u32 >> 16) % kMaxDstQP;
+        auto path_id1 = src_dst_qp_to_path_id(src_qp_idx, idx1);
+        auto path_id2 = src_dst_qp_to_path_id(src_qp_idx, idx2);
+        VLOG(3) << "rtt: idx1 " << port_path_rtt_[path_id1] << " idx2 "
+                << port_path_rtt_[path_id2];
+        return (port_path_rtt_[path_id1] < port_path_rtt_[path_id2]) ? idx1
+                                                                     : idx2;
+#else
+        static uint16_t next_dst_qp_idx = 0;
+        return (next_dst_qp_idx++) % kMaxDstQP;
+#endif
+    }
+
     inline uint32_t get_path_id_with_lowest_rtt() {
 #ifdef PATH_SELECTION
         auto idx_u32 = U32Rand(0, UINT32_MAX);
@@ -544,21 +575,20 @@ class UcclEngine {
     /**
      * @brief Construct a new UcclEngine object.
      *
-     * @param socket_id      RX/TX queue index to be used by the engine.
+     * @param socket_idx      Global socket idx or engine idx.
      * @param channel       Uccl channel the engine will be responsible for.
      * For now, we assume an engine is responsible for a single channel, but
      * future it may be responsible for multiple channels.
      */
-    UcclEngine(int socket_id, Channel *channel, const std::string local_addr,
-               const std::string local_l2_addr)
-        : local_addr_(htonl(str_to_ip(local_addr))),
-          local_engine_idx_(socket_id),
-          socket_(EFAFactory::CreateSocket(socket_id)),
+    UcclEngine(std::string local_ip_str, int gpu_idx, int dev_idx,
+               int socket_idx, Channel *channel)
+        : local_ip_str_(local_ip_str),
+          local_engine_idx_(socket_idx),
+          socket_(EFAFactory::CreateSocket(gpu_idx, dev_idx, socket_idx)),
           channel_(channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
-        DCHECK(str_to_mac(local_l2_addr, local_l2_addr_));
     }
 
     /**
@@ -592,7 +622,7 @@ class UcclEngine {
      *
      * @param pkt_msgs Pointer to a list of packets.
      */
-    void process_rx_msg(std::vector<EFASocket::frame_desc> &pkt_msgs);
+    void process_rx_msg(std::vector<FrameDesc *> &pkt_msgs);
 
     /**
      * @brief Iterate throught the list of flows, check and handle RTOs.
@@ -606,8 +636,8 @@ class UcclEngine {
     void process_ctl_reqs();
 
    private:
-    uint32_t local_addr_;
-    char local_l2_addr_[ETH_ALEN];
+    // Local IP address.
+    std::string local_ip_str_;
     // Engine index, also NIC queue ID and xsk index.
     uint32_t local_engine_idx_;
     // AFXDP socket used for send/recv packets.
@@ -640,18 +670,15 @@ class Endpoint {
     constexpr static uint16_t kBootstrapPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
-    std::string local_ip_str_;
-    std::string local_mac_str_;
-
     int num_queues_;
-    Channel *channel_vec_[NUM_QUEUES];
+    std::string local_ip_str_;
+    Channel *channel_vec_[kNumEngines];
     std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
-    std::vector<std::unique_ptr<std::thread>> deser_th_vec_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
-    std::array<int, NUM_QUEUES> engine_load_vec_ = {0};
+    std::array<int, kNumEngines> engine_load_vec_ = {0};
 
     SharedPool<PollCtx *, true> *ctx_pool_;
     uint8_t *ctx_pool_buf_;
@@ -663,8 +690,7 @@ class Endpoint {
     std::unordered_map<FlowID, int> bootstrap_fd_map_;
 
    public:
-    Endpoint(const char *interface_name, int num_queues, uint64_t num_frames,
-             int engine_cpu_start);
+    Endpoint();
     ~Endpoint();
 
     // Connecting to a remote address; thread-safe
@@ -695,45 +721,6 @@ class Endpoint {
     inline int find_least_loaded_engine_idx_and_update();
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
-    inline int receive_message(int sockfd, void *buffer, size_t n_bytes) {
-        int bytes_read = 0;
-        int r;
-        while (bytes_read < n_bytes) {
-            // Make sure we read exactly n_bytes
-            r = read(sockfd, buffer + bytes_read, n_bytes - bytes_read);
-            if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                CHECK(false) << "ERROR reading from socket";
-            }
-            if (r > 0) {
-                bytes_read += r;
-            }
-        }
-        return bytes_read;
-    }
-
-    inline int send_message(int sockfd, const void *buffer, size_t n_bytes) {
-        int bytes_sent = 0;
-        int r;
-        while (bytes_sent < n_bytes) {
-            // Make sure we write exactly n_bytes
-            r = write(sockfd, buffer + bytes_sent, n_bytes - bytes_sent);
-            if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
-                CHECK(false) << "ERROR writing to socket";
-            }
-            if (r > 0) {
-                bytes_sent += r;
-            }
-        }
-        return bytes_sent;
-    }
-
-    inline void net_barrier(int bootstrap_fd) {
-        bool sync = true;
-        int ret = send_message(bootstrap_fd, &sync, sizeof(bool));
-        ret = receive_message(bootstrap_fd, &sync, sizeof(bool));
-        DCHECK(ret == sizeof(bool) && sync);
-    }
-
     std::thread stats_thread_;
     void stats_thread_fn();
     std::mutex stats_mu_;
@@ -742,5 +729,44 @@ class Endpoint {
 
     friend class UcclFlow;
 };
+
+static inline int receive_message(int sockfd, void *buffer, size_t n_bytes) {
+    int bytes_read = 0;
+    int r;
+    while (bytes_read < n_bytes) {
+        // Make sure we read exactly n_bytes
+        r = read(sockfd, buffer + bytes_read, n_bytes - bytes_read);
+        if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
+            CHECK(false) << "ERROR reading from socket";
+        }
+        if (r > 0) {
+            bytes_read += r;
+        }
+    }
+    return bytes_read;
+}
+
+static inline int send_message(int sockfd, const void *buffer, size_t n_bytes) {
+    int bytes_sent = 0;
+    int r;
+    while (bytes_sent < n_bytes) {
+        // Make sure we write exactly n_bytes
+        r = write(sockfd, buffer + bytes_sent, n_bytes - bytes_sent);
+        if (r < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
+            CHECK(false) << "ERROR writing to socket";
+        }
+        if (r > 0) {
+            bytes_sent += r;
+        }
+    }
+    return bytes_sent;
+}
+
+static inline void net_barrier(int bootstrap_fd) {
+    bool sync = true;
+    int ret = send_message(bootstrap_fd, &sync, sizeof(bool));
+    ret = receive_message(bootstrap_fd, &sync, sizeof(bool));
+    DCHECK(ret == sizeof(bool) && sync);
+}
 
 }  // namespace uccl

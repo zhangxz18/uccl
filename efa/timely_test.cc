@@ -2,8 +2,6 @@
 
 using namespace uccl;
 
-static constexpr double kLinkBandwidth = 100.0 * 1000 * 1000 * 1000 / 8;
-
 void test(size_t mean_rtt, size_t random_add_rtt) {
     double freq_ghz = measure_rdtsc_freq();
     Timely timely(freq_ghz, kLinkBandwidth);

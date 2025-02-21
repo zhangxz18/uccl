@@ -85,21 +85,20 @@ int main(int argc, char* argv[]) {
     pin_thread_to_cpu(0);
 
     if (FLAGS_client) {
-        auto ep =
-            Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START);
+        auto ep = Endpoint();
         DCHECK(FLAGS_serverip != "");
         auto conn_id = ep.uccl_connect(FLAGS_serverip);
         ConnID conn_id2;
-        ConnID conn_id_vec[NUM_QUEUES];
+        ConnID conn_id_vec[kNumEngines];
         if (test_type == kMc) {
             conn_id2 = ep.uccl_connect(FLAGS_serverip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
-            for (int i = 1; i < NUM_QUEUES; i++)
+            for (int i = 1; i < kNumEngines; i++)
                 conn_id_vec[i] = ep.uccl_connect(FLAGS_serverip);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
-            for (int i = 1; i < NUM_QUEUES; i++) {
+            for (int i = 1; i < kNumEngines; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
                     conn_id_vec[i] = ep.uccl_connect(FLAGS_serverip);
@@ -210,14 +209,14 @@ int main(int argc, char* argv[]) {
                 }
                 case kMq: {
                     for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < NUM_QUEUES; j++) {
+                        for (int j = 0; j < kNumEngines; j++) {
                             auto poll_ctx = ep.uccl_send_async(conn_id_vec[j],
                                                                data, send_len);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * NUM_QUEUES) {
+                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         auto async_start = poll_ctx->timestamp;
@@ -230,7 +229,7 @@ int main(int argc, char* argv[]) {
                 }
                 case kBiMq: {
                     for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < NUM_QUEUES; j++) {
+                        for (int j = 0; j < kNumEngines; j++) {
                             auto* poll_ctx =
                                 (j % 2 == 0)
                                     ? ep.uccl_send_async(conn_id_vec[j], data,
@@ -241,7 +240,7 @@ int main(int argc, char* argv[]) {
                             poll_ctxs.push_back(poll_ctx);
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * NUM_QUEUES) {
+                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         auto async_start = poll_ctx->timestamp;
@@ -284,9 +283,8 @@ int main(int argc, char* argv[]) {
                 // 24B: 4B FCS + 8B frame delimiter + 12B interframe gap
                 auto bw_gbps =
                     sent_bytes *
-                    ((AFXDP_MTU * 1.0 + 24) /
-                     (AFXDP_MTU - kNetHdrLen - kUcclHdrLen)) *
-                    8.0 / 1000 / 1000 / 1000 /
+                    ((EFA_MTU * 1.0 + 24) / (EFA_MTU - kUcclPktHdrLen)) * 8.0 /
+                    1000 / 1000 / 1000 /
                     (std::chrono::duration_cast<std::chrono::microseconds>(
                          end_bw_mea - start_bw_mea)
                          .count() *
@@ -308,21 +306,20 @@ int main(int argc, char* argv[]) {
             }
         }
     } else {
-        auto ep =
-            Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START);
+        auto ep = Endpoint();
         std::string remote_ip;
         auto conn_id = ep.uccl_accept(remote_ip);
         ConnID conn_id2;
-        ConnID conn_id_vec[NUM_QUEUES];
+        ConnID conn_id_vec[kNumEngines];
         if (test_type == kMc) {
             conn_id2 = ep.uccl_accept(remote_ip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
-            for (int i = 1; i < NUM_QUEUES; i++)
+            for (int i = 1; i < kNumEngines; i++)
                 conn_id_vec[i] = ep.uccl_accept(remote_ip);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
-            for (int i = 1; i < NUM_QUEUES; i++) {
+            for (int i = 1; i < kNumEngines; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
                     conn_id_vec[i] = ep.uccl_accept(remote_ip);
@@ -404,13 +401,13 @@ int main(int argc, char* argv[]) {
                 }
                 case kMq: {
                     for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < NUM_QUEUES; j++) {
+                        for (int j = 0; j < kNumEngines; j++) {
                             auto poll_ctx = ep.uccl_recv_async(conn_id_vec[j],
                                                                data, &recv_len);
                             poll_ctxs.push_back(poll_ctx);
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * NUM_QUEUES) {
+                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         ep.uccl_poll(poll_ctx);
@@ -419,7 +416,7 @@ int main(int argc, char* argv[]) {
                 }
                 case kBiMq: {
                     for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < NUM_QUEUES; j++) {
+                        for (int j = 0; j < kNumEngines; j++) {
                             auto* poll_ctx =
                                 (j % 2 == 0)
                                     ? ep.uccl_recv_async(conn_id_vec[j], data,
@@ -429,7 +426,7 @@ int main(int argc, char* argv[]) {
                             poll_ctxs.push_back(poll_ctx);
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * NUM_QUEUES) {
+                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         ep.uccl_poll(poll_ctx);

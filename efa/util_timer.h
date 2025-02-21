@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "glog/logging.h"
+#include "transport_config.h"
 
 namespace uccl {
 

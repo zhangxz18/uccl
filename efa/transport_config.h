@@ -7,10 +7,6 @@
 #define USE_MULTIPATH
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
-#define THREADED_MEMCPY
-// #define EMULATE_ZC
-// #define USE_TCP
-// #define ENABLE_CSUM
 // #define RTT_STATS
 // #define USE_SRD
 
@@ -58,12 +54,17 @@ static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 static const uint32_t kNumEnginesPerDev = 1;  // # of engines per device.
-static const uint32_t kMaxPath = 32;  // # of paths/QPs for data per engine.
-static const uint32_t kMaxPathForCtrl = 32;  // # of paths/QPs for control.
-static_assert(kMaxPath + kMaxPathForCtrl <= EFA_MAX_QPS,
-              "kMaxPath + kMaxPathForCtrl too large");
-static const uint32_t kMaxQPForSend = 8;
-static const uint32_t kMaxQPForSendCtrl = 8;
+static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
+static const uint32_t kMaxDstQP = 32;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 32;  // # of paths/QPs for control.
+static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
+static const uint32_t kMaxSrcQP = 8;
+static const uint32_t kMaxSrcQPCtrl = 8;
+static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
+static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
+// To make ctrl path_id calculation simple.
+static_assert(kMaxPath == kMaxPathCtrl);
+
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;
@@ -88,11 +89,11 @@ static const std::size_t kFastRexmitDupAckThres = 10;
 static const uint32_t kMaxTwPkts = 1024;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;
 static const uint32_t kSwitchPathThres = 1u;
-static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
-static const uint32_t kMaxPathHistoryPerEngine = 4096;
+static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxDstQP;
+static const uint32_t kMaxDstQPHistoryPerEngine = 4096;
 
-static_assert(kMaxPath <= 4096, "kMaxPath too large");
-static_assert(kMaxUnackedPktsPerEngine <= kMaxPathHistoryPerEngine,
+static_assert(kMaxDstQP <= 4096, "kMaxDstQP too large");
+static_assert(kMaxUnackedPktsPerEngine <= kMaxDstQPHistoryPerEngine,
               "kMaxUnackedPktsPerEngine too large");
-static_assert(is_power_of_two(kMaxPathHistoryPerEngine),
-              "kMaxPathHistoryPerEngine must be power of 2");
+static_assert(is_power_of_two(kMaxDstQPHistoryPerEngine),
+              "kMaxDstQPHistoryPerEngine must be power of 2");

@@ -78,7 +78,7 @@ ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
     signal(SIGTERM, interrupt_handler);
     signal(SIGHUP, interrupt_handler);
 
-    ep = new Endpoint(DEV_DEFAULT, NUM_QUEUES, NUM_FRAMES, ENGINE_CPU_START);
+    ep = new Endpoint();
     // pin_thread_to_cpu(ENGINE_CPU_START + 1);
 
     uccl_req_pool_buf = (char*)malloc(sizeof(UcclRequest) * kMaxInflightMsg);
@@ -104,7 +104,7 @@ ncclResult_t pluginPtrSupport(int dev, int* supportedTypes) {
 ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t* props) {
     // Below are default values, if unsure don't change.
 
-    props->name = (char*)DEV_DEFAULT;
+    props->name = (char*)"efa";
     // Fill for proper topology detection, e.g.
     // /sys/devices/pci0000:00/0000:00:10.0/0000:0b:00.0
     props->pciPath = NULL;
@@ -149,7 +149,8 @@ ncclResult_t pluginListen(int dev, void* handle, void** listenComm) {
                   "ncclSocketHandle size too large");
     static uint32_t global_conn_idx = 0;
 
-    std::string local_ip_str = get_dev_ip(DEV_DEFAULT);
+    std::string local_ip_str;
+    util_efa_get_ip_from_dev_idx(0, &local_ip_str);
     ctx->ip_addr_u32 = str_to_ip(local_ip_str);
     ctx->conn_idx = global_conn_idx++;
     LOG(INFO) << "pluginListen: " << local_ip_str;

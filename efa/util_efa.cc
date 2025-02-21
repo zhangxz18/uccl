@@ -131,8 +131,8 @@ error:
     throw std::runtime_error("Failed to initialize EFAFactory");
 }
 
-EFASocket *EFAFactory::CreateSocket(int gpu_idx, int dev_idx, int socket_id) {
-    auto socket = new EFASocket(gpu_idx, dev_idx, socket_id);
+EFASocket *EFAFactory::CreateSocket(int gpu_idx, int dev_idx, int socket_idx) {
+    auto socket = new EFASocket(gpu_idx, dev_idx, socket_idx);
     std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
     efa_ctl.socket_q_.push_back(socket);
     return socket;
@@ -155,16 +155,16 @@ void EFAFactory::Shutdown() {
     efa_ctl.dev_map.clear();
 }
 
-EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_id)
+EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
     : next_qp_idx_for_send_(0),
       next_qp_idx_for_send_ctrl_(0),
       gpu_idx_(gpu_idx),
       dev_idx_(dev_idx),
-      socket_id_(socket_id),
+      socket_idx_(socket_idx),
       send_queue_wrs_(0),
       recv_queue_wrs_(0) {
-    LOG(INFO) << "[AF_XDP] creating dev_idx_ " << dev_idx_ << " socket_id "
-              << socket_id;
+    LOG(INFO) << "[AF_XDP] creating dev_idx_ " << dev_idx_ << " socket_idx "
+              << socket_idx;
 
     memset(deficit_cnt_recv_wrs_, 0, sizeof(deficit_cnt_recv_wrs_));
     memset(deficit_cnt_recv_wrs_for_ctrl_, 0,
@@ -222,7 +222,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_id)
 #endif
 
     // Create send/recv QPs.
-    for (int i = 0; i < kMaxPath; i++) {
+    for (int i = 0; i < kMaxDstQP; i++) {
         qp_list_[i] =
             (this->*create_qp_func)(send_cq_, recv_cq_, kMaxSendWr, kMaxRecvWr);
         post_recv_wrs(kMaxRecvWr, i);
@@ -232,7 +232,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_id)
     ctrl_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
     DCHECK(ctrl_cq_) << "Failed to allocate ctrl CQ";
 
-    for (int i = 0; i < kMaxPathForCtrl; i++) {
+    for (int i = 0; i < kMaxDstQPCtrl; i++) {
         ctrl_qp_list_[i] = (this->*create_qp_func)(
             ctrl_cq_, ctrl_cq_, kMaxSendRecvWrForCtrl, kMaxSendRecvWrForCtrl);
         post_recv_wrs_for_ctrl(kMaxSendRecvWrForCtrl, i);
@@ -491,7 +491,7 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
 }
 
 void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
-    DCHECK(qp_idx < kMaxPath);
+    DCHECK(qp_idx < kMaxDstQP);
     auto &deficit_cnt = deficit_cnt_recv_wrs_[qp_idx];
     deficit_cnt += budget;
     if (deficit_cnt < kMaxRecvWrDeficit) return;
@@ -507,9 +507,9 @@ void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
         ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
         DCHECK(ret == 0);
 
-        auto *frame_desc = FrameDesc::Create(frame_desc_buf, pkt_hdr_buf,
-                                             EFA_UD_ADDITION + kUcclPktHdrLen,
-                                             pkt_data_buf, kUcclPktdataLen, 0);
+        auto *frame_desc = FrameDesc::Create(
+            frame_desc_buf, pkt_hdr_buf, EFA_UD_ADDITION + kUcclPktHdrLen,
+            pkt_data_buf, kUcclPktDataMaxLen, 0);
         frame_desc->set_src_qp_idx(qp_idx);
 
         auto *sge = recv_sge_vec_[i % kMaxChainedWr];
@@ -520,7 +520,7 @@ void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
         // data between GPU and CPU.
         sge[0] = {(uintptr_t)pkt_hdr_buf, EFA_UD_ADDITION + kUcclPktHdrLen,
                   get_pkt_hdr_lkey()};
-        sge[1] = {(uintptr_t)pkt_data_buf, kUcclPktdataLen,
+        sge[1] = {(uintptr_t)pkt_data_buf, kUcclPktDataMaxLen,
                   get_pkt_data_lkey()};
 
         wr->wr_id = (uint64_t)frame_desc;
@@ -703,7 +703,7 @@ std::string EFASocket::to_string() {
         "pkts: %u, fill queue entries: %u",
         pkt_hdr_pool_->avail_slots(), pkt_data_pool_->avail_slots(),
         frame_desc_pool_->avail_slots(), send_queue_wrs_, recv_queue_wrs_);
-    if (socket_id_ == 0) {
+    if (socket_idx_ == 0) {
         auto now = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                            now - last_stat_)

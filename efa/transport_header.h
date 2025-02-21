@@ -17,12 +17,10 @@ struct __attribute__((packed)) UcclPktHdr {
     uint16_t engine_id : 4;  // remote UcclEngine ID to process this packet.
     uint16_t path_id : 12;   // path_id of this dst port.
     enum class UcclFlags : uint8_t {
-        kData = 0b0,              // Data packet.
-        kAck = 0b10,              // ACK packet.
-        kRssProbe = 0b100,        // RSS probing packet.
-        kRssProbeRsp = 0b1000,    // RSS probing rsp packet.
-        kDataRttProbe = 0b10000,  // RTT probing packet.
-        kAckRttProbe = 0b100000,  // RTT probing packet.
+        kData = 0b0,            // Data packet.
+        kAck = 0b10,            // ACK packet.
+        kDataRttProbe = 0b100,  // RTT probing packet.
+        kAckRttProbe = 0b1000,  // RTT probing packet.
     };
     UcclFlags net_flags;  // Network flags.
     uint8_t msg_flags;    // Field to reflect the `FrameDesc' flags.
@@ -42,16 +40,8 @@ struct __attribute__((packed)) UcclSackHdr {
     be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
 };
 static const size_t kUcclPktHdrLen = sizeof(UcclPktHdr);
-static const size_t kUcclPktdataLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;
+static const size_t kUcclPktDataMaxLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
-
-#ifdef USE_TCP
-static const size_t kNetHdrLen =
-    sizeof(ethhdr) + sizeof(iphdr) + sizeof(tcphdr);
-#else
-static const size_t kNetHdrLen =
-    sizeof(ethhdr) + sizeof(iphdr) + sizeof(udphdr);
-#endif
 
 inline UcclPktHdr::UcclFlags operator|(UcclPktHdr::UcclFlags lhs,
                                        UcclPktHdr::UcclFlags rhs) {
