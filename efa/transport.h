@@ -526,11 +526,10 @@ class UcclFlow {
     size_t port_path_rtt_[kMaxPath] = {0};
 
     // For ctrl, its path is derived from data path_id.
-    inline uint16_t get_src_qp_rr() {
-        static uint16_t next_src_qp = 0;
-        return (next_src_qp++) % kMaxSrcQP;
-    }
+    uint16_t next_src_qp = 0;
+    inline uint16_t get_src_qp_rr() { return (next_src_qp++) % kMaxSrcQP; }
 
+    uint16_t next_dst_qp = 0;
     inline uint16_t get_dst_qp_pow2(uint16_t src_qp_idx) {
 #ifdef PATH_SELECTION
         auto idx_u32 = U32Rand(0, UINT32_MAX);
@@ -543,11 +542,11 @@ class UcclFlow {
         return (port_path_rtt_[path_id1] < port_path_rtt_[path_id2]) ? idx1
                                                                      : idx2;
 #else
-        static uint16_t next_dst_qp_idx = 0;
-        return (next_dst_qp_idx++) % kMaxDstQP;
+        return (next_dst_qp++) % kMaxDstQP;
 #endif
     }
 
+    uint32_t next_path_id = 0;
     inline uint32_t get_path_id_with_lowest_rtt() {
 #ifdef PATH_SELECTION
         auto idx_u32 = U32Rand(0, UINT32_MAX);
@@ -557,7 +556,6 @@ class UcclFlow {
                 << port_path_rtt_[idx2];
         return (port_path_rtt_[idx1] < port_path_rtt_[idx2]) ? idx1 : idx2;
 #else
-        static uint32_t next_path_id = 0;
         return (next_path_id++) % kMaxPath;
 #endif
     }
@@ -680,6 +678,7 @@ class Endpoint {
     Channel *channel_vec_[kNumEngines];
     std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
+    std::vector<std::unique_ptr<std::thread>> deser_th_vec_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
@@ -727,11 +726,11 @@ class Endpoint {
     inline int find_least_loaded_engine_idx_and_update();
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
-    std::thread stats_thread_;
-    void stats_thread_fn();
     std::mutex stats_mu_;
     std::condition_variable stats_cv_;
     std::atomic<bool> shutdown_{false};
+    std::thread stats_thread_;
+    void stats_thread_fn();
 
     friend class UcclFlow;
 };

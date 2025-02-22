@@ -156,15 +156,9 @@ void EFAFactory::Shutdown() {
 }
 
 EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
-    : next_qp_idx_for_send_(0),
-      next_qp_idx_for_send_ctrl_(0),
-      gpu_idx_(gpu_idx),
-      dev_idx_(dev_idx),
-      socket_idx_(socket_idx),
-      send_queue_wrs_(0),
-      recv_queue_wrs_(0) {
-    LOG(INFO) << "[AF_XDP] creating dev_idx_ " << dev_idx_ << " socket_idx "
-              << socket_idx;
+    : gpu_idx_(gpu_idx), dev_idx_(dev_idx), socket_idx_(socket_idx) {
+    LOG(INFO) << "[EFA] creating gpu_idx " << gpu_idx << " dev_idx_ "
+              << dev_idx_ << " socket_idx " << socket_idx;
 
     memset(deficit_cnt_recv_wrs_, 0, sizeof(deficit_cnt_recv_wrs_));
     memset(deficit_cnt_recv_wrs_for_ctrl_, 0,
@@ -386,6 +380,9 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame, uint16_t src_qp_idx) {
         exit(1);
     }
 
+    out_packets_++;
+    out_bytes_ += frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
+
     return 1;
 }
 
@@ -426,8 +423,9 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
         if (is_last) {
             struct ibv_send_wr *bad_send_wr;
             if (ibv_post_send(qp_list_[src_qp_idx], wr_head, &bad_send_wr)) {
-                perror("[util_efa]: Failed to post send wrs");
-                exit(1);
+                DCHECK(false) << "[util_efa]: Failed to post send wrs "
+                              << " send_queue_wrs_ " << send_queue_wrs_
+                              << " frames.size() " << frames.size();
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
@@ -436,6 +434,9 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
 
         send_queue_wrs_++;
         i++;
+
+        out_packets_++;
+        out_bytes_ += frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
     }
 
     return frames.size();
@@ -476,8 +477,8 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
             struct ibv_send_wr *bad_send_wr;
             if (ibv_post_send(ctrl_qp_list_[src_qp_idx], wr_head,
                               &bad_send_wr)) {
-                perror("[util_efa]: Failed to post send wrs for ctrl");
-                exit(1);
+                DCHECK(false) << "[util_efa]: Failed to post send wrs for ctrl "
+                              << " send_queue_wrs_ " << send_queue_wrs_;
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
@@ -485,6 +486,9 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
         }
 
         i++;
+
+        out_packets_++;
+        out_bytes_ += frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
     }
 
     return frames.size();
@@ -644,6 +648,9 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
 
             auto src_qp_idx = frame->get_src_qp_idx();
             post_recv_wrs(1, src_qp_idx);
+
+            in_packets_++;
+            in_bytes_ += frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
         }
 
         // TODO(yang): do we need to do anything smarter?
@@ -677,6 +684,10 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
                 auto src_qp_idx = frame->get_src_qp_idx();
                 post_recv_wrs_for_ctrl(1, src_qp_idx);
 
+                in_packets_++;
+                in_bytes_ +=
+                    frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
+
             } else if (wc_[i].opcode == IBV_WC_SEND) {
                 auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
 
@@ -699,7 +710,7 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
 std::string EFASocket::to_string() {
     std::string s;
     s += Format(
-        "free pkt hdr: %u, free pkt data: %u, free frame desc: %u, unpulled tx "
+        "free pkt hdr: %u, free pkt data: %u, free frame desc: %u, unpolled tx "
         "pkts: %u, fill queue entries: %u",
         pkt_hdr_pool_->avail_slots(), pkt_data_pool_->avail_slots(),
         frame_desc_pool_->avail_slots(), send_queue_wrs_, recv_queue_wrs_);

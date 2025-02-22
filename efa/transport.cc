@@ -417,6 +417,7 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
                     << sack_bitmap_count;
 
             // Avoid sending too many packets.
+            if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return;
             auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
             if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return;
             auto unacked_pkt_budget =
@@ -438,6 +439,12 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
                 if ((sack_bitmap & (1ULL << sack_bitmap_idx_in_bucket)) == 0) {
                     // We found a missing packet.
                     auto seqno = pcb_.snd_una + index;
+
+                    // Unlike standard TCP or Machnet, we do not skip holes in
+                    // the SACK bitmap that have already been retransmitted, but
+                    // keep retransmitting them. This is because we have set a
+                    // relatively high kFastRexmitDupAckThres due to multi-path
+                    // and out-of-order delivery.
 
                     VLOG(2) << "Fast recovery retransmitting " << seqno;
                     const auto *missing_ucclh =
@@ -475,7 +482,9 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
             }
             if (!missing_frames_.empty()) {
                 VLOG(2) << "Fast recovery retransmitting "
-                        << missing_frames_.size() << " missing packets";
+                        << missing_frames_.size() << " missing packets "
+                        << " ackno " << ackno << " duplicate_acks "
+                        << pcb_.duplicate_acks;
                 // TODO(yang): handling the cases where the number of
                 // missing frames is larger than the free send_queue size.
                 socket_->post_send_wrs(missing_frames_, src_qp_idx);
@@ -712,8 +721,9 @@ void UcclFlow::transmit_pending_packets() {
 
 void UcclFlow::deserialize_and_append_to_txtracking() {
     if (pending_tx_msgs_.empty()) return;
-    if (tx_tracking_.num_unsent_msgbufs() >= kMaxTwPkts) return;
-    auto deser_budget = kMaxTwPkts - tx_tracking_.num_unsent_msgbufs();
+    if (tx_tracking_.num_unsent_msgbufs() >= kMaxPktsInTimingWheel) return;
+    auto deser_budget =
+        kMaxPktsInTimingWheel - tx_tracking_.num_unsent_msgbufs();
 
     auto &[tx_work, cur_offset] = pending_tx_msgs_.front();
     FrameDesc *cur_msgbuf = tx_work.deser_msgs;
@@ -733,9 +743,7 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
         cur_msgbuf->mark_not_txpulltime_free();
         if (remaining_bytes == tx_work.len) cur_msgbuf->mark_first();
 
-        const auto *ucclh = reinterpret_cast<const UcclPktHdr *>(
-            cur_msgbuf->get_pkt_hdr_addr());
-        auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
+        auto payload_len = cur_msgbuf->get_pkt_data_len();
 
         // Both queue on one timing wheel.
         if constexpr (kCCType == CCType::kTimely) {
@@ -788,7 +796,7 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
             : nullptr);
 
     // Recursively call this function to append more messages to the tx.
-    if (tx_tracking_.num_unsent_msgbufs() < kMaxTwPkts &&
+    if (tx_tracking_.num_unsent_msgbufs() < kMaxPktsInTimingWheel &&
         !pending_tx_msgs_.empty()) {
         deserialize_and_append_to_txtracking();
     }
@@ -906,7 +914,9 @@ void UcclEngine::run() {
             flow->transmit_pending_packets();
         }
 
+#ifndef THREADED_MEMCPY
         deser_th_func(std::vector<UcclEngine *>{this});
+#endif
 
         auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);
     }
@@ -924,111 +934,122 @@ void UcclEngine::deser_th_func(std::vector<UcclEngine *> engines) {
     Channel::Msg tx_deser_work;
     Channel::Msg rx_deser_work;
 
-    for (auto engine : engines) {
-        if (Channel::dequeue_sc(engine->channel_->tx_task_q_, &tx_deser_work)) {
-            // Make data written by the app thread visible to the deser
-            // thread.
-            tx_deser_work.poll_ctx->read_barrier();
-            VLOG(3) << "Tx jring dequeue";
+#ifdef THREADED_MEMCPY
+    while (!engines[0]->shutdown_) {
+#endif
+        for (auto engine : engines) {
+            if (Channel::dequeue_sc(engine->channel_->tx_task_q_,
+                                    &tx_deser_work)) {
+                // Make data written by the app thread visible to the deser
+                // thread.
+                tx_deser_work.poll_ctx->read_barrier();
+                VLOG(3) << "Tx jring dequeue";
 
-            // deser tx_work into a FrameDesc chain, then pass to deser_th.
-            FrameDesc *deser_msgs_head = nullptr;
-            FrameDesc *deser_msgs_tail = nullptr;
-            auto *app_buf_cursor = tx_deser_work.data;
-            auto remaining_bytes = tx_deser_work.len;
-            auto *app_mr = tx_deser_work.mhandle.mr;
-            while (remaining_bytes > 0) {
-                auto payload_len =
-                    std::min(remaining_bytes, kUcclPktDataMaxLen);
-                // auto frame_offset = engine->socket_->pop_frame();
-                auto frame_desc = engine->socket_->pop_frame_desc();
-                auto pkt_hdr = engine->socket_->pop_pkt_hdr();
+                // deser tx_work into a FrameDesc chain, then pass to deser_th.
+                FrameDesc *deser_msgs_head = nullptr;
+                FrameDesc *deser_msgs_tail = nullptr;
+                auto *app_buf_cursor = tx_deser_work.data;
+                auto remaining_bytes = tx_deser_work.len;
+                auto *app_mr = tx_deser_work.mhandle.mr;
+                while (remaining_bytes > 0) {
+                    auto payload_len =
+                        std::min(remaining_bytes, kUcclPktDataMaxLen);
+                    // auto frame_offset = engine->socket_->pop_frame();
+                    auto frame_desc = engine->socket_->pop_frame_desc();
+                    auto pkt_hdr = engine->socket_->pop_pkt_hdr();
 
-                // TODO(yang): for tx, we do not allocate data buffer,
-                // therefore, we should not free it later.
-                auto *msgbuf = FrameDesc::Create(
-                    frame_desc, pkt_hdr, kUcclPktHdrLen,
-                    (uint64_t)app_buf_cursor, payload_len, app_mr->lkey, 0);
-                // auto pkt_payload_addr = msgbuf->get_pkt_addr() +
-                // kUcclPktHdrLen;
-                // memcpy(pkt_payload_addr, app_buf_cursor, payload_len);
+                    // For tx, we do not allocate data buffer; therefore, we
+                    // should not free it later.
+                    auto *msgbuf = FrameDesc::Create(
+                        frame_desc, pkt_hdr, kUcclPktHdrLen,
+                        (uint64_t)app_buf_cursor, payload_len, app_mr->lkey, 0);
+                    // auto pkt_payload_addr = msgbuf->get_pkt_addr() +
+                    // kUcclPktHdrLen;
+                    // memcpy(pkt_payload_addr, app_buf_cursor, payload_len);
 
-                remaining_bytes -= payload_len;
-                app_buf_cursor += payload_len;
+                    remaining_bytes -= payload_len;
+                    app_buf_cursor += payload_len;
 
-                if (deser_msgs_head == nullptr) {
-                    deser_msgs_head = msgbuf;
-                    deser_msgs_tail = msgbuf;
-                } else {
-                    deser_msgs_tail->set_next(msgbuf);
-                    deser_msgs_tail = msgbuf;
-                }
-            }
-            deser_msgs_tail->set_next(nullptr);
-            tx_deser_work.deser_msgs = deser_msgs_head;
-
-            // Make sure the app thread sees the deserialized messages.
-            tx_deser_work.poll_ctx->write_barrier();
-            Channel::enqueue_sp(engine->channel_->tx_deser_q_, &tx_deser_work);
-        }
-        if (Channel::dequeue_sc(engine->channel_->rx_deser_q_,
-                                &rx_deser_work)) {
-            // Make data written by engine thread visible to the deser
-            // thread.
-            rx_deser_work.poll_ctx->read_barrier();
-            VLOG(3) << "Rx ser jring dequeue";
-
-            FrameDesc *ready_msg = rx_deser_work.deser_msgs;
-            auto *app_buf = rx_deser_work.data;
-            auto *app_buf_len_p = rx_deser_work.len_p;
-            auto *poll_ctx = rx_deser_work.poll_ctx;
-            size_t cur_offset = 0;
-
-            while (ready_msg != nullptr) {
-                auto *pkt_addr = (uint8_t *)ready_msg->get_pkt_hdr_addr();
-                DCHECK(pkt_addr)
-                    << "pkt_addr is nullptr when copy to app buf " << std::hex
-                    << "0x" << ready_msg << std::dec << ready_msg->to_string();
-
-                const auto *ucclh =
-                    reinterpret_cast<const UcclPktHdr *>(pkt_addr);
-                auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
-                VLOG(2) << "payload_len: " << payload_len
-                        << " seqno: " << std::dec << ucclh->seqno.value();
-
-                // TODO(yang): cudaMemcpy or custom cuda kernel for reassembly.
-                // auto *payload_addr = (uint8_t
-                // *)ready_msg->get_pkt_data_addr();
-                // memcpy((uint8_t *)app_buf + cur_offset, payload_addr,
-                // payload_len);
-
-                cur_offset += payload_len;
-                auto *_ready_frame = ready_msg;
-
-                // We have a complete message. Let's deliver it to the app.
-                if (ready_msg->is_last()) {
-                    *app_buf_len_p = cur_offset;
-
-                    // Wakeup app thread waiting on endpoint.
-                    poll_ctx->write_barrier();
-                    {
-                        std::lock_guard<std::mutex> lock(poll_ctx->mu);
-                        poll_ctx->done = true;
-                        poll_ctx->cv.notify_one();
+                    if (deser_msgs_head == nullptr) {
+                        deser_msgs_head = msgbuf;
+                        deser_msgs_tail = msgbuf;
+                    } else {
+                        deser_msgs_tail->set_next(msgbuf);
+                        deser_msgs_tail = msgbuf;
                     }
-                    VLOG(2) << "Received a complete message " << cur_offset
-                            << " bytes";
                 }
+                deser_msgs_tail->set_next(nullptr);
+                tx_deser_work.deser_msgs = deser_msgs_head;
 
-                ready_msg = ready_msg->next();
-                // Free received frames that have been copied to app buf.
-                engine->socket_->push_pkt_hdr(_ready_frame->get_pkt_hdr_addr());
-                engine->socket_->push_pkt_data(
-                    _ready_frame->get_pkt_data_addr());
-                engine->socket_->push_frame_desc((uint64_t)_ready_frame);
+                // Make sure the app thread sees the deserialized messages.
+                tx_deser_work.poll_ctx->write_barrier();
+                Channel::enqueue_sp(engine->channel_->tx_deser_q_,
+                                    &tx_deser_work);
+            }
+            if (Channel::dequeue_sc(engine->channel_->rx_deser_q_,
+                                    &rx_deser_work)) {
+                // Make data written by engine thread visible to the deser
+                // thread.
+                rx_deser_work.poll_ctx->read_barrier();
+                VLOG(3) << "Rx ser jring dequeue";
+
+                FrameDesc *ready_msg = rx_deser_work.deser_msgs;
+                auto *app_buf = rx_deser_work.data;
+                auto *app_buf_len_p = rx_deser_work.len_p;
+                auto *poll_ctx = rx_deser_work.poll_ctx;
+                size_t cur_offset = 0;
+
+                while (ready_msg != nullptr) {
+                    auto *pkt_addr = (uint8_t *)ready_msg->get_pkt_hdr_addr();
+                    DCHECK(pkt_addr)
+                        << "pkt_addr is nullptr when copy to app buf "
+                        << std::hex << "0x" << ready_msg << std::dec
+                        << ready_msg->to_string();
+
+                    const auto *ucclh =
+                        reinterpret_cast<const UcclPktHdr *>(pkt_addr);
+                    auto payload_len =
+                        ucclh->frame_len.value() - kUcclPktHdrLen;
+                    VLOG(2) << "payload_len: " << payload_len
+                            << " seqno: " << std::dec << ucclh->seqno.value();
+
+                    // TODO(yang): cudaMemcpy or custom cuda kernel for
+                    // reassembly. auto *payload_addr = (uint8_t
+                    // *)ready_msg->get_pkt_data_addr();
+                    // memcpy((uint8_t *)app_buf + cur_offset, payload_addr,
+                    // payload_len);
+
+                    cur_offset += payload_len;
+                    auto *_ready_frame = ready_msg;
+
+                    // We have a complete message. Let's deliver it to the app.
+                    if (ready_msg->is_last()) {
+                        *app_buf_len_p = cur_offset;
+
+                        // Wakeup app thread waiting on endpoint.
+                        poll_ctx->write_barrier();
+                        {
+                            std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                            poll_ctx->done = true;
+                            poll_ctx->cv.notify_one();
+                        }
+                        VLOG(2) << "Received a complete message " << cur_offset
+                                << " bytes";
+                    }
+
+                    ready_msg = ready_msg->next();
+                    // Free received frames that have been copied to app buf.
+                    engine->socket_->push_pkt_hdr(
+                        _ready_frame->get_pkt_hdr_addr());
+                    engine->socket_->push_pkt_data(
+                        _ready_frame->get_pkt_data_addr());
+                    engine->socket_->push_frame_desc((uint64_t)_ready_frame);
+                }
             }
         }
+#ifdef THREADED_MEMCPY
     }
+#endif
 }
 
 void UcclEngine::process_rx_msg(std::vector<FrameDesc *> &pkt_msgs) {
@@ -1151,6 +1172,8 @@ std::string UcclEngine::status_to_string() {
                     flow->remote_engine_idx_);
         s += flow->to_string();
     }
+    if (s.empty())
+        s += Format("\n\t\tEngine %d No active flows", local_engine_idx_);
     s += "\n\t\t\t[EFA] " + socket_->to_string();
     return s;
 }
@@ -1208,6 +1231,20 @@ Endpoint::Endpoint()
         engines.push_back(engine_vec_.back().get());
     }
 
+#ifdef THREADED_MEMCPY
+    for (int i = 0; i < num_queues; i++) {
+        // Placing deser thread on engine_th_cpuid + num_queues.
+        deser_th_vec_.emplace_back(std::make_unique<std::thread>(
+            [i, deser_th_cpuid = engine_cpu_start + num_queues + i,
+             engines = std::vector<UcclEngine *>{engines[i]}]() {
+                pin_thread_to_cpu(deser_th_cpuid);
+                LOG(INFO) << "[Engine] deser thread " << i << " running on CPU "
+                          << deser_th_cpuid;
+                UcclEngine::deser_th_func(engines);
+            }));
+    }
+#endif
+
     ctx_pool_ = new SharedPool<PollCtx *, true>(kMaxInflightMsg);
     ctx_pool_buf_ = new uint8_t[kMaxInflightMsg * sizeof(PollCtx)];
     for (int i = 0; i < kMaxInflightMsg; i++) {
@@ -1240,6 +1277,7 @@ Endpoint::Endpoint()
 Endpoint::~Endpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
+    for (auto &deser_th : deser_th_vec_) deser_th->join();
     for (int i = 0; i < num_queues_; i++) delete channel_vec_[i];
 
     delete ctx_pool_;
@@ -1399,14 +1437,14 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-bool Endpoint::uccl_send(ConnID conn_id, const void *data, const size_t len, Mhandle mhandle,
-                         bool busypoll) {
+bool Endpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
+                         Mhandle mhandle, bool busypoll) {
     auto *poll_ctx = uccl_send_async(conn_id, data, len, mhandle);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
-bool Endpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p, Mhandle mhandle,
-                         bool busypoll) {
+bool Endpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
+                         Mhandle mhandle, bool busypoll) {
     auto *poll_ctx = uccl_recv_async(conn_id, data, len_p, mhandle);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
@@ -1429,7 +1467,8 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p, Mhandle mhandle) {
+PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p,
+                                   Mhandle mhandle) {
     auto *poll_ctx = ctx_pool_->pop();
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,

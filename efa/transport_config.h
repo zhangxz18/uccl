@@ -7,6 +7,7 @@
 #define USE_MULTIPATH
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
+// #define THREADED_MEMCPY
 // #define RTT_STATS
 // #define USE_SRD
 
@@ -83,10 +84,10 @@ static const uint32_t SEND_BATCH_SIZE = 32;
 
 // CC parameters.
 static const uint32_t kNumPktPerChunk = 4;  // # of 9KB packets per chunk.
-static const uint32_t kMaxUnackedPktsPP = 1u;
+static const uint32_t kMaxUnackedPktsPP = 4u;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 10;
-static const uint32_t kMaxTwPkts = 1024;
+static const uint32_t kMaxPktsInTimingWheel = 1024;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;
 static const uint32_t kSwitchPathThres = 1u;
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;

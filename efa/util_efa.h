@@ -413,11 +413,6 @@ class EFASocket {
     uint16_t deficit_cnt_recv_wrs_[kMaxDstQP];
     uint16_t deficit_cnt_recv_wrs_for_ctrl_[kMaxDstQPCtrl];
 
-    // Round-robin index for choosing src_qp to send data/acl packets; this is
-    // to fully utilize the micro-cores on EFA NICs.
-    uint16_t next_qp_idx_for_send_;
-    uint16_t next_qp_idx_for_send_ctrl_;
-
     EFASocket(int gpu_idx, int dev_idx, int socket_idx);
 
     struct ibv_qp *create_qp(struct ibv_cq *send_cq, struct ibv_cq *recv_cq,
@@ -455,14 +450,15 @@ class EFASocket {
     std::tuple<std::vector<FrameDesc *>, uint32_t> poll_ctrl_cq(
         uint32_t budget);
 
+    // Round-robin index for choosing src_qp to send data/acl packets; this
+    // is to fully utilize the micro-cores on EFA NICs.
+    uint16_t next_qp_idx_for_send_ = 0;
+    uint16_t next_qp_idx_for_send_ctrl_ = 0;
     inline uint16_t get_next_qp_idx_for_send() {
-        next_qp_idx_for_send_ = (next_qp_idx_for_send_ + 1) % kMaxSrcQP;
-        return next_qp_idx_for_send_;
+        return (next_qp_idx_for_send_++) % kMaxSrcQP;
     }
     inline uint16_t get_next_qp_idx_for_send_ctrl() {
-        next_qp_idx_for_send_ctrl_ =
-            (next_qp_idx_for_send_ctrl_ + 1) % kMaxSrcQPCtrl;
-        return next_qp_idx_for_send_ctrl_;
+        return (next_qp_idx_for_send_ctrl_++) % kMaxSrcQPCtrl;
     }
 
     std::string to_string();
@@ -522,8 +518,8 @@ class EFASocket {
     inline uint32_t recv_queue_wrs() { return recv_queue_wrs_; }
 
    private:  // for stats
-    uint32_t send_queue_wrs_;
-    uint32_t recv_queue_wrs_;
+    uint32_t send_queue_wrs_ = 0;
+    uint32_t recv_queue_wrs_ = 0;
 
     std::chrono::time_point<std::chrono::high_resolution_clock> last_stat_;
     inline static std::atomic<uint64_t> out_packets_ = 0;
