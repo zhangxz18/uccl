@@ -78,16 +78,16 @@ static const uint32_t kMaxCqeTotal = 16384;
 static const uint32_t kMaxPollBatch = 32;
 static const uint32_t kMaxRecvWrDeficit = 32;
 static const uint32_t kMaxChainedWr = 32;
-const static uint32_t kMaxReadyRxMsgbufs = NUM_FRAMES / 4;
+const static uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
 
 // CC parameters.
 static const uint32_t kNumPktPerChunk = 4;  // # of 9KB packets per chunk.
 static const uint32_t kMaxUnackedPktsPP = 4u;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 10;
-static const uint32_t kMaxPktsInTimingWheel = 1024;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;
 static const uint32_t kSwitchPathThres = 1u;
+static const uint32_t kMaxPktsInTimingWheel = 1024;
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 static const uint32_t kMaxPathHistoryPerEngine = 4096;
 

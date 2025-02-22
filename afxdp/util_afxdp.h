@@ -338,6 +338,8 @@ class AFXDPSocket {
 #endif
     }
 
+    inline uint32_t unpulled_tx_pkts() const { return unpulled_tx_pkts_; };
+
    private:
     uint32_t unpulled_tx_pkts_;
     uint32_t fill_queue_entries_;

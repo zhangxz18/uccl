@@ -159,8 +159,12 @@ RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameDesc *msgbuf) {
     num_unconsumed_msgbufs_++;
 
     // Buffer the packet in the frame pool. It may be out-of-order.
-    reass_q_.insert(
-        it, std::pair<int, FrameDesc *>(static_cast<int>(seqno), msgbuf));
+    reass_q_.insert(it, {seqno, msgbuf});
+
+    VLOG_IF(3, num_unconsumed_msgbufs_ >= kMaxUnconsumedRxMsgbufs)
+        << "seqno: " << seqno << " expected_seqno: " << expected_seqno
+        << " distance: " << distance << " pcb->rcv_nxt: " << pcb->rcv_nxt
+        << " reass_q_.begin()->first: " << reass_q_.begin()->first;
 
     // Update the SACK bitmap for the newly received packet.
     pcb->sack_bitmap_bit_set(distance);
@@ -172,8 +176,7 @@ RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameDesc *msgbuf) {
 }
 
 void RXTracking::push_inorder_msgbuf_to_app(swift::Pcb *pcb) {
-    while (!reass_q_.empty() &&
-           static_cast<uint32_t>(reass_q_.begin()->first) == pcb->rcv_nxt) {
+    while (!reass_q_.empty() && reass_q_.begin()->first == pcb->rcv_nxt) {
         auto *msgbuf = reass_q_.begin()->second;
         reass_q_.erase(reass_q_.begin());
 
@@ -283,9 +286,9 @@ std::string UcclFlow::to_string() const {
               ? "\n\t\t\t     cubic_pp[0]: " + cubic_pp_[0].to_string()
               : "\n\t\t\t     cubic:       " + cubic_g_.to_string()) +
          "\n\t\t\t     timely:      " + timely_g_.to_string() +
-         "\n\t\t\t[TX] msgs unsent: " +
+         "\n\t\t\t[TX] msgbufs unsent: " +
          std::to_string(tx_tracking_.num_unsent_msgbufs()) +
-         "\n\t\t\t[RX] msgs unconsumed: " +
+         "\n\t\t\t[RX] msgbufs unconsumed: " +
          std::to_string(rx_tracking_.num_unconsumed_msgbufs());
     return s;
 }
@@ -345,7 +348,7 @@ void UcclFlow::rx_messages() {
     // Send one ack for a bunch of received packets.
     if (num_data_frames_recvd) {
         // Avoiding client sending too much packet which would empty msgbuf.
-        if (rx_tracking_.num_unconsumed_msgbufs() <= kMaxReadyRxMsgbufs) {
+        if (rx_tracking_.num_unconsumed_msgbufs() <= kMaxUnconsumedRxMsgbufs) {
             auto net_flags = received_rtt_probe
                                  ? UcclPktHdr::UcclFlags::kAckRttProbe
                                  : UcclPktHdr::UcclFlags::kAck;

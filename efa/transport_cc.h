@@ -41,7 +41,7 @@ struct Pcb {
     static constexpr std::size_t kRtoMaxRexmitConsectutiveAllowed = 102400;
     static constexpr int kRtoExpireThresInTicks = 3;  // in slow timer ticks.
     static constexpr int kRtoDisabled = -1;
-    static constexpr uint32_t kInitSeq = 0u;
+    static constexpr uint32_t kInitSeq = 0u;  // 2140000000u for overflow test.
     Pcb() {}
 
     uint32_t target_delay{0};
