@@ -7,7 +7,6 @@
 #define USE_MULTIPATH
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
-// #define THREADED_MEMCPY
 // #define RTT_STATS
 // #define USE_SRD
 
@@ -53,27 +52,6 @@ static const uint32_t EFA_UD_ADDITION = 40;  // Auto-added by EFA during recv.
 
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
-
-static const uint32_t kNumEnginesPerDev = 2;  // # of engines per EFA device.
-static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
-static const uint32_t kMaxDstQP = 32;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxDstQPCtrl = 32;  // # of paths/QPs for control.
-static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
-static const uint32_t kMaxSrcQP = 8;
-static const uint32_t kMaxSrcQPCtrl = 8;
-static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
-static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
-// To make ctrl path_id calculation simple.
-static_assert(kMaxPath == kMaxPathCtrl);
-
-static const uint32_t kMaxSendWr = 1024;
-static const uint32_t kMaxRecvWr = 128;
-static const uint32_t kMaxSendRecvWrForCtrl = 1024;
-static const uint32_t kMaxCqeTotal = 16384;
-static const uint32_t kMaxPollBatch = 32;
-static const uint32_t kMaxRecvWrDeficit = 32;
-static const uint32_t kMaxChainedWr = 32;
-
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
@@ -81,6 +59,26 @@ static const uint16_t BASE_PORT = 10000;
 static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 32;
+
+static const uint32_t kNumEnginesPerDev = 2;  // # of engines per EFA device.
+static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
+static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
+static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
+static const uint32_t kMaxSrcQP = 16;
+static const uint32_t kMaxSrcQPCtrl = 16;
+static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
+static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
+// To make ctrl path_id calculation simple.
+static_assert(kMaxPath == kMaxPathCtrl);
+static const uint32_t kMaxSendWr = 1024;
+static const uint32_t kMaxRecvWr = 128;
+static const uint32_t kMaxSendRecvWrForCtrl = 1024;
+static const uint32_t kMaxCqeTotal = 16384;
+static const uint32_t kMaxPollBatch = 32;
+static const uint32_t kMaxRecvWrDeficit = 32;
+static const uint32_t kMaxChainedWr = 32;
+const static uint32_t kMaxReadyRxMsgbufs = NUM_FRAMES / 4;
 
 // CC parameters.
 static const uint32_t kNumPktPerChunk = 4;  // # of 9KB packets per chunk.

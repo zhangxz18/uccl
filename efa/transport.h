@@ -124,25 +124,18 @@ class Channel {
     Channel() {
         tx_task_q_ = create_ring(sizeof(Msg), kChannelSize);
         rx_task_q_ = create_ring(sizeof(Msg), kChannelSize);
-        tx_deser_q_ = create_ring(sizeof(Msg), kChannelSize);
-        rx_deser_q_ = create_ring(sizeof(Msg), kChannelSize);
         ctrl_task_q_ = create_ring(sizeof(CtrlMsg), kChannelSize);
     }
 
     ~Channel() {
         free(tx_task_q_);
         free(rx_task_q_);
-        free(tx_deser_q_);
-        free(rx_deser_q_);
         free(ctrl_task_q_);
     }
 
     // Communicating rx/tx cmds between app thread and engine thread.
     jring_t *tx_task_q_;
     jring_t *rx_task_q_;
-    // Communicating deser msgs between engine thread and deser thread.
-    jring_t *tx_deser_q_;
-    jring_t *rx_deser_q_;
     // Communicating ctrl cmds between app thread and engine thread.
     jring_t *ctrl_task_q_;
 
@@ -290,11 +283,21 @@ class RXTracking {
     /**
      * Either the app supplies the app buffer or the engine receives a full msg.
      * It returns true if successfully copying the msgbuf to the app buffer;
-     * otherwise false.
+     * otherwise false. Using rx_work as a pointer to diffirentiate null case.
      */
     void try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work);
 
+    // Two parts: messages that are out-of-order but trackable, and messages
+    // that are ready but have not been delivered to app (eg, because of no app
+    // buffer supplied by users).
+    uint32_t num_unconsumed_msgbufs_ = 0;
+    inline uint32_t num_unconsumed_msgbufs() const {
+        return num_unconsumed_msgbufs_;
+    }
+
    private:
+    void copy_complete_msgbuf_to_appbuf(Channel::Msg &rx_complete_work);
+
     EFASocket *socket_;
     Channel *channel_;
 
@@ -327,8 +330,6 @@ class RXTracking {
  *      converts to network packets and sends them out to the remote recipient.
  */
 class UcclFlow {
-    const static uint32_t kMaxReadyRxMsgbufs = kMaxUnackedPktsPerEngine * 32;
-
    public:
     /**
      * @brief Construct a new flow.
@@ -603,8 +604,6 @@ class UcclEngine {
      */
     void run();
 
-    static void deser_th_func(std::vector<UcclEngine *> engines);
-
     /**
      * @brief Method to perform periodic processing. This is called by the
      * main engine cycle (see method `Run`).
@@ -678,7 +677,6 @@ class Endpoint {
     Channel *channel_vec_[kNumEngines];
     std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
-    std::vector<std::unique_ptr<std::thread>> deser_th_vec_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
