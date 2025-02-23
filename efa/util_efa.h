@@ -372,8 +372,8 @@ class EFAFactory {
 
 struct ConnMeta {
     // data qps + ctrl qp.
-    uint32_t qpn_list[kMaxDstQP];
-    uint32_t qpn_list_ctrl[kMaxDstQPCtrl];
+    uint32_t qpn_list[kMaxSrcDstQP];
+    uint32_t qpn_list_ctrl[kMaxSrcDstQPCtrl];
     union ibv_gid gid;
 };
 
@@ -385,12 +385,12 @@ class EFASocket {
     // Separating send and recv cq to allow better budget ctrl
     struct ibv_cq *send_cq_;
     struct ibv_cq *recv_cq_;
-    struct ibv_qp *qp_list_[kMaxDstQP];
+    struct ibv_qp *qp_list_[kMaxSrcDstQP];
 
     // Separating ctrl and data qp, so we can have different sizes for data
     // pkthdr and ack pkthdr.
     struct ibv_cq *ctrl_cq_;
-    struct ibv_qp *ctrl_qp_list_[kMaxDstQPCtrl];
+    struct ibv_qp *ctrl_qp_list_[kMaxSrcDstQPCtrl];
 
     uint32_t gpu_idx_;
     uint32_t dev_idx_;
@@ -410,8 +410,8 @@ class EFASocket {
     struct ibv_sge recv_sge_vec_[kMaxChainedWr][2];
 
     // How many recv_wrs are lacking for each qp to be full?
-    uint16_t deficit_cnt_recv_wrs_[kMaxDstQP];
-    uint16_t deficit_cnt_recv_wrs_for_ctrl_[kMaxDstQPCtrl];
+    uint16_t deficit_cnt_recv_wrs_[kMaxSrcDstQP];
+    uint16_t deficit_cnt_recv_wrs_for_ctrl_[kMaxSrcDstQPCtrl];
 
     EFASocket(int gpu_idx, int dev_idx, int socket_idx);
 
@@ -454,10 +454,10 @@ class EFASocket {
     // is to fully utilize the micro-cores on EFA NICs.
     uint16_t next_qp_idx_for_send_ = 0;
     uint16_t next_qp_idx_for_send_ctrl_ = 0;
-    inline uint16_t get_next_qp_idx_for_send() {
+    inline uint16_t get_next_src_qp_idx_for_send() {
         return (next_qp_idx_for_send_++) % kMaxSrcQP;
     }
-    inline uint16_t get_next_qp_idx_for_send_ctrl() {
+    inline uint16_t get_next_src_qp_idx_for_send_ctrl() {
         return (next_qp_idx_for_send_ctrl_++) % kMaxSrcQPCtrl;
     }
 
@@ -465,12 +465,12 @@ class EFASocket {
     void shutdown();
     ~EFASocket();
 
-    // Return kMaxDstQP + kMaxDstQPCtrl QP numbers for client to use.
+    // Return kMaxSrcDstQP + kMaxSrcDstQPCtrl QP numbers for client to use.
     void get_conn_metadata(ConnMeta *meta) {
-        for (int i = 0; i < kMaxDstQP; i++) {
+        for (int i = 0; i < kMaxSrcDstQP; i++) {
             meta->qpn_list[i] = qp_list_[i]->qp_num;
         }
-        for (int i = 0; i < kMaxDstQPCtrl; i++) {
+        for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
             meta->qpn_list_ctrl[i] = ctrl_qp_list_[i]->qp_num;
         }
         meta->gid = gid_;

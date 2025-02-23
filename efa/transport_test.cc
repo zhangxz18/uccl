@@ -99,7 +99,7 @@ int main(int argc, char* argv[]) {
 
         for (int i = 0; i < kNumEngines; i++) {
             cudaSetDevice(i);
-            auto* dev = EFAFactory::GetEFADevice(i / 2);
+            auto* dev = EFAFactory::GetEFADevice(i / kNumEnginesPerDev);
 
             cudaMalloc(&data[i], kTestMsgSize);
             mh[i].mr = ibv_reg_mr(dev->pd, data[i], kTestMsgSize,
@@ -269,7 +269,8 @@ int main(int argc, char* argv[]) {
                             to_usec(rdtsc() - async_start, freq_ghz));
                         sent_bytes += send_len;
                     }
-                    CHECK(send_len == recv_len);
+                    CHECK(send_len == recv_len) << "send_len: " << send_len
+                                                << ", recv_len: " << recv_len;
                     break;
                 }
                 case kTput: {
@@ -355,7 +356,7 @@ int main(int argc, char* argv[]) {
 
         for (int i = 0; i < kNumEngines; i++) {
             cudaSetDevice(i);
-            auto* dev = EFAFactory::GetEFADevice(i / 2);
+            auto* dev = EFAFactory::GetEFADevice(i / kNumEnginesPerDev);
 
             cudaMalloc(&data[i], kTestMsgSize);
             mh[i].mr = ibv_reg_mr(dev->pd, data[i], kTestMsgSize,
@@ -484,7 +485,8 @@ int main(int argc, char* argv[]) {
                         poll_ctxs.pop_front();
                         ep.uccl_poll(poll_ctx);
                     }
-                    CHECK(recv_len == send_len);
+                    CHECK(send_len == recv_len) << "send_len: " << send_len
+                                                << ", recv_len: " << recv_len;
                     break;
                 }
                 case kTput: {

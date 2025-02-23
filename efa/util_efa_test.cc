@@ -81,8 +81,8 @@ std::vector<FrameDesc *> prepare_frames(EFASocket *socket,
                                        pkt_data, kUcclPktDataMaxLen,
                                        socket->get_pkt_data_lkey(), 0);
         frame->set_dest_ah(dest_ah);
-        auto path_id = IntRand(0, kMaxDstQP - 1);
-        frame->set_dest_qpn(remote_meta->qpn_list[path_id]);
+        auto dst_qp_idx = IntRand(0, kMaxDstQP - 1);
+        frame->set_dest_qpn(remote_meta->qpn_list[dst_qp_idx]);
         frames.push_back(frame);
     }
     return frames;
@@ -99,8 +99,8 @@ std::vector<FrameDesc *> prepare_frames_for_ctrl(EFASocket *socket,
         auto frame = FrameDesc::Create(
             frame_desc, pkt_hdr, kUcclPktHdrLen + kUcclSackHdrLen, 0, 0, 0, 0);
         frame->set_dest_ah(dest_ah);
-        auto path_id = IntRand(0, kMaxDstQPCtrl - 1);
-        frame->set_dest_qpn(remote_meta->qpn_list_ctrl[path_id]);
+        auto dst_qp_idx = IntRand(0, kMaxDstQPCtrl - 1);
+        frame->set_dest_qpn(remote_meta->qpn_list_ctrl[dst_qp_idx]);
         frames.push_back(frame);
     }
     return frames;
@@ -148,7 +148,7 @@ void run_server() {
         strcpy((char *)frame->get_pkt_hdr_addr(), "Hello World");
         frame->set_dest_ah(dest_ah);
         frame->set_dest_qpn(remote_meta->qpn_list[0]);
-        socket->post_send_wr(frame, socket->get_next_qp_idx_for_send());
+        socket->post_send_wr(frame, socket->get_next_src_qp_idx_for_send());
 
         mid_time = std::chrono::high_resolution_clock::now();
         duration1 += mid_time - start_time;
@@ -209,8 +209,8 @@ void run_server() {
         // Sending ack ctrl packets
         frames =
             prepare_frames_for_ctrl(socket, dest_ah, remote_meta, recv_frames);
-        socket->post_send_wrs_for_ctrl(frames,
-                                       socket->get_next_qp_idx_for_send_ctrl());
+        socket->post_send_wrs_for_ctrl(
+            frames, socket->get_next_src_qp_idx_for_send_ctrl());
         VLOG(4) << "Sent " << frames.size() << " acks";
 
         // Check if any ack ctrl packet finishes sending.
@@ -221,7 +221,7 @@ void run_server() {
 #else
         // Sending data packets back
         frames = prepare_frames(socket, dest_ah, remote_meta, recv_frames);
-        socket->post_send_wrs(frames, socket->get_next_qp_idx_for_send());
+        socket->post_send_wrs(frames, socket->get_next_src_qp_idx_for_send());
         VLOG(4) << "Sent " << frames.size() << " frames";
 
         // Check if any send finished.
@@ -266,7 +266,7 @@ void run_client(const char *server_ip) {
         frame->set_dest_ah(dest_ah);
         frame->set_dest_qpn(remote_meta->qpn_list[0]);
         strcpy((char *)pkt_hdr, "Hello World");
-        socket->post_send_wr(frame, socket->get_next_qp_idx_for_send());
+        socket->post_send_wr(frame, socket->get_next_src_qp_idx_for_send());
         do {
             frames = socket->poll_send_cq(1);
         } while (frames.size() == 0);
@@ -306,7 +306,7 @@ void run_client(const char *server_ip) {
     frame->set_dest_ah(dest_ah);
     frame->set_dest_qpn(remote_meta->qpn_list_ctrl[0]);  // ctrl qp
     strcpy((char *)pkt_hdr, "Ctrl Packet");
-    socket->post_send_wr(frame, socket->get_next_qp_idx_for_send_ctrl());
+    socket->post_send_wr(frame, socket->get_next_src_qp_idx_for_send_ctrl());
     uint32_t polled_send_acks = 0;
     do {
         std::tie(frames, polled_send_acks) = socket->poll_ctrl_cq(1);
@@ -328,7 +328,8 @@ void run_client(const char *server_ip) {
                 std::min(MAX_INFLIGHT - inflights, SEND_BATCH_SIZE);
             frames =
                 prepare_frames(socket, dest_ah, remote_meta, allowed_frames);
-            socket->post_send_wrs(frames, socket->get_next_qp_idx_for_send());
+            socket->post_send_wrs(frames,
+                                  socket->get_next_src_qp_idx_for_send());
 
             i += frames.size();
             inflights += frames.size();

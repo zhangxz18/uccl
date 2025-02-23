@@ -198,11 +198,6 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
     pkt_data_pool_ = new PktDataBuffPool(pkt_data_mr_);
 
     // Allocate memory for frame desc.
-    void *frame_desc_buf_ = mmap(
-        nullptr,
-        FrameDescBuffPool::kNumFrameDesc * FrameDescBuffPool::kFrameDescSize,
-        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    DCHECK(frame_desc_buf_ != nullptr) << "aligned_alloc failed";
     frame_desc_pool_ = new FrameDescBuffPool();
 
     // Create completion queue.
@@ -216,7 +211,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
 #endif
 
     // Create send/recv QPs.
-    for (int i = 0; i < kMaxDstQP; i++) {
+    for (int i = 0; i < kMaxSrcDstQP; i++) {
         qp_list_[i] =
             (this->*create_qp_func)(send_cq_, recv_cq_, kMaxSendWr, kMaxRecvWr);
         post_recv_wrs(kMaxRecvWr, i);
@@ -226,7 +221,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
     ctrl_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
     DCHECK(ctrl_cq_) << "Failed to allocate ctrl CQ";
 
-    for (int i = 0; i < kMaxDstQPCtrl; i++) {
+    for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
         ctrl_qp_list_[i] = (this->*create_qp_func)(
             ctrl_cq_, ctrl_cq_, kMaxSendRecvWrForCtrl, kMaxSendRecvWrForCtrl);
         post_recv_wrs_for_ctrl(kMaxSendRecvWrForCtrl, i);
@@ -495,7 +490,7 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
 }
 
 void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
-    DCHECK(qp_idx < kMaxDstQP);
+    DCHECK(qp_idx < kMaxSrcDstQP);
     auto &deficit_cnt = deficit_cnt_recv_wrs_[qp_idx];
     deficit_cnt += budget;
     if (deficit_cnt < kMaxRecvWrDeficit) return;

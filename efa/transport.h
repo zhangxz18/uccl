@@ -57,6 +57,7 @@ struct alignas(64) PollCtx {
     std::atomic<bool> fence;  // Sync rx/tx memcpy visibility.
     std::atomic<bool> done;   // Sync cv wake-up.
     uint64_t timestamp;       // Timestamp for request issuing.
+    uint32_t engine_idx;      // Engine index for request issuing.
     PollCtx() : fence(false), done(false), timestamp(0) {};
     ~PollCtx() { clear(); }
 
@@ -77,6 +78,18 @@ struct alignas(64) PollCtx {
             std::atomic_load_explicit(&fence, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
     }
+};
+
+class PollCtxPool : public BuffPool {
+   public:
+    static constexpr uint32_t kPollCtxSize = sizeof(PollCtx);
+    static constexpr uint32_t kNumPollCtx = NUM_FRAMES / 4;
+    static_assert((kNumPollCtx & (kNumPollCtx - 1)) == 0,
+                  "kNumPollCtx must be power of 2");
+
+    PollCtxPool() : BuffPool(kNumPollCtx, kPollCtxSize, nullptr) {}
+
+    ~PollCtxPool() = default;
 };
 
 /**
@@ -673,7 +686,6 @@ class UcclEngine {
  * its all queues.
  */
 class Endpoint {
-    constexpr static uint32_t kMaxInflightMsg = 1024 * 256;
     constexpr static uint16_t kBootstrapPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
@@ -687,8 +699,7 @@ class Endpoint {
     std::mutex engine_load_vec_mu_;
     std::array<int, kNumEngines> engine_load_vec_ = {0};
 
-    SharedPool<PollCtx *, true> *ctx_pool_;
-    uint8_t *ctx_pool_buf_;
+    PollCtxPool *ctx_pool_[kNumEngines];
 
     int listen_fd_;
 

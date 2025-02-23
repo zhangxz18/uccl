@@ -236,7 +236,8 @@ void RXTracking::copy_complete_msgbuf_to_appbuf(
     size_t cur_offset = 0;
 
     while (ready_msg != nullptr) {
-        auto *pkt_addr = (uint8_t *)ready_msg->get_pkt_hdr_addr();
+        auto *pkt_addr =
+            (uint8_t *)ready_msg->get_pkt_hdr_addr() + EFA_UD_ADDITION;
         DCHECK(pkt_addr) << "pkt_addr is nullptr when copy to app buf "
                          << std::hex << "0x" << ready_msg << std::dec
                          << ready_msg->to_string();
@@ -246,11 +247,9 @@ void RXTracking::copy_complete_msgbuf_to_appbuf(
         VLOG(2) << "payload_len: " << payload_len << " seqno: " << std::dec
                 << ucclh->seqno.value();
 
-        // TODO(yang): cudaMemcpy or custom cuda kernel for
-        // reassembly. auto *payload_addr = (uint8_t
-        // *)ready_msg->get_pkt_data_addr();
-        // memcpy((uint8_t *)app_buf + cur_offset, payload_addr,
-        // payload_len);
+        // TODO(yang): cudaMemcpy or custom cuda kernel for reassembly.
+        // auto *payload_addr = (uint8_t *)ready_msg->get_pkt_data_addr();
+        // memcpy((uint8_t *)app_buf + cur_offset, payload_addr, payload_len);
 
         cur_offset += payload_len;
         auto *last_ready_msg = ready_msg;
@@ -1177,8 +1176,8 @@ Endpoint::Endpoint()
                 LOG(INFO) << "[Engine] thread " << i << " running on CPU "
                           << engine_th_cpuid;
 
-                auto gpu_idx = i;
-                auto dev_idx = i / 2;
+                auto gpu_idx = i / (kNumEnginesPerDev / 2);
+                auto dev_idx = i / kNumEnginesPerDev;
                 auto socket_idx = i;
                 auto engine = std::make_unique<UcclEngine>(
                     local_ip_str_, gpu_idx, dev_idx, socket_idx,
@@ -1195,10 +1194,8 @@ Endpoint::Endpoint()
         engines.push_back(engine_vec_.back().get());
     }
 
-    ctx_pool_ = new SharedPool<PollCtx *, true>(kMaxInflightMsg);
-    ctx_pool_buf_ = new uint8_t[kMaxInflightMsg * sizeof(PollCtx)];
-    for (int i = 0; i < kMaxInflightMsg; i++) {
-        ctx_pool_->push(new (ctx_pool_buf_ + i * sizeof(PollCtx)) PollCtx());
+    for (int i = 0; i < kNumEngines; i++) {
+        ctx_pool_[i] = new PollCtxPool();
     }
 
     // Create listening socket
@@ -1228,9 +1225,7 @@ Endpoint::~Endpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
     for (int i = 0; i < num_queues_; i++) delete channel_vec_[i];
-
-    delete ctx_pool_;
-    delete[] ctx_pool_buf_;
+    for (int i = 0; i < kNumEngines; i++) delete ctx_pool_[i];
 
     close(listen_fd_);
 
@@ -1400,7 +1395,11 @@ bool Endpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
 
 PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
                                    const size_t len, Mhandle mhandle) {
-    auto *poll_ctx = ctx_pool_->pop();
+    uint64_t poll_ctx_;
+    DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
+    auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
+    poll_ctx->engine_idx = conn_id.engine_idx;
+
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
         .flow_id = conn_id.flow_id,
@@ -1418,7 +1417,11 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
 
 PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p,
                                    Mhandle mhandle) {
-    auto *poll_ctx = ctx_pool_->pop();
+    uint64_t poll_ctx_;
+    DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
+    auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
+    poll_ctx->engine_idx = conn_id.engine_idx;
+
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
         .flow_id = conn_id.flow_id,
@@ -1503,7 +1506,8 @@ inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {
     // Make the data written by the engine thread visible to the app thread.
     ctx->read_barrier();
     ctx->clear();
-    ctx_pool_->push(ctx);
+    auto engine_idx = ctx->engine_idx;
+    ctx_pool_[engine_idx]->free_buff(reinterpret_cast<uint64_t>(ctx));
 }
 
 void Endpoint::stats_thread_fn() {
