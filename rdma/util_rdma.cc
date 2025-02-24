@@ -493,7 +493,7 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             wr->imm_data = htonl(imm_data.GetImmData());
 
             // Select QP.
-            auto qpidx = select_qpidx_pow2(chunk_size);
+            auto qpidx = select_qpidx_pot(chunk_size);
             auto qpw = &dp_qps_[qpidx];
             
             wr->send_flags = 0;
@@ -574,7 +574,7 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             else {
                 // Transmit this chunk directly.
                 // Select QP.
-                auto qpidx = select_qpidx_pow2(chunk_size);
+                auto qpidx = select_qpidx_pot(chunk_size);
                 auto qpw = &dp_qps_[qpidx];
                 // There is no need to signal every WQE since we don't handle TX completions.
                 // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
@@ -1206,7 +1206,7 @@ void RDMAContext::burst_timing_wheel(void)
         auto *flow = reinterpret_cast<UcclFlow *>(wr_ex->ureq->context);
         auto *subflow = flow->sub_flows_[engine_offset_];
         // Select QP.
-        auto qpidx = select_qpidx_pow2(wr_ex->sge.length);
+        auto qpidx = select_qpidx_pot(wr_ex->sge.length);
         auto qpw = &dp_qps_[qpidx];
         
         wr->send_flags = 0;

@@ -863,7 +863,7 @@ class RDMAContext {
         }
 
         // Select a QP index in a power-of-two manner.
-        inline uint32_t select_qpidx_pow2(uint32_t msize) {
+        inline uint32_t select_qpidx_pot(uint32_t msize) {
             if (can_use_last_choice(msize))
                 return last_qp_choice_;
 
