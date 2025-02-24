@@ -4,7 +4,6 @@
 
 #include "util.h"
 
-#define USE_MULTIPATH
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
 // #define RTT_STATS
@@ -43,7 +42,8 @@ static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
 static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_UD_ADDITION.
-static const uint32_t EFA_MAX_QPS = 256;       // Max QPs per EFA device.
+static const uint32_t EFA_HDR_OVERHEAD = EFA_MTU - EFA_MAX_PAYLOAD;
+static const uint32_t EFA_MAX_QPS = 256;  // Max QPs per EFA device.
 #ifdef USE_SRD
 static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
 #else
@@ -74,8 +74,8 @@ static const uint32_t kMaxChainedWr = 32;
 const static uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
 
 // Path configuration.
-static const uint32_t kMaxDstQP = 8;      // # of paths/QPs for data per src qp.
-static const uint32_t kMaxDstQPCtrl = 8;  // # of paths/QPs for control.
+static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
 static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
 static const uint32_t kMaxSrcQP = 16;
 static const uint32_t kMaxSrcQPCtrl = 16;
@@ -88,7 +88,7 @@ static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
 static_assert(kMaxPath == kMaxPathCtrl);  // To make path_id calculation simple.
 
 // CC parameters.
-static const uint32_t kMaxUnackedPktsPP = 1u;
+static const uint32_t kMaxUnackedPktsPP = 2u;
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 30;

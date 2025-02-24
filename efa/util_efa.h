@@ -159,6 +159,8 @@ class FrameDesc {
     uint16_t dest_qpn_;       // dest QPN to use for this frame.
     struct ibv_ah *dest_ah_;  // dest ah to use for this frame.
 
+    uint64_t cpe_time_tsc_;  // Completion event time.
+
     // Flags to denote the message buffer state.
     static const uint8_t UCCL_MSGBUF_FLAGS_SYN = (1 << 0);
     static const uint8_t UCCL_MSGBUF_FLAGS_FIN = (1 << 1);
@@ -181,6 +183,7 @@ class FrameDesc {
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
         next_ = nullptr;
+        cpe_time_tsc_ = 0;
     }
 
    public:
@@ -228,6 +231,11 @@ class FrameDesc {
     struct ibv_ah *get_dest_ah() const { return dest_ah_; }
     void set_dest_ah(struct ibv_ah *dest_ah) { dest_ah_ = dest_ah; }
 
+    uint64_t get_cpe_time_tsc() const { return cpe_time_tsc_; }
+    void set_cpe_time_tsc(uint64_t cpe_time_tsc) {
+        cpe_time_tsc_ = cpe_time_tsc;
+    }
+
     // Returns true if this is the first in a message.
     bool is_first() const { return (msg_flags_ & UCCL_MSGBUF_FLAGS_SYN) != 0; }
     // Returns true if this is the last in a message.
@@ -262,6 +270,7 @@ class FrameDesc {
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
         next_ = nullptr;
+        cpe_time_tsc_ = 0;
     }
 
     std::string to_string() {
@@ -274,7 +283,8 @@ class FrameDesc {
           << " src_qp_idx: " << std::dec << src_qp_idx_
           << " dest_qpn: " << std::dec << dest_qpn_ << " dest_ah_: " << std::hex
           << dest_ah_ << " msg_flags: " << std::dec
-          << std::bitset<8>(msg_flags_);
+          << std::bitset<8>(msg_flags_) << " cpe_time_tsc: " << std::dec
+          << cpe_time_tsc_;
         return s.str();
     }
 
@@ -512,14 +522,17 @@ class EFASocket {
         return kMaxSendWr * kMaxSrcQP - send_queue_wrs_;
     }
     inline uint64_t send_queue_estimated_latency_ns() {
-        return send_queue_wrs_ * EFA_MTU * 1000000000UL / kLinkBandwidth;
+        return send_queue_wrs_ * EFA_MTU * 1000000000UL /
+               (kLinkBandwidth / kNumEnginesPerDev);
     }
+    inline uint32_t ctrl_send_queue_wrs() { return ctrl_send_queue_wrs_; }
     inline uint32_t send_queue_wrs() { return send_queue_wrs_; }
     inline uint32_t recv_queue_wrs() { return recv_queue_wrs_; }
 
    private:  // for stats
     uint32_t send_queue_wrs_ = 0;
     uint32_t recv_queue_wrs_ = 0;
+    uint32_t ctrl_send_queue_wrs_ = 0;
 
     std::chrono::time_point<std::chrono::high_resolution_clock> last_stat_;
     inline static std::atomic<uint64_t> out_packets_ = 0;

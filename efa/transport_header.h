@@ -33,7 +33,6 @@ struct __attribute__((packed)) UcclPktHdr {
 };
 struct __attribute__((packed)) UcclSackHdr {
     uint64_t timestamp3;  // Filled by recer with calibration for output queue
-    uint64_t timestamp4;  // Filled by sender eBPF
     be64_t sack_bitmap[kSackBitmapSize /
                        swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
                                                             // SACKs received.

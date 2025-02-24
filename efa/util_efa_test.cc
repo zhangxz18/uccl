@@ -17,7 +17,7 @@ using namespace uccl;
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
 #define ITERATIONS 10240
 #define MAX_INFLIGHT 1024u
-#define EFA_DEV_ID 3
+#define EFA_DEV_ID 0
 #define GPU_ID (EFA_DEV_ID * 2)
 #define SOCKET_ID (EFA_DEV_ID * 2)
 // #define RESPONDE_ACK

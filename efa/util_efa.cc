@@ -120,6 +120,27 @@ void EFAFactory::InitDev(int dev_idx) {
         VLOG(5) << "DMA-BUF support: " << dev->dma_buf_support;
     }
 
+    // Detect hardware timestamp support.
+    {
+        struct ibv_cq_init_attr_ex cq_ex_attr;
+        cq_ex_attr.cqe = 1024;
+        cq_ex_attr.cq_context = nullptr;
+        cq_ex_attr.channel = nullptr;
+        cq_ex_attr.comp_vector = 0;
+        cq_ex_attr.wc_flags =
+            IBV_WC_EX_WITH_COMPLETION_TIMESTAMP;  // Timestamp support.
+        cq_ex_attr.comp_mask = 0;
+        cq_ex_attr.flags = 0;
+
+        auto send_cq_ex_ = ibv_create_cq_ex(context, &cq_ex_attr);
+        if (send_cq_ex_ == nullptr) {
+            VLOG(5) << "HW timestamp not supported";
+        } else {
+            VLOG(5) << "HW timestamp supported";
+            ibv_destroy_cq(ibv_cq_ex_to_cq(send_cq_ex_));
+        }
+    }
+
     efa_ctl.dev_map.insert({dev_idx, dev});
     return;
 
@@ -347,6 +368,8 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame, uint16_t src_qp_idx) {
         DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
         frame->set_src_qp_idx(src_qp_idx);
         src_qp = ctrl_qp_list_[src_qp_idx];
+
+        ctrl_send_queue_wrs_++;
     } else {
         // This is a data packet.
         sge[0] = {frame->get_pkt_hdr_addr(), frame->get_pkt_hdr_len(),
@@ -473,13 +496,14 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
             if (ibv_post_send(ctrl_qp_list_[src_qp_idx], wr_head,
                               &bad_send_wr)) {
                 DCHECK(false) << "[util_efa]: Failed to post send wrs for ctrl "
-                              << " send_queue_wrs_ " << send_queue_wrs_;
+                              << " ctrl_send_queue_wrs_ " << ctrl_send_queue_wrs_;
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
             }
         }
 
+        ctrl_send_queue_wrs_++;
         i++;
 
         out_packets_++;
@@ -600,6 +624,7 @@ std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
     std::vector<FrameDesc *> frames;
 
     while (frames.size() < budget) {
+        auto now = rdtsc();
         int ne = ibv_poll_cq(send_cq_, kMaxPollBatch, wc_);
         DCHECK(ne >= 0) << "poll_send_cq ibv_poll_cq error";
 
@@ -612,6 +637,7 @@ std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
             DCHECK(wc_[i].opcode == IBV_WC_SEND);
 
             auto *frame = (FrameDesc *)wc_[i].wr_id;
+            frame->set_cpe_time_tsc(now);
             frames.push_back(frame);
         }
 
@@ -627,6 +653,7 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
     std::vector<FrameDesc *> frames;
 
     while (frames.size() < budget) {
+        auto now = rdtsc();
         int ne = ibv_poll_cq(recv_cq_, kMaxPollBatch, wc_);
         DCHECK(ne >= 0) << "poll_recv_cq ibv_poll_cq error";
 
@@ -639,6 +666,7 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
             DCHECK(wc_[i].opcode == IBV_WC_RECV);
 
             auto *frame = (FrameDesc *)wc_[i].wr_id;
+            frame->set_cpe_time_tsc(now);
             frames.push_back(frame);
 
             auto src_qp_idx = frame->get_src_qp_idx();
@@ -662,6 +690,7 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
     uint32_t polled_send_acks = 0;
 
     while (recv_frames.size() + polled_send_acks < budget) {
+        auto now = rdtsc();
         int ne = ibv_poll_cq(ctrl_cq_, kMaxPollBatch, wc_);
         DCHECK(ne >= 0) << "recv_acks ibv_poll_cq error";
 
@@ -672,6 +701,7 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
                 << ibv_wc_status_str(wc_[i].status);
 
             FrameDesc *frame = (FrameDesc *)wc_[i].wr_id;
+            frame->set_cpe_time_tsc(now);
 
             if (wc_[i].opcode == IBV_WC_RECV) {
                 recv_frames.push_back(frame);
@@ -690,6 +720,7 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
                 frame_desc_pool_->free_buff((uint64_t)frame);
 
                 polled_send_acks++;
+                ctrl_send_queue_wrs_--;
             } else {
                 DCHECK(false) << "Wrong wc_[i].opcode: " << wc_[i].opcode;
             }

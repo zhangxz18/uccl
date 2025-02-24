@@ -298,7 +298,7 @@ void UcclFlow::rx_messages() {
     uint32_t num_data_frames_recvd = 0;
     uint32_t path_id = 0;
     uint32_t probe_path_id = 0;
-    uint64_t timestamp1 = 0, timestamp2 = 0;
+    uint64_t timestamp1 = 0, timestamp2 = 0, timestamp4 = 0;
     bool received_rtt_probe = false;
 
     for (auto msgbuf : pending_rx_msgbufs_) {
@@ -311,10 +311,11 @@ void UcclFlow::rx_messages() {
 
         switch (ucclh->net_flags) {
             case UcclPktHdr::UcclFlags::kAckRttProbe:
+                timestamp4 = msgbuf->get_cpe_time_tsc();
                 // Sender gets the RTT probe response, update the flow.
                 process_rttprobe_rsp(ucclh->timestamp1, ucclh->timestamp2,
-                                     ucclsackh->timestamp3,
-                                     ucclsackh->timestamp4, ucclh->path_id);
+                                     ucclsackh->timestamp3, timestamp4,
+                                     ucclh->path_id);
             case UcclPktHdr::UcclFlags::kAck:
                 // ACK packet, update the flow.
                 process_ack(ucclh);
@@ -327,9 +328,8 @@ void UcclFlow::rx_messages() {
                 // If multiple RTT probe, we take the last one's timestamp.
                 received_rtt_probe = true;
                 probe_path_id = ucclh->path_id;
-                // TODO(yang): extract timestamp from EFA NICs? Or use SW ts.
                 timestamp1 = ucclh->timestamp1;
-                timestamp2 = ucclh->timestamp2;
+                timestamp2 = msgbuf->get_cpe_time_tsc();
             case UcclPktHdr::UcclFlags::kData:
                 // Data packet, process the payload. The frame will be freed
                 // once the engine copies the payload into app buffer
@@ -427,8 +427,7 @@ void UcclFlow::tx_messages(Channel::Msg &tx_work) {
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
                                     uint64_t ts4, uint32_t path_id) {
-    auto rtt_ns = (ts4 - ts1) - (ts3 - ts2);
-    auto sample_rtt_tsc = ns_to_cycles(rtt_ns, freq_ghz);
+    auto sample_rtt_tsc = (ts4 - ts1) - (ts3 - ts2);
     port_path_rtt_[path_id] = sample_rtt_tsc;
 
     if constexpr (kCCType == CCType::kTimely) {
@@ -441,7 +440,8 @@ void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
     VLOG(3) << "sample_rtt_us " << to_usec(sample_rtt_tsc, freq_ghz)
             << " us, avg_rtt_diff " << timely_g_.timely_.get_avg_rtt_diff()
             << " us, timely rate " << timely_g_.timely_.get_rate_gbps()
-            << " Gbps";
+            << " Gbps, " << "ts1 " << ts1 << " ts2 " << ts2 << " ts3 " << ts3
+            << " ts4 " << ts4;
 
 #ifdef RTT_STATS
     rtt_stats_.update(rtt_ns / 1000);
@@ -507,6 +507,7 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
 
             // Avoid sending too many packets.
             if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return;
+            // return;
             auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
             if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return;
             auto unacked_pkt_budget =
@@ -912,11 +913,10 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->seqno = be32_t(seqno);
     ucclh->flow_id = be64_t(flow_id_);
 
-    ucclh->timestamp1 = (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe)
-                            ? get_monotonic_time_ns() +
-                                  socket_->send_queue_estimated_latency_ns()
-                            : 0;
-    ucclh->timestamp2 = 0;  // let the receiver ebpf fill this in.
+    ucclh->timestamp1 =
+        (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe) ? rdtsc() : 0;
+    // let the receiver fill this in when receiving this data packet.
+    ucclh->timestamp2 = 0;
 }
 
 FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
@@ -954,11 +954,8 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     }
     ucclsackh->sack_bitmap_count = be16_t(pcb_.sack_bitmap_count);
 
-    ucclsackh->timestamp3 = (net_flags == UcclPktHdr::UcclFlags::kAckRttProbe)
-                                ? get_monotonic_time_ns() +
-                                      socket_->send_queue_estimated_latency_ns()
-                                : 0;
-    ucclsackh->timestamp4 = 0;  // let the sender ebpf fill this in.
+    ucclsackh->timestamp3 =
+        (net_flags == UcclPktHdr::UcclFlags::kAckRttProbe) ? rdtsc() : 0;
 
     return msgbuf;
 }
