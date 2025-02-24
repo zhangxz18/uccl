@@ -486,28 +486,6 @@ class RDMAEndpoint {
     friend class UcclFlow;
 };
 
-struct SubUcclFlow {
-
-    uint32_t fid_;
-
-    // # of chunks in the timing wheel.
-    uint32_t in_wheel_cnt_ = 0;
-
-    // States for tracking sent chunks.
-    TXTracking txtracking;
-    // States for tracking received chunks.
-    RXTracking rxtracking;
-
-    // Sender congestion control state.
-    swift::Pcb pcb;
-
-    // Whether RTO is armed for the flow.
-    bool rto_armed = false;
-
-    // We use list_empty(&flow->ack.ack_link) to check if it has pending ACK to send.
-    struct ack_item ack;
-};
-
 /**
  * @class UcclFlow, a connection between a local and a remote NIC.
  * @brief Class to abstract the components and functionality of a single flow.
@@ -520,7 +498,7 @@ class UcclFlow {
    
    public:
 
-    struct SubUcclFlow sub_flows_[NUM_ENGINES];
+    SubUcclFlow *sub_flows_[NUM_ENGINES];
 
     // Per-path cc states.
     Timely cc_pp_[kPortEntropy * NUM_ENGINES];
@@ -539,9 +517,7 @@ class UcclFlow {
         }
 
         for (int i = 0; i < NUM_ENGINES; i++) {
-            sub_flows_[i].fid_ = flow_id;
-            INIT_LIST_HEAD(&sub_flows_[i].ack.ack_link);
-            sub_flows_[i].ack.subflow = &sub_flows_[i];
+            sub_flows_[i] = new SubUcclFlow(flow_id);
             cc_[i] = Timely(freq_ghz, kLinkBandwidth);
         }
         
@@ -675,6 +651,10 @@ class UcclFlow {
             munmap(recv_comm_.gpu_flush_mr->addr, recv_comm_.gpu_flush_mr->length);
             ibv_dereg_mr(recv_comm_.gpu_flush_mr);
             ibv_destroy_qp(recv_comm_.gpu_flush_qp);
+        }
+
+        for (int i = 0; i < NUM_ENGINES; i++) {
+            delete sub_flows_[i];
         }
     }
 

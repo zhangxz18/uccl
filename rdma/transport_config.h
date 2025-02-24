@@ -44,7 +44,7 @@ static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // Minimum post receive size in NCCL.
 static const uint32_t NCCL_MIN_POST_RECV = 65536;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
-static const uint32_t kPortEntropy = 256;
+static const uint32_t kPortEntropy = 64;
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
 // Always use the same engine for a flow's all messages.

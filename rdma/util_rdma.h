@@ -591,9 +591,43 @@ class TXTracking {
         std::vector<TXTracking::ChunkTrack> unacked_chunks_;
 };
 
+class SubUcclFlow;
+
 struct ack_item {
-    struct SubUcclFlow *subflow;
+    SubUcclFlow *subflow;
     struct list_head ack_link;
+};
+
+class SubUcclFlow {
+public:
+    
+    SubUcclFlow() {}
+
+    SubUcclFlow(uint32_t fid): fid_(fid), in_wheel_cnt_(0), txtracking(), rxtracking(), pcb() {
+        INIT_LIST_HEAD(&ack.ack_link);
+        ack.subflow = this;
+    }
+
+    ~SubUcclFlow() = default;
+    
+    uint32_t fid_;
+
+    // # of chunks in the timing wheel.
+    uint32_t in_wheel_cnt_;
+
+    // States for tracking sent chunks.
+    TXTracking txtracking;
+    // States for tracking received chunks.
+    RXTracking rxtracking;
+
+    // Sender congestion control state.
+    swift::Pcb pcb;
+
+    // Whether RTO is armed for the flow.
+    bool rto_armed = false;
+
+    // We use list_empty(&flow->ack.ack_link) to check if it has pending ACK to send.
+    struct ack_item ack;
 };
 
 /**
@@ -914,7 +948,7 @@ class RDMAContext {
          * @brief Retransmit a chunk for the given subUcclFlow.
          * @param wr_ex 
          */
-        void retransmit_chunk(struct SubUcclFlow *subflow, struct wr_ex *wr_ex);
+        void retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex);
 
         /**
          * @brief Receive a chunk from the flow.
@@ -956,7 +990,7 @@ class RDMAContext {
          * @param chunk_addr
          * @param num_sge
          */
-        void craft_ack(struct SubUcclFlow *subflow, uint64_t chunk_addr, int num_sge);
+        void craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr, int num_sge);
 
         /**
          * @brief Flush all ACKs in the batch.
@@ -975,7 +1009,7 @@ class RDMAContext {
          * @brief Try to update the CSN for the given data path QP.
          * @param qpw 
          */
-        void try_update_csn(struct SubUcclFlow *subflow);
+        void try_update_csn(SubUcclFlow *subflow);
 
         /**
          * @brief Retransmit chunks for the given subUcclFlow.

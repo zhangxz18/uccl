@@ -440,6 +440,7 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
 bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
 {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+    auto *subflow = flow->sub_flows_[engine_offset_];
 
     auto size = ureq->send.data_len;
     auto laddr = ureq->send.laddr;
@@ -487,7 +488,7 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             }
             imm_data.SetRID(ureq->send.rid);
             
-            imm_data.SetCSN(flow->sub_flows_[engine_offset_].pcb.get_snd_nxt().to_uint32());
+            imm_data.SetCSN(subflow->pcb.get_snd_nxt().to_uint32());
 
             wr->imm_data = htonl(imm_data.GetImmData());
 
@@ -507,9 +508,9 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
 
             *sent_offset += chunk_size;
             // Track this chunk.
-            flow->sub_flows_[engine_offset_].txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
+            subflow->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
             // Arm timer for TX
-            arm_timer_for_flow(flow);
+            arm_timer_for_flow(subflow);
 
             VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", fid: " << flow->flowid() << ", " << ureq->n << " with QP#" << qpidx;
 
@@ -542,7 +543,7 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
         }
         imm_data.SetRID(ureq->send.rid);
         
-        imm_data.SetCSN(flow->sub_flows_[engine_offset_].pcb.get_snd_nxt().to_uint32());
+        imm_data.SetCSN(subflow->pcb.get_snd_nxt().to_uint32());
 
         wr->imm_data = htonl(imm_data.GetImmData());
 
@@ -561,11 +562,11 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             // Enforce global cwnd.
             queued = wheel->queue_on_timing_wheel(flow->cc_[engine_offset_].rate_, 
                 &flow->cc_[engine_offset_].prev_desired_tx_tsc_, now, 
-                wr_ex, chunk_size + hdr_overhead, flow->sub_flows_[engine_offset_].in_wheel_cnt_ == 0);
+                wr_ex, chunk_size + hdr_overhead, subflow->in_wheel_cnt_ == 0);
 
             if (queued) {
                 // Queue the SGE on the timing wheel.
-                flow->sub_flows_[engine_offset_].in_wheel_cnt_++;
+                subflow->in_wheel_cnt_++;
                 // For future tracking.
                 wr_ex->ureq = ureq;
                 VLOG(5) << "Queued " << chunk_size << " bytes to timing wheel for flow#" << flow->flowid();
@@ -589,9 +590,9 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
                 DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
                 // Track this chunk.
-                flow->sub_flows_[engine_offset_].txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
+                subflow->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
                 // Arm timer for TX
-                arm_timer_for_flow(flow);
+                arm_timer_for_flow(subflow);
 
                 VLOG(5) << "Directly sent " << chunk_size << " bytes to QP#" << qpidx;
             }
@@ -870,7 +871,7 @@ void RDMAContext::check_srq(bool force)
     }
 }
 
-void RDMAContext::retransmit_chunk(struct SubUcclFlow *subflow, struct wr_ex *wr_ex)
+void RDMAContext::retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex)
 {
     if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
         poll_retr_cq();
@@ -940,7 +941,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
 
     DCHECK(fid < MAX_FLOW);
     auto *flow = reinterpret_cast<UcclFlow *>(sender_flow_tbl_[fid]);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = flow->sub_flows_[engine_offset_];
 
     bool update_sackbitmap = false;
 
@@ -1203,6 +1204,7 @@ void RDMAContext::burst_timing_wheel(void)
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wheel->ready_queue_.front().sslot_);
         auto *wr = &wr_ex->wr;
         auto *flow = reinterpret_cast<UcclFlow *>(wr_ex->ureq->context);
+        auto *subflow = flow->sub_flows_[engine_offset_];
         // Select QP.
         auto qpidx = select_qpidx_pow2(wr_ex->sge.length);
         auto qpw = &dp_qps_[qpidx];
@@ -1221,17 +1223,17 @@ void RDMAContext::burst_timing_wheel(void)
 
         // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
-        flow->sub_flows_[engine_offset_].txtracking.track_chunk(wr_ex->ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+        subflow->txtracking.track_chunk(wr_ex->ureq, imm_data.GetCSN(), wr_ex, rdtsc());
         // Arm timer for TX
-        arm_timer_for_flow(qpw);
+        arm_timer_for_flow(subflow);
 
-        flow->sub_flows_[engine_offset_].in_wheel_cnt_--;
+        subflow->in_wheel_cnt_--;
 
         wheel->ready_queue_.pop_front();
     }
 }
 
-void RDMAContext::try_update_csn(struct SubUcclFlow *subflow)
+void RDMAContext::try_update_csn(SubUcclFlow *subflow)
 {
     while (!subflow->rxtracking.ready_csn_.empty() && 
         subflow->rxtracking.ready_csn_.begin()->first.to_uint32() == subflow->pcb.rcv_nxt.to_uint32()) {
@@ -1276,7 +1278,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
 
     DCHECK(fid < MAX_FLOW);
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = flow->sub_flows_[engine_offset_];
 
     VLOG(5) << "Receive barrier: (csn, rid, fid): " << csn << ", " << rid << ", " << fid << " from QP#" << qpidx;
 
@@ -1420,7 +1422,7 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
 
     DCHECK(fid < MAX_FLOW);
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = flow->sub_flows_[engine_offset_];
 
     VLOG(5) << "Received retransmission chunk: (csn, rid, fid): " << csn << ", " << rid << ", " << fid << " from Retr QP";
 
@@ -1582,7 +1584,7 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
 
     DCHECK(fid < MAX_FLOW);
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = flow->sub_flows_[engine_offset_];
 
     VLOG(5) << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", " << csn << ", " << rid << ", " << fid << " from QP#" << qpidx;
 
@@ -1691,7 +1693,7 @@ void RDMAContext::flush_acks(int num_ack, uint64_t chunk_addr)
     DCHECK(ibv_post_send(ctrl_qp_, &tx_ack_wr_, &bad_wr) == 0);
 }
 
-void RDMAContext::craft_ack(struct SubUcclFlow *subflow, uint64_t chunk_addr, int num_sge)
+void RDMAContext::craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr, int num_sge)
 {
     uint64_t pkt_addr = chunk_addr + CtrlChunkBuffPool::kPktSize * num_sge;
     auto *ucclsackh = reinterpret_cast<UcclSackHdr* >(pkt_addr);
@@ -1720,7 +1722,8 @@ void RDMAContext::craft_ack(struct SubUcclFlow *subflow, uint64_t chunk_addr, in
 
 void RDMAContext::__retransmit(void *context, bool rto)
 {
-    struct SubUcclFlow *subflow = reinterpret_cast<struct SubUcclFlow *>(context);
+    SubUcclFlow *subflow = reinterpret_cast<SubUcclFlow *>(context);
+
     /// TODO: We should throttle the volume of retransmission. 
     /// Currently, we hard limit the number of inflight retransmission chunks.
     if (inflight_retr_chunks_ > kMaxInflightRetrChunks || subflow->txtracking.empty()) {
@@ -1749,7 +1752,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
         }
         return;
     }
-    
+
     // Case#2: Retransmit the unacked chunks according to the SACK bitmap.
     bool done = false;
     auto base_csn = UINT_CSN(subflow->pcb.base_csn);
@@ -1764,6 +1767,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
         if ((sack_bitmap & (1ULL << cursor)) == 0) {
             // We found a hole.
             auto seqno = base_csn + index;
+            DCHECK(index < subflow->txtracking.track_size());
             auto chunk = subflow->txtracking.get_unacked_chunk_from_idx(index);
             if (seqno == chunk.csn) {
                 auto wr_ex = chunk.wr_ex;
@@ -1793,8 +1797,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
 
 // Try to arm a timer for the given flow. If the timer is already armed, do nothing.
 void RDMAContext::arm_timer_for_flow(void *context) {
-    auto *flow = reinterpret_cast<UcclFlow *>(context);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = reinterpret_cast<SubUcclFlow *>(context);
     if (!subflow->rto_armed) {
         if constexpr (kConstRTO) {
             rto_->arm_timer({this, subflow});
@@ -1808,8 +1811,7 @@ void RDMAContext::arm_timer_for_flow(void *context) {
 // Try to rearm a timer for the given flow. If the timer is not armed, arm it.
 // If the timer is already armed, rearm it.
 void RDMAContext::rearm_timer_for_flow(void *context) {
-    auto *flow = reinterpret_cast<UcclFlow *>(context);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = reinterpret_cast<SubUcclFlow *>(context);
     if (subflow->rto_armed) {
         if constexpr (kConstRTO) {
             rto_->rearm_timer({this, subflow});
@@ -1822,14 +1824,12 @@ void RDMAContext::rearm_timer_for_flow(void *context) {
 }
 
 void RDMAContext::mark_flow_timeout(void *context) {
-    auto *flow = reinterpret_cast<UcclFlow *>(context);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = reinterpret_cast<SubUcclFlow *>(context);
     subflow->rto_armed = false;
 }
 
 void RDMAContext::disarm_timer_for_flow(void *context) {
-    auto *flow = reinterpret_cast<UcclFlow *>(context);
-    auto *subflow = &flow->sub_flows_[engine_offset_];
+    auto *subflow = reinterpret_cast<SubUcclFlow *>(context);
     if (subflow->rto_armed) {
         rto_->disarm_timer({this, subflow});
         subflow->rto_armed = false;
@@ -1855,7 +1855,7 @@ std::string RDMAContext::to_string()
     for (int fid = 0; fid < 8; fid++) {
         auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
         if (!flow) continue;
-        auto *subflow = &flow->sub_flows_[engine_offset_];
+        auto *subflow = flow->sub_flows_[engine_offset_];
         stats_rto_rexmits += subflow->pcb.stats_rto_rexmits;
         stats_fast_rexmits += subflow->pcb.stats_fast_rexmits;
         stats_accept_retr += subflow->pcb.stats_accept_retr;
