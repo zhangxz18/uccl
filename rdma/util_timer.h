@@ -162,12 +162,14 @@ public:
         flow_map_.reserve(kPortEntropy * 64);
     }
 
+    uint32_t size() const { return heap_.size(); }
+
     void arm_timer(struct TimerData data) {
         if (auto it = flow_map_.find(data.flow); it != flow_map_.end()) {
             // Already being armed, do nothing.
         } else {
             // Add new timer.
-             const CycleCount new_expire = rdtsc() + timeout_;
+            const CycleCount new_expire = rdtsc() + timeout_;
             heap_.push_back({new_expire, data});
             flow_map_[data.flow] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);
@@ -180,7 +182,7 @@ public:
             // Already being armed, do nothing.
         } else {
             // Add new timer.
-             const CycleCount new_expire = rdtsc() + timeout;
+            const CycleCount new_expire = rdtsc() + timeout;
             heap_.push_back({new_expire, data});
             flow_map_[data.flow] = heap_.size() - 1;
             heapify_up(heap_.size() - 1);

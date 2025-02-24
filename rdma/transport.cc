@@ -1240,6 +1240,7 @@ std::string UcclRDMAEngine::status_to_string()
     for (auto rdma_ctx : rdma_ctx_map_) {
         s += "    [Context#" + std::to_string(rdma_ctx.first) + "]";
         s += rdma_ctx.second->to_string();
+        s += "    # of active timers:" + std::to_string(rto_tm_.size()) + "\n";
     }
 
     return s;

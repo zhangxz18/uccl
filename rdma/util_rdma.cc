@@ -15,6 +15,7 @@
 #include "transport.h"
 #include "transport_config.h"
 #include "util.h"
+#include "util_timer.h"
 
 namespace uccl {
 
@@ -643,15 +644,34 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, RDMAContext 
         num_acked_chunks--;
     }
 
+    if (unlikely(t5 <= t1)) {
+        // Invalid timestamp.
+        // We have found that t5 (transferred from NIC timestamp) may be occasionally smaller than t1 
+        // (timestamp of the oldest unacked chunk). When this happens, we use software timestamp to fix it.
+        t5 = rdtsc();
+    }
+
     auto endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
     auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
     // Make RTT independent of segment size.
     auto serial_delay_tsc = us_to_cycles(seg_size * 1e6 / kLinkBandwidth, freq_ghz);
-    fabric_delay_tsc -= serial_delay_tsc;
+    if (fabric_delay_tsc > serial_delay_tsc)
+        fabric_delay_tsc -= serial_delay_tsc;
+    else {
+        // Invalid timestamp.
+        // Recalculate delay.
+        t5 = rdtsc();
+        endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
+        fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
+        DCHECK(fabric_delay_tsc > serial_delay_tsc);
+        fabric_delay_tsc -= serial_delay_tsc;
+    }
 
     VLOG(5) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
     ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
     ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
+
+    DCHECK(to_usec(fabric_delay_tsc, freq_ghz) < 100000) << "t1: " << t1 << ", t6: " << t6 << ", remote_queueing_tsc: " << remote_queueing_tsc << "t5: " << t5;
         
     // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
     //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz));
@@ -1008,7 +1028,8 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
         
         DCHECK(engine_offset_ < NUM_ENGINES);
-        auto newrtt_tsc = subflow->txtracking.ack_transmitted_chunks(engine_offset_, this,
+        auto newrtt_tsc = subflow->txtracking.ack_transmitted_chunks(engine_offset_
+            , this,
             num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc, &outstanding_bytes_);
         
         subflow->pcb.update_rtt_scoreboard(newrtt_tsc);
@@ -1724,15 +1745,20 @@ void RDMAContext::__retransmit(void *context, bool rto)
 {
     SubUcclFlow *subflow = reinterpret_cast<SubUcclFlow *>(context);
 
-    /// TODO: We should throttle the volume of retransmission. 
-    /// Currently, we hard limit the number of inflight retransmission chunks.
-    if (inflight_retr_chunks_ > kMaxInflightRetrChunks || subflow->txtracking.empty()) {
-        VLOG(5) << inflight_retr_chunks_ << " inflight retransmission chunks. Skip retransmission.";
+    if (subflow->txtracking.empty()) {
+        VLOG(5) << "No unacked chunk to retransmit for flow" << subflow->fid_;
         return;
     }
 
     if (subflow->pcb.rto_rexmits_consectutive >= kRTOAbortThreshold) {
         LOG_FIRST_N(ERROR, 1) << "RTO retransmission threshold reached. Abort RTO for flow" << subflow->fid_;
+        return;
+    }
+
+    /// TODO: We should throttle the volume of retransmission. 
+    /// Currently, we hard limit the number of inflight retransmission chunks.
+    if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
+        VLOG(5) << inflight_retr_chunks_ << " inflight retransmission chunks. Skip retransmission.";
         return;
     }
 
@@ -1776,7 +1802,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
             } else {
                 // This bit is stale and its corresponding chunk is already acked.
                 // Do nothing.
-                // VLOG(5) << "Stale SACK bit for seqno: " << seqno.to_uint32() << ", chunk.csn: " << chunk.csn << ", base_csn: " << base_csn.to_uint32();
+                VLOG(5) << "Stale SACK bit for seqno: " << seqno.to_uint32() << ", chunk.csn: " << chunk.csn << ", base_csn: " << base_csn.to_uint32();
             }
         } else {
             sack_bitmap_count--;
@@ -1854,23 +1880,40 @@ std::string RDMAContext::to_string()
 
     // Only count 8 flows.
     for (int fid = 0; fid < 8; fid++) {
-        auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
-        if (!flow) continue;
-        auto *subflow = flow->sub_flows_[engine_offset_];
-        stats_rto_rexmits += subflow->pcb.stats_rto_rexmits;
-        stats_fast_rexmits += subflow->pcb.stats_fast_rexmits;
-        stats_accept_retr += subflow->pcb.stats_accept_retr;
-        stats_accept_barrier += subflow->pcb.stats_accept_barrier;
-
-        stats_chunk_drop += subflow->pcb.stats_chunk_drop;
-        stats_barrier_drop += subflow->pcb.stats_barrier_drop;
-        stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
-        stats_ooo += subflow->pcb.stats_ooo;
-        stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
-        subflow->pcb.stats_maxooo = 0; // Inaccurate is fine.
-
-        // s += "\n\t QP#" + std::to_string(qpidx);
-        // s += qpw.pcb.to_string();
+        {
+            auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
+            if (flow) {
+                auto *subflow = flow->sub_flows_[engine_offset_];
+                stats_rto_rexmits += subflow->pcb.stats_rto_rexmits;
+                stats_fast_rexmits += subflow->pcb.stats_fast_rexmits;
+                stats_accept_retr += subflow->pcb.stats_accept_retr;
+                stats_accept_barrier += subflow->pcb.stats_accept_barrier;
+        
+                stats_chunk_drop += subflow->pcb.stats_chunk_drop;
+                stats_barrier_drop += subflow->pcb.stats_barrier_drop;
+                stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
+                stats_ooo += subflow->pcb.stats_ooo;
+                stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
+                subflow->pcb.stats_maxooo = 0; // Inaccurate is fine.
+            }
+        }
+        {
+            auto *flow = reinterpret_cast<UcclFlow *>(sender_flow_tbl_[fid]);
+            if (flow) {
+                auto *subflow = flow->sub_flows_[engine_offset_];
+                stats_rto_rexmits += subflow->pcb.stats_rto_rexmits;
+                stats_fast_rexmits += subflow->pcb.stats_fast_rexmits;
+                stats_accept_retr += subflow->pcb.stats_accept_retr;
+                stats_accept_barrier += subflow->pcb.stats_accept_barrier;
+        
+                stats_chunk_drop += subflow->pcb.stats_chunk_drop;
+                stats_barrier_drop += subflow->pcb.stats_barrier_drop;
+                stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
+                stats_ooo += subflow->pcb.stats_ooo;
+                stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
+                subflow->pcb.stats_maxooo = 0; // Inaccurate is fine.
+            }
+        }
     }
 
     s += "\tRTO retr:" + std::to_string(stats_rto_rexmits) 
