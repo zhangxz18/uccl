@@ -6,8 +6,8 @@
 
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
-// #define RTT_STATS
 // #define USE_SRD
+// #define RTT_STATS
 
 enum class CCType {
     kTimely,
@@ -74,21 +74,28 @@ static const uint32_t kMaxChainedWr = 32;
 const static uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
 
 // Path configuration.
-static const uint32_t kMaxDstQP = 8;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxDstQPCtrl = 8;  // # of paths/QPs for control.
-static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
-static const uint32_t kMaxSrcQP = 16;
-static const uint32_t kMaxSrcQPCtrl = 16;
-static_assert(kMaxSrcQP + kMaxSrcQPCtrl <= EFA_MAX_QPS);
+#ifdef USE_SRD
+static const uint32_t kMaxDstQP = 1;      // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 1;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQP = 1;
+static const uint32_t kMaxSrcQPCtrl = 1;
+#else
+static const uint32_t kMaxDstQP = 12;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 12;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQP = 12;
+static const uint32_t kMaxSrcQPCtrl = 12;
+#endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
     std::max(kMaxSrcQPCtrl, kMaxDstQPCtrl);
 static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
+static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
+static_assert(kMaxSrcQP + kMaxSrcQPCtrl <= EFA_MAX_QPS);
 static_assert(kMaxPath == kMaxPathCtrl);  // To make path_id calculation simple.
 
 // CC parameters.
-static const uint32_t kMaxUnackedPktsPP = 4u;
+static const uint32_t kMaxUnackedPktsPP = 2u;
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 30;

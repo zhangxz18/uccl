@@ -695,15 +695,15 @@ void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
  */
 void UcclFlow::transmit_pending_packets() {
     // Avoid sending too many packets.
-    // auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
-    // if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return;
+    if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return;
+    auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
+    if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return;
+    auto unacked_pkt_budget = kMaxUnackedPktsPerEngine - num_unacked_pkts;
+    auto txq_free_entries = socket_->send_queue_free_space();
+    auto hard_budget = std::min(std::min(txq_free_entries, unacked_pkt_budget),
+                                (uint32_t)kSackBitmapSize);
 
-    // auto unacked_pkt_budget = kMaxUnackedPktsPerEngine - num_unacked_pkts;
-    // auto txq_free_entries =
-    //     socket_->send_queue_free_space(unacked_pkt_budget);
-    // auto hard_budget = std::min(txq_free_entries, unacked_pkt_budget);
-
-    auto hard_budget = socket_->send_queue_free_space();
+    // auto hard_budget = socket_->send_queue_free_space();
 
     uint32_t permitted_packets = 0;
 
@@ -1103,14 +1103,16 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
     ConnMeta *local_meta = new ConnMeta();
     socket_->get_conn_metadata(local_meta);
 
-    // for (int i = 0; i < kMaxSrcDstQP; i++) {
-    //     LOG(INFO) << "[Engine] local_meta->qpn_list[" << i << "] "
-    //               << local_meta->qpn_list[i];
-    // }
-    // for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
-    //     LOG(INFO) << "[Engine] local_meta->qpn_list_ctrl[" << i << "] "
-    //               << local_meta->qpn_list_ctrl[i];
-    // }
+    std::stringstream str;
+    str << "[Engine] local_meta->qpn_list: ";
+    for (int i = 0; i < kMaxSrcDstQP; i++) {
+        str << local_meta->qpn_list[i] << " ";
+    }
+    str << "\n [Engine] local_meta->qpn_list_ctrl: ";
+    for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
+        str << local_meta->qpn_list_ctrl[i] << " ";
+    }
+    LOG(INFO) << str.str();
 
     send_message(sock, local_meta, sizeof(ConnMeta));
     receive_message(sock, remote_meta, sizeof(ConnMeta));
@@ -1175,6 +1177,13 @@ Endpoint::Endpoint()
 
     std::vector<std::future<std::unique_ptr<UcclEngine>>> engine_futures;
     for (int i = 0; i < num_queues_; i++) {
+        auto gpu_idx = i / (kNumEnginesPerDev / 2);
+        auto dev_idx = i / kNumEnginesPerDev;
+        auto socket_idx = i;
+        // Creating engines sequentially to have inorder QPNs.
+        auto engine = std::make_unique<UcclEngine>(
+            local_ip_str_, gpu_idx, dev_idx, socket_idx, channel_vec_[i]);
+
         std::promise<std::unique_ptr<UcclEngine>> engine_promise;
         auto engine_future = engine_promise.get_future();
         engine_futures.emplace_back(std::move(engine_future));
@@ -1182,19 +1191,13 @@ Endpoint::Endpoint()
         // Spawning a new thread to init engine and run the engine loop.
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
             [this, i, engine_th_cpuid = ENGINE_CPU_START + i,
-             engine_promise = std::move(engine_promise)]() mutable {
+             engine_promise = std::move(engine_promise),
+             engine = std::move(engine)]() mutable {
                 pin_thread_to_cpu(engine_th_cpuid);
                 LOG(INFO) << "[Engine] thread " << i << " running on CPU "
                           << engine_th_cpuid;
 
-                auto gpu_idx = i / (kNumEnginesPerDev / 2);
-                auto dev_idx = i / kNumEnginesPerDev;
-                auto socket_idx = i;
-                auto engine = std::make_unique<UcclEngine>(
-                    local_ip_str_, gpu_idx, dev_idx, socket_idx,
-                    channel_vec_[i]);
                 auto *engine_ptr = engine.get();
-
                 engine_promise.set_value(std::move(engine));
                 engine_ptr->run();
             }));

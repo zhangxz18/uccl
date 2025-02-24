@@ -678,7 +678,7 @@ std::vector<FrameDesc *> EFASocket::poll_recv_cq(uint32_t budget) {
             post_recv_wrs(1, src_qp_idx);
 
             in_packets_++;
-            in_bytes_ += frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
+            in_bytes_ += wc_[i].byte_len;
         }
 
         // TODO(yang): do we need to do anything smarter?
@@ -715,8 +715,7 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
                 post_recv_wrs_for_ctrl(1, src_qp_idx);
 
                 in_packets_++;
-                in_bytes_ +=
-                    frame->get_pkt_hdr_len() + frame->get_pkt_data_len();
+                in_bytes_ += wc_[i].byte_len;
 
             } else if (wc_[i].opcode == IBV_WC_SEND) {
                 auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
