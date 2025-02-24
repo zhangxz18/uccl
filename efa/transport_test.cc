@@ -12,13 +12,14 @@
 
 using namespace uccl;
 
+const size_t kTestIters = 1024000000000UL;
 size_t kTestMsgSize = 1024000;
 size_t kReportIters = 5000;
-const size_t kTestIters = 1024000000000UL;
 // Using larger inlights like 64 will cause severe cache miss, impacting perf.
-const size_t kMaxInflight = 8;
+size_t kMaxInflight = 8;
 
 DEFINE_uint64(size, 1024000, "Size of test message.");
+DEFINE_uint64(infly, 8, "Max num of test messages in the flight.");
 DEFINE_bool(client, false, "Whether this is a client sending traffic.");
 DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
 DEFINE_string(clientip, "", "Client IP address the server tries to connect.");
@@ -37,6 +38,7 @@ int main(int argc, char* argv[]) {
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
     kTestMsgSize = FLAGS_size;
+    kMaxInflight = FLAGS_infly;
 
     TestType test_type;
     if (FLAGS_test == "basic") {
@@ -51,14 +53,8 @@ int main(int argc, char* argv[]) {
         test_type = kMc;
     } else if (FLAGS_test == "mq") {
         test_type = kMq;
-        kTestMsgSize /= 8;
-        kReportIters *= 8;
-        kReportIters /= kMaxInflight;
     } else if (FLAGS_test == "bimq") {
         test_type = kBiMq;
-        kTestMsgSize /= 8;
-        kReportIters *= 8;
-        kReportIters /= kMaxInflight;
     } else if (FLAGS_test == "tput") {
         test_type = kTput;
     } else {

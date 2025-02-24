@@ -518,6 +518,9 @@ class EFASocket {
         frame_desc_pool_->free_buff(pkt_frame_desc);
     }
 
+    inline uint32_t send_queue_free_space_per_qp(int src_qp_id) {
+        return kMaxSendWr - send_queue_wrs_per_qp_[src_qp_id];
+    }
     inline uint32_t send_queue_free_space() {
         return kMaxSendWr * kMaxSrcQP - send_queue_wrs_;
     }
@@ -529,6 +532,7 @@ class EFASocket {
     inline uint32_t recv_queue_wrs() { return recv_queue_wrs_; }
 
    private:  // for stats
+    uint32_t send_queue_wrs_per_qp_[kMaxSrcDstQP] = {0};
     uint32_t send_queue_wrs_ = 0;
     uint32_t recv_queue_wrs_ = 0;
     uint32_t ctrl_send_queue_wrs_ = 0;

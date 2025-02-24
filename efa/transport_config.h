@@ -62,7 +62,7 @@ static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 // libibverbs configuration.
-static const uint32_t kNumEnginesPerDev = 4;  // # of engines per EFA device.
+static const uint32_t kNumEnginesPerDev = 2;  // # of engines per EFA device.
 static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
@@ -80,10 +80,10 @@ static const uint32_t kMaxDstQPCtrl = 1;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
-static const uint32_t kMaxDstQP = 12;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxDstQPCtrl = 12;  // # of paths/QPs for control.
-static const uint32_t kMaxSrcQP = 12;
-static const uint32_t kMaxSrcQPCtrl = 12;
+static const uint32_t kMaxDstQP = 20;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 20;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQP = 20;
+static const uint32_t kMaxSrcQPCtrl = 20;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
@@ -96,7 +96,11 @@ static_assert(kMaxPath == kMaxPathCtrl);  // To make path_id calculation simple.
 
 // CC parameters.
 static const uint32_t kMaxUnackedPktsPP = 2u;
+#ifdef USE_SRD
+static const uint32_t kMaxUnackedPktsPerEngine = 800;
+#else
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
+#endif
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 30;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;

@@ -387,6 +387,7 @@ uint32_t EFASocket::post_send_wr(FrameDesc *frame, uint16_t src_qp_idx) {
         src_qp = qp_list_[src_qp_idx];
 
         send_queue_wrs_++;
+        send_queue_wrs_per_qp_[src_qp_idx]++;
     }
 
     send_wr.wr_id = (uint64_t)frame;
@@ -445,9 +446,11 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
         if (is_last) {
             struct ibv_send_wr *bad_send_wr;
             if (ibv_post_send(qp_list_[src_qp_idx], wr_head, &bad_send_wr)) {
-                DCHECK(false) << "[util_efa]: Failed to post send wrs "
-                              << " send_queue_wrs_ " << send_queue_wrs_
-                              << " frames.size() " << frames.size();
+                DCHECK(false)
+                    << "[util_efa]: Failed to post send wrs send_queue_wrs_ "
+                    << send_queue_wrs_ << " send_queue_wrs_per_qp_[src_qp_idx] "
+                    << send_queue_wrs_per_qp_[src_qp_idx] << " frames.size() "
+                    << frames.size();
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
@@ -455,6 +458,7 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
         }
 
         send_queue_wrs_++;
+        send_queue_wrs_per_qp_[src_qp_idx]++;
         i++;
 
         out_packets_++;
@@ -499,9 +503,9 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
             struct ibv_send_wr *bad_send_wr;
             if (ibv_post_send(ctrl_qp_list_[src_qp_idx], wr_head,
                               &bad_send_wr)) {
-                DCHECK(false)
-                    << "[util_efa]: Failed to post send wrs for ctrl "
-                    << " ctrl_send_queue_wrs_ " << ctrl_send_queue_wrs_;
+                DCHECK(false) << "[util_efa]: Failed to post send wrs for ctrl "
+                                 "ctrl_send_queue_wrs_ "
+                              << ctrl_send_queue_wrs_;
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
@@ -642,6 +646,9 @@ std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
             DCHECK(wc_[i].opcode == IBV_WC_SEND);
 
             auto *frame = (FrameDesc *)wc_[i].wr_id;
+            auto src_qp_idx = frame->get_src_qp_idx();
+            send_queue_wrs_per_qp_[src_qp_idx]--;
+
             frame->set_cpe_time_tsc(now);
             frames.push_back(frame);
         }

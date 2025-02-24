@@ -427,7 +427,12 @@ void UcclFlow::tx_messages(Channel::Msg &tx_work) {
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
                                     uint64_t ts4, uint32_t path_id) {
-    auto sample_rtt_tsc = (ts4 - ts1) - (ts3 - ts2);
+    if (unlikely(ts4 <= ts1 || ts3 <= ts2)) return;
+    auto sender_latency = ts4 - ts1;
+    auto receiver_latency = ts3 - ts2;
+    if (unlikely(sender_latency <= receiver_latency)) return;
+
+    auto sample_rtt_tsc = sender_latency - receiver_latency;
     port_path_rtt_[path_id] = sample_rtt_tsc;
 
     if constexpr (kCCType == CCType::kTimely) {
@@ -515,8 +520,10 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
             auto hard_budget =
                 std::min(std::min(txq_free_entries, unacked_pkt_budget),
                          (uint32_t)kSackBitmapSize);
-
             auto src_qp_idx = get_src_qp_rr();
+            hard_budget = std::min(
+                hard_budget, socket_->send_queue_free_space_per_qp(src_qp_idx));
+
             uint32_t index = 0;
             while (sack_bitmap_count && msgbuf && index < hard_budget) {
                 const size_t sack_bitmap_bucket_idx =
@@ -702,11 +709,11 @@ void UcclFlow::transmit_pending_packets() {
     auto txq_free_entries = socket_->send_queue_free_space();
     auto hard_budget = std::min(std::min(txq_free_entries, unacked_pkt_budget),
                                 (uint32_t)kSackBitmapSize);
-
-    // auto hard_budget = socket_->send_queue_free_space();
+    auto src_qp_idx = get_src_qp_rr();
+    hard_budget = std::min(hard_budget,
+                           socket_->send_queue_free_space_per_qp(src_qp_idx));
 
     uint32_t permitted_packets = 0;
-
     if constexpr (kCCType == CCType::kTimely || kCCType == CCType::kTimelyPP) {
         permitted_packets = timely_g_.timely_ready_packets(hard_budget);
     }
@@ -732,8 +739,6 @@ void UcclFlow::transmit_pending_packets() {
     //     << num_unacked_pkts << " txq_free_entries " << txq_free_entries
     //     << " num_unsent_pkts " << tx_tracking_.num_unsent_msgbufs()
     //     << " pending_tx_msgs_ " << pending_tx_msgs_.size();
-
-    auto src_qp_idx = get_src_qp_rr();
 
     // Prepare the packets.
     auto now_tsc = rdtsc();
