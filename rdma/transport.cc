@@ -483,7 +483,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
         }
 
-        if constexpr (kReceiverCCA == kReceiverEQDS) {            
+        if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {            
             
             // Register this QP to pacer.
             eqds_->request_pull(rdma_ctx->eqds_qp_cc_);
@@ -522,7 +522,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     // Create multiple engines. Each engine has its own thread and channel to let the endpoint communicate with.
     for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();
 
-    if constexpr (kReceiverCCA == kReceiverEQDS) {
+    if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
         // Receiver-driven congestion control.
         for (int i = 0; i < num_devices; i++)
             eqds_[i] = new eqds::EQDS(i);
@@ -555,6 +555,28 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
         // Create listening sockets
         create_listen_socket(&test_listen_fds_[i], kTestListenPort + i);
     }
+}
+
+inline uint32_t RDMAEndpoint::find_least_loaded_engine_idx(int dev) {
+    uint32_t first_engine_idx = find_first_engine_idx_on_dev(dev);
+    uint32_t last_engine_idx = first_engine_idx + num_engines_per_dev_ - 1;
+
+    uint32_t min_load = std::numeric_limits<uint32_t>::max();
+    uint32_t candidate = 0;
+    for (uint32_t i = first_engine_idx; i <= last_engine_idx; i++) {
+        uint32_t load = engine_load_vec_[i].load();
+        if (load < min_load) {
+            min_load = load;
+            candidate = i;
+        }
+    }
+    return candidate;
+}
+
+inline uint32_t RDMAEndpoint::find_rr_engine_idx(int dev, uint32_t *next_candidate) {
+    uint32_t candidate = find_first_engine_idx_on_dev(dev) + *next_candidate;
+    *next_candidate = (*next_candidate + 1) % num_engines_per_dev_;
+    return candidate;
 }
 
 void UcclRDMAEngine::release()
@@ -1002,8 +1024,13 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
         ureq->send.sent_offset = 0;
         if (slots[i].engine_offset == RDMAEndpoint::RC_MAGIC)
             ureq->rc_or_flush_done = false;
-        else
+        else {
             ureq->poll_ctx = ctx_pool_->pop();
+            if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
+                ureq->engine_idx = slots[i].engine_offset;
+                inc_load_on_engine(ureq->engine_idx);
+            }
+        }
         ureq->context = flow;
         ureq->send.tx_events = 0;
         // Track this request.
@@ -1050,8 +1077,13 @@ bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq)
             // Give subsequent messages a chance to use RC.
             flow->set_last_rc_size(0);
         }
-
     }
+
+    if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
+        if (ureq->type == ReqTx || ureq->type == ReqRx)
+            dec_load_on_engine(ureq->engine_idx);
+    }
+
     return ret;
 }
 
@@ -1071,6 +1103,7 @@ int RDMAEndpoint::uccl_flush(UcclFlow *flow, struct Mhandle **mhandles, void **d
 
 int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, void **data, int *size, int n, struct ucclRequest *ureq) 
 {
+    uint32_t candidate;
     auto dev = flow->dev_;
     PollCtx *pacer_ctx;
     
@@ -1092,11 +1125,17 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
         flow->poll_flow_cq();
         return 0;
     }
-
-    uint32_t candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
-    if constexpr (!kFlowBindEngine) 
-        flow->next_engine_offset_ = (flow->next_engine_offset_ + 1) % num_engines_per_dev_;
     
+    if constexpr (kEngineLBPolicy == ENGINE_POLICY_BIND) {
+        candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
+    } else if constexpr (kEngineLBPolicy == ENGINE_POLICY_RR) {
+        candidate = find_rr_engine_idx(dev, &flow->next_engine_offset_);
+    } else if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
+        candidate = find_least_loaded_engine_idx(dev);
+        inc_load_on_engine(candidate);
+        ureq->engine_idx = candidate;
+    }
+
     auto elems = flow->post_fifo(candidate, data, size, n, mhandles, &ureq->recv.wr, &ureq->recv.sge);
     ureq->type = ReqRx;
     ureq->context = flow;
@@ -1122,23 +1161,6 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
     flow->poll_flow_cq();
 
     return 0;
-}
-
-inline void RDMAEndpoint::put_load_on_engine(int engine_id)
-{
-    engine_load_vec_[engine_id]++;
-}
-
-inline int RDMAEndpoint::find_least_loaded_engine_idx_and_update(int dev) {
-    std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
-
-    // Determine the range of engines serving the device.
-    auto si = engine_load_vec_.at(dev * num_engines_per_dev_);
-    auto ei = engine_load_vec_.at((dev + 1) * num_engines_per_dev_);
-
-    auto minElementIter = std::min_element(engine_load_vec_.begin() + si, engine_load_vec_.begin() + ei);
-    *minElementIter += 1;
-    return std::distance(engine_load_vec_.begin(), minElementIter);
 }
 
 void RDMAEndpoint::stats_thread_fn() {

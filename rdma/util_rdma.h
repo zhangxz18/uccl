@@ -430,6 +430,7 @@ struct ucclRequest {
     };
     void *context;
     void *req_pool;
+    uint32_t engine_idx;
     union {
         struct {
             int data_len[kMaxRecv];
@@ -877,7 +878,7 @@ class RDMAContext {
         
         // Return true if this message is transmitted completely.
         inline bool tx_messages(struct ucclRequest *ureq) {
-            if constexpr (kReceiverCCA == kReceiverNone)
+            if constexpr (kReceiverCCA == RECEIVER_CCA_NONE)
                 return senderCC_tx_messages(ureq);
             else
                 return receiverCC_tx_messages(ureq);
@@ -956,7 +957,7 @@ class RDMAContext {
          * @return true If the chunk is received successfully.
          */
         inline void rx_chunk(struct list_head *ack_list) {
-            if constexpr (kReceiverCCA == kReceiverNone)
+            if constexpr (kReceiverCCA == RECEIVER_CCA_NONE)
                 senderCC_rx_chunk(ack_list);
             else
                 receiverCC_rx_chunk(ack_list);

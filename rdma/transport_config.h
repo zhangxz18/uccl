@@ -47,24 +47,31 @@ static const uint32_t NCCL_MIN_POST_RECV = 65536;
 static const uint32_t kPortEntropy = 64;
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
-// Always use the same engine for a flow's all messages.
-static const bool kFlowBindEngine = true;
+enum engine_lb_policy {
+    // Bind each flow to one engine.
+    ENGINE_POLICY_BIND,
+    // Round-robin among engines.
+    ENGINE_POLICY_RR,
+    // Load balancing based on the load of each engine.
+    ENGINE_POLICY_LOAD,
+};
+static const enum engine_lb_policy kEngineLBPolicy = ENGINE_POLICY_LOAD;
 
 // Congestion control algorithm.
 enum SenderCCA {
-    kSenderNone,
+    SENDER_CCA_NONE,
     // Timely [SIGCOMM'15]
-    kSenderTimely,
+    SENDER_CCA_TIMELY,
 };
 enum ReceiverCCA {
-    kReceiverNone,
+    RECEIVER_CCA_NONE,
     // EQDS [NSDI'22]
-    kReceiverEQDS,
+    RECEIVER_CCA_EQDS,
 };
-static const enum SenderCCA kSenderCCA = kSenderTimely;
-static const enum ReceiverCCA kReceiverCCA = kReceiverNone;
-static_assert(!(kReceiverCCA == kReceiverEQDS && !kFlowBindEngine), "kFlowBindEngine must be true if kReceiverEQDS is set");
-static_assert(!(kReceiverCCA == kReceiverEQDS && (kChunkSize <= (16 << 10))), "kChunkSize must be greater than 16KB if kReceiverEQDS is set");
+static const enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
+static const enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_NONE;
+static_assert(!(kReceiverCCA == RECEIVER_CCA_EQDS && kEngineLBPolicy == ENGINE_POLICY_BIND), "kEngineLBPolicy must be ENGINE_POLICY_BIND if RECEIVER_CCA_EQDS is set");
+static_assert(!(kReceiverCCA == RECEIVER_CCA_EQDS && (kChunkSize <= (16 << 10))), "kChunkSize must be greater than 16KB if RECEIVER_CCA_EQDS is set");
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 

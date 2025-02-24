@@ -336,9 +336,8 @@ class RDMAEndpoint {
     std::vector<std::unique_ptr<UcclRDMAEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
 
-    // Number of flows on each engine, indexed by engine_idx.
-    std::mutex engine_load_vec_mu_;
-    std::array<int, NUM_ENGINES * NUM_DEVICES> engine_load_vec_ = {};
+    // Number of outstanding messages for each engine.
+    std::array<std::atomic<uint32_t>, NUM_ENGINES * NUM_DEVICES> engine_load_vec_ = {};
 
     // Receiver-driven congestion control.
     eqds::EQDS *eqds_[NUM_DEVICES] = {};
@@ -458,10 +457,19 @@ class RDMAEndpoint {
 
     void install_flow_on_engines(int dev, PeerID peer_id, FlowID flow_id, UcclFlow *flow, bool is_send);
     
-    inline void put_load_on_engine(int engine_id);
+    inline void inc_load_on_engine(int engine_id) {
+        std::atomic_fetch_add(&engine_load_vec_[engine_id], 1);
+    }
+
+    inline void dec_load_on_engine(int engine_id) {
+        std::atomic_fetch_sub(&engine_load_vec_[engine_id], 1);
+    }
     
     // Find a least loaded engine and update the load for the given device.
-    inline int find_least_loaded_engine_idx_and_update(int dev);
+    inline uint32_t find_least_loaded_engine_idx(int dev);
+
+    // Find an engine in a round-robin manner.
+    inline uint32_t find_rr_engine_idx(int dev, uint32_t *next_candidate);
 
     inline int find_first_engine_idx_on_dev(int dev) {
         return dev * num_engines_per_dev_;
