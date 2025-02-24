@@ -1030,7 +1030,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
         for (int i = 0; i < kSackBitmapSize / swift::Pcb::kSackBitmapBucketSize; i++)
             subflow->pcb.tx_sack_bitmap[i] = ucclsackh->sack_bitmap[i].value();
         subflow->pcb.tx_sack_bitmap_count = ucclsackh->sack_bitmap_count.value();
-        subflow->pcb.base_csn = ackno + 1;
+        subflow->pcb.base_csn = ackno;
     }
 }
 
@@ -1219,11 +1219,11 @@ void RDMAContext::burst_timing_wheel(void)
         auto ret = ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr);
         DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
-        VLOG(5) << "Burst send: csn: " << htonl(wr_ex->wr.imm_data) << " with QP#" << wr_ex->qpidx;
-
+        
         // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
         subflow->txtracking.track_chunk(wr_ex->ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+        VLOG(5) << "Burst send: csn: " << imm_data.GetCSN() << " with QP#" << wr_ex->qpidx;
         // Arm timer for TX
         arm_timer_for_flow(subflow);
 
@@ -1776,6 +1776,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
             } else {
                 // This bit is stale and its corresponding chunk is already acked.
                 // Do nothing.
+                // VLOG(5) << "Stale SACK bit for seqno: " << seqno.to_uint32() << ", chunk.csn: " << chunk.csn << ", base_csn: " << base_csn.to_uint32();
             }
         } else {
             sack_bitmap_count--;
