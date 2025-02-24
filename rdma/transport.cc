@@ -557,9 +557,15 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     }
 }
 
+inline uint32_t RDMAEndpoint::find_pot_load_engine_idx(int dev) {
+    auto c1 = find_oblivious_engine_idx(dev);
+    auto c2 = find_least_loaded_engine_idx(dev);
+    return engine_load_vec_[c1].load() < engine_load_vec_[c2].load() ? c1 : c2;
+}
+
 inline uint32_t RDMAEndpoint::find_least_loaded_engine_idx(int dev) {
-    uint32_t first_engine_idx = find_first_engine_idx_on_dev(dev);
-    uint32_t last_engine_idx = first_engine_idx + num_engines_per_dev_ - 1;
+    auto first_engine_idx = find_first_engine_idx_on_dev(dev);
+    auto last_engine_idx = first_engine_idx + num_engines_per_dev_ - 1;
 
     uint32_t min_load = std::numeric_limits<uint32_t>::max();
     uint32_t candidate = 0;
@@ -571,6 +577,10 @@ inline uint32_t RDMAEndpoint::find_least_loaded_engine_idx(int dev) {
         }
     }
     return candidate;
+}
+
+inline uint32_t RDMAEndpoint::find_oblivious_engine_idx(int dev) {
+    return find_first_engine_idx_on_dev(dev) + std::rand() % num_engines_per_dev_;
 }
 
 inline uint32_t RDMAEndpoint::find_rr_engine_idx(int dev, uint32_t *next_candidate) {
@@ -1026,7 +1036,7 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
             ureq->rc_or_flush_done = false;
         else {
             ureq->poll_ctx = ctx_pool_->pop();
-            if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
+            if constexpr (kEngineLBPolicy >= ENGINE_POLICY_LOAD) {
                 ureq->engine_idx = slots[i].engine_offset;
                 inc_load_on_engine(ureq->engine_idx);
             }
@@ -1079,7 +1089,7 @@ bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq)
         }
     }
 
-    if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
+    if constexpr (kEngineLBPolicy >= ENGINE_POLICY_LOAD) {
         if (ureq->type == ReqTx || ureq->type == ReqRx)
             dec_load_on_engine(ureq->engine_idx);
     }
@@ -1130,7 +1140,14 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles, voi
         candidate = find_first_engine_idx_on_dev(dev) + flow->next_engine_offset_;
     } else if constexpr (kEngineLBPolicy == ENGINE_POLICY_RR) {
         candidate = find_rr_engine_idx(dev, &flow->next_engine_offset_);
-    } else if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
+    } else if constexpr (kEngineLBPolicy == ENGINE_POLICY_OBLIVIOUS) {
+        candidate = find_oblivious_engine_idx(dev);
+    } else if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD_POT) {
+        candidate = find_pot_load_engine_idx(dev);
+        inc_load_on_engine(candidate);
+        ureq->engine_idx = candidate;
+    } 
+    else if constexpr (kEngineLBPolicy == ENGINE_POLICY_LOAD) {
         candidate = find_least_loaded_engine_idx(dev);
         inc_load_on_engine(candidate);
         ureq->engine_idx = candidate;

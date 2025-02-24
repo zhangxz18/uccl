@@ -47,15 +47,20 @@ static const uint32_t NCCL_MIN_POST_RECV = 65536;
 static const uint32_t kPortEntropy = 64;
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
+// Note that load-based policy shoud >= ENGINE_POLICY_LOAD.
 enum engine_lb_policy {
     // Bind each flow to one engine.
     ENGINE_POLICY_BIND,
     // Round-robin among engines.
     ENGINE_POLICY_RR,
+    // Choose obliviously.
+    ENGINE_POLICY_OBLIVIOUS,
     // Load balancing based on the load of each engine.
     ENGINE_POLICY_LOAD,
+    // Variant of ENGINE_POLICY_LOAD, which uses power of two.
+    ENGINE_POLICY_LOAD_POT,
 };
-static const enum engine_lb_policy kEngineLBPolicy = ENGINE_POLICY_LOAD;
+static const enum engine_lb_policy kEngineLBPolicy = ENGINE_POLICY_RR;
 
 // Congestion control algorithm.
 enum SenderCCA {

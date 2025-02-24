@@ -468,8 +468,13 @@ class RDMAEndpoint {
     // Find a least loaded engine and update the load for the given device.
     inline uint32_t find_least_loaded_engine_idx(int dev);
 
+    inline uint32_t find_pot_load_engine_idx(int dev);
+
     // Find an engine in a round-robin manner.
     inline uint32_t find_rr_engine_idx(int dev, uint32_t *next_candidate);
+
+    // Find an engine in an oblivious manner.
+    inline uint32_t find_oblivious_engine_idx(int dev);
 
     inline int find_first_engine_idx_on_dev(int dev) {
         return dev * num_engines_per_dev_;
