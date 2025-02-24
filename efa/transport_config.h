@@ -15,7 +15,7 @@ enum class CCType {
     kCubic,
     kCubicPP,
 };
-static constexpr CCType kCCType = CCType::kCubicPP;
+static constexpr CCType kCCType = CCType::kTimely;
 
 #define P4D
 // #define G6E
@@ -62,7 +62,7 @@ static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 // libibverbs configuration.
-static const uint32_t kNumEnginesPerDev = 2;  // # of engines per EFA device.
+static const uint32_t kNumEnginesPerDev = 4;  // # of engines per EFA device.
 static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
@@ -74,8 +74,8 @@ static const uint32_t kMaxChainedWr = 32;
 const static uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
 
 // Path configuration.
-static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
+static const uint32_t kMaxDstQP = 8;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQPCtrl = 8;  // # of paths/QPs for control.
 static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
 static const uint32_t kMaxSrcQP = 16;
 static const uint32_t kMaxSrcQPCtrl = 16;
@@ -88,7 +88,7 @@ static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
 static_assert(kMaxPath == kMaxPathCtrl);  // To make path_id calculation simple.
 
 // CC parameters.
-static const uint32_t kMaxUnackedPktsPP = 2u;
+static const uint32_t kMaxUnackedPktsPP = 4u;
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 30;

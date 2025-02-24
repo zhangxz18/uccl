@@ -522,8 +522,7 @@ class EFASocket {
         return kMaxSendWr * kMaxSrcQP - send_queue_wrs_;
     }
     inline uint64_t send_queue_estimated_latency_ns() {
-        return send_queue_wrs_ * EFA_MTU * 1000000000UL /
-               (kLinkBandwidth / kNumEnginesPerDev);
+        return send_queue_wrs_ * EFA_MTU * 1000000000UL / kLinkBandwidth;
     }
     inline uint32_t ctrl_send_queue_wrs() { return ctrl_send_queue_wrs_; }
     inline uint32_t send_queue_wrs() { return send_queue_wrs_; }

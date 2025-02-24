@@ -507,7 +507,6 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
 
             // Avoid sending too many packets.
             if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return;
-            // return;
             auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
             if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return;
             auto unacked_pkt_budget =
@@ -914,7 +913,10 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->flow_id = be64_t(flow_id_);
 
     ucclh->timestamp1 =
-        (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe) ? rdtsc() : 0;
+        (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe)
+            ? rdtsc() + ns_to_cycles(socket_->send_queue_estimated_latency_ns(),
+                                     freq_ghz)
+            : 0;
     // let the receiver fill this in when receiving this data packet.
     ucclh->timestamp2 = 0;
 }
@@ -955,7 +957,10 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     ucclsackh->sack_bitmap_count = be16_t(pcb_.sack_bitmap_count);
 
     ucclsackh->timestamp3 =
-        (net_flags == UcclPktHdr::UcclFlags::kAckRttProbe) ? rdtsc() : 0;
+        (net_flags == UcclPktHdr::UcclFlags::kAckRttProbe)
+            ? rdtsc() + ns_to_cycles(socket_->send_queue_estimated_latency_ns(),
+                                     freq_ghz)
+            : 0;
 
     return msgbuf;
 }
@@ -1097,6 +1102,15 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
     ConnMeta *remote_meta = new ConnMeta();
     ConnMeta *local_meta = new ConnMeta();
     socket_->get_conn_metadata(local_meta);
+
+    // for (int i = 0; i < kMaxSrcDstQP; i++) {
+    //     LOG(INFO) << "[Engine] local_meta->qpn_list[" << i << "] "
+    //               << local_meta->qpn_list[i];
+    // }
+    // for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
+    //     LOG(INFO) << "[Engine] local_meta->qpn_list_ctrl[" << i << "] "
+    //               << local_meta->qpn_list_ctrl[i];
+    // }
 
     send_message(sock, local_meta, sizeof(ConnMeta));
     receive_message(sock, remote_meta, sizeof(ConnMeta));

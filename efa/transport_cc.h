@@ -201,10 +201,10 @@ struct TimelyCtl {
 
     inline void timely_pace_packet(size_t ref_tsc, size_t pkt_size,
                                    void *msgbuf) {
-        auto rate = timely_.rate_;
+        // auto rate = timely_.rate_;
         // auto rate = timely.link_bandwidth_;
-        // auto rate = kLinkBandwidth / NUM_QUEUES * 2;  // for bimq
-        // auto rate = Timely::gbps_to_rate(50);
+        // auto rate = kLinkBandwidth / kNumEnginesPerDev * 2;  // for bimq
+        auto rate = Timely::gbps_to_rate(50);
         timely_pace_packet_with_rate(ref_tsc, pkt_size, msgbuf, rate);
     }
 

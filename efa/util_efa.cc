@@ -153,8 +153,12 @@ error:
 }
 
 EFASocket *EFAFactory::CreateSocket(int gpu_idx, int dev_idx, int socket_idx) {
-    auto socket = new EFASocket(gpu_idx, dev_idx, socket_idx);
     std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
+    // Yang: magic here---we need to keep QPN allocated for each socket
+    // continuous, so that they can be evenly distirbuted to differnet EFA
+    // microcores; otherwise, interleaved QPNs for different sockets will cause
+    // unstable performance.
+    auto socket = new EFASocket(gpu_idx, dev_idx, socket_idx);
     efa_ctl.socket_q_.push_back(socket);
     return socket;
 }
@@ -495,8 +499,9 @@ uint32_t EFASocket::post_send_wrs_for_ctrl(std::vector<FrameDesc *> &frames,
             struct ibv_send_wr *bad_send_wr;
             if (ibv_post_send(ctrl_qp_list_[src_qp_idx], wr_head,
                               &bad_send_wr)) {
-                DCHECK(false) << "[util_efa]: Failed to post send wrs for ctrl "
-                              << " ctrl_send_queue_wrs_ " << ctrl_send_queue_wrs_;
+                DCHECK(false)
+                    << "[util_efa]: Failed to post send wrs for ctrl "
+                    << " ctrl_send_queue_wrs_ " << ctrl_send_queue_wrs_;
             }
             if (i + 1 != frames.size()) {
                 wr_head = &send_wr_vec_[(i + 1) % kMaxChainedWr];
