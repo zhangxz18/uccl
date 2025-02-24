@@ -573,7 +573,7 @@ class TXTracking {
             return unacked_chunks_.front();
         }
 
-        uint64_t ack_transmitted_chunks(uint32_t engine_offset, RDMAContext *rdma_ctx, uint32_t num_acked_chunks, 
+        uint64_t ack_transmitted_chunks(void *subflow_context, RDMAContext *rdma_ctx, uint32_t num_acked_chunks, 
                 uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc, uint32_t *outstanding_bytes);
 
         inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
@@ -613,6 +613,8 @@ public:
     
     uint32_t fid_;
 
+    uint16_t ack_path_;
+
     // # of chunks in the timing wheel.
     uint32_t in_wheel_cnt_;
 
@@ -629,6 +631,13 @@ public:
 
     // We use list_empty(&flow->ack.ack_link) to check if it has pending ACK to send.
     struct ack_item ack;
+
+    // Scoreboard for RTT.
+    double scoreboard_rtt_[kPortEntropy];
+
+    inline void update_scoreboard_rtt(uint64_t newrtt_tsc, uint32_t qpidx) {
+        scoreboard_rtt_[qpidx] = (1 - kPPEwmaAlpha) * scoreboard_rtt_[qpidx] + kPPEwmaAlpha * to_usec(newrtt_tsc, freq_ghz);
+    }
 };
 
 /**
@@ -640,7 +649,6 @@ struct UCQPWrapper {
     uint32_t local_psn;
     // A counter for occasionally posting IBV_SEND_SIGNALED flag.
     uint32_t signal_cnt_ = 0;
-    swift::Pcb pcb;
 };
 
 /**
@@ -649,7 +657,8 @@ struct UCQPWrapper {
  */
 struct __attribute__((packed)) UcclSackHdr {
     be16_t fid;    // Flow ID
-    be32_t ackno;  // Sequence number to denote the packet counter in the flow.
+    be16_t path;
+    be16_t ackno;  // Sequence number to denote the packet counter in the flow.
     be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
     be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
     be64_t sack_bitmap[kSackBitmapSize /
@@ -863,18 +872,7 @@ class RDMAContext {
         }
 
         // Select a QP index in a power-of-two manner.
-        inline uint32_t select_qpidx_pot(uint32_t msize) {
-            if (can_use_last_choice(msize))
-                return last_qp_choice_;
-
-            auto q1 = select_qpidx_rand();
-            auto q2 = select_qpidx_rand();
-
-            // Return the QP with lower RTT.
-            auto qpidx = dp_qps_[q1].pcb.timely.prev_rtt_ < dp_qps_[q2].pcb.timely.prev_rtt_ ? q1 : q2;
-            last_qp_choice_ = qpidx;
-            return qpidx;
-        }
+        inline uint32_t select_qpidx_pot(uint32_t msize, void *subflow_context);
         
         // Return true if this message is transmitted completely.
         inline bool tx_messages(struct ucclRequest *ureq) {

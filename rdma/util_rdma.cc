@@ -1,5 +1,6 @@
 #include "util_rdma.h"
 
+#include <cstdint>
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
@@ -494,7 +495,7 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             wr->imm_data = htonl(imm_data.GetImmData());
 
             // Select QP.
-            auto qpidx = select_qpidx_pot(chunk_size);
+            auto qpidx = select_qpidx_pot(chunk_size, subflow);
             auto qpw = &dp_qps_[qpidx];
             
             wr->send_flags = 0;
@@ -561,8 +562,8 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             }
 
             // Enforce global cwnd.
-            queued = wheel->queue_on_timing_wheel(flow->cc_[engine_offset_].rate_, 
-                &flow->cc_[engine_offset_].prev_desired_tx_tsc_, now, 
+            queued = wheel->queue_on_timing_wheel(subflow->pcb.timely.rate_, 
+                &subflow->pcb.timely.prev_desired_tx_tsc_, now, 
                 wr_ex, chunk_size + hdr_overhead, subflow->in_wheel_cnt_ == 0);
 
             if (queued) {
@@ -575,7 +576,7 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             else {
                 // Transmit this chunk directly.
                 // Select QP.
-                auto qpidx = select_qpidx_pot(chunk_size);
+                auto qpidx = select_qpidx_pot(chunk_size, subflow);
                 auto qpw = &dp_qps_[qpidx];
                 // There is no need to signal every WQE since we don't handle TX completions.
                 // But we still need occasionally post a request with the IBV_SEND_SIGNALED flag.
@@ -607,16 +608,16 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
     return true;
 }
 
-uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, RDMAContext *rdma_ctx, uint32_t num_acked_chunks, 
+uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context, RDMAContext *rdma_ctx, uint32_t num_acked_chunks, 
         uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc, 
         uint32_t *outstanding_bytes)
 {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
+    auto *subflow = reinterpret_cast<SubUcclFlow *>(subflow_context);
+
     uint64_t t1 = 0;
     uint32_t seg_size = 0;
-
-    std::set<UcclFlow *> flows;
     
     while (num_acked_chunks) {
         auto &chunk = unacked_chunks_.front();
@@ -636,9 +637,7 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, RDMAContext 
 
         seg_size += chunk.wr_ex->sge.length;
 
-        auto *flow = reinterpret_cast<UcclFlow *>(chunk.ureq->context);
         *outstanding_bytes -= chunk.wr_ex->sge.length;
-        flows.insert(flow);
 
         unacked_chunks_.erase(unacked_chunks_.begin());
         num_acked_chunks--;
@@ -670,17 +669,12 @@ uint64_t TXTracking::ack_transmitted_chunks(uint32_t engine_offset, RDMAContext 
     VLOG(5) << "Total: " << to_usec(t6 - t1, freq_ghz) << 
     ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz) << 
     ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
-
-    DCHECK(to_usec(fabric_delay_tsc, freq_ghz) < 100000) << "t1: " << t1 << ", t6: " << t6 << ", remote_queueing_tsc: " << remote_queueing_tsc << "t5: " << t5;
         
     // LOG_EVERY_N(INFO, 10000) << "Host: " << std::round(to_usec(endpoint_delay_tsc, freq_ghz)) << 
     //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz));
 
-    // Update CC states for all flows using the same RTT.
-    for (auto &flow : flows) {
-        // Update global cwnd.
-        flow->cc_[engine_offset].update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
-    }
+    // Update global cwnd.
+    subflow->pcb.timely.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
     
     return fabric_delay_tsc;
 }
@@ -769,27 +763,6 @@ int RDMAContext::receiver_poll_uc_cq(void)
 
 void RDMAContext::rc_rx_ack(void)
 {
-    // auto cq_ex = send_cq_ex_;
-    // uint64_t t5;
-    // auto t6 = rdtsc();
-
-    // auto qpidx = qpn2idx_[ibv_wc_read_qp_num(cq_ex)];
-    // auto qpw = &dp_qps_[qpidx];
-
-    // if constexpr (kTestNoHWTimestamp)
-    //     t5 = t6;
-    // else
-    //     t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
-
-    // auto g_qpidx = engine_offset_ * kPortEntropy + qpw - dp_qps_;
-    // DCHECK(engine_offset_ < NUM_ENGINES);
-    // DCHECK(g_qpidx < kPortEntropy * NUM_ENGINES);
-
-    // // We assume that there is no workaround time for HW ACK.
-    // auto newrtt_tsc = qpw->txtracking.ack_transmitted_chunks(engine_offset_, g_qpidx, 
-    //     1 /* num_acked_chunks */, t5, t6, 0 /* remote_queueing_tsc */, &outstanding_bytes_);
-    
-    // qpw->pcb.update_rtt_scoreboard(newrtt_tsc);
 }
 
 int RDMAContext::sender_poll_rc_cq(void)
@@ -957,6 +930,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
     auto *ucclsackh = reinterpret_cast<UcclSackHdr *>(pkt_addr);
     
     auto fid = ucclsackh->fid.value();
+    auto qpidx = ucclsackh->path.value();
     auto ackno = ucclsackh->ackno.value();
 
     DCHECK(fid < MAX_FLOW);
@@ -1028,11 +1002,16 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
         
         DCHECK(engine_offset_ < NUM_ENGINES);
-        auto newrtt_tsc = subflow->txtracking.ack_transmitted_chunks(engine_offset_
+        auto newrtt_tsc = subflow->txtracking.ack_transmitted_chunks(subflow
             , this,
             num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc, &outstanding_bytes_);
         
-        subflow->pcb.update_rtt_scoreboard(newrtt_tsc);
+        if (qpidx < kPortEntropy)
+            subflow->update_scoreboard_rtt(newrtt_tsc, qpidx);
+        else {
+            // This ack is for retransmitted chunk.
+            // Don't update scoreboard for retransmitted chunks.
+        }
 
         subflow->pcb.snd_una = ackno;
         subflow->pcb.duplicate_acks = 0;
@@ -1227,7 +1206,7 @@ void RDMAContext::burst_timing_wheel(void)
         auto *flow = reinterpret_cast<UcclFlow *>(wr_ex->ureq->context);
         auto *subflow = flow->sub_flows_[engine_offset_];
         // Select QP.
-        auto qpidx = select_qpidx_pot(wr_ex->sge.length);
+        auto qpidx = select_qpidx_pot(wr_ex->sge.length, subflow);
         auto qpw = &dp_qps_[qpidx];
         
         wr->send_flags = 0;
@@ -1422,6 +1401,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     /// FIXME: Should we send ACK immediately here?
     if (list_empty(&subflow->ack.ack_link))
         list_add_tail(&subflow->ack.ack_link, ack_list);
+    subflow->ack_path_ = qpidx;
 
     retr_chunk_pool_->free_buff(chunk_addr);
 
@@ -1535,6 +1515,8 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
         /// FIXME: Should we send ACK immediately here?
         if (list_empty(&subflow->ack.ack_link))
             list_add_tail(&subflow->ack.ack_link, ack_list);
+        // Don't let sender update the path's rtt.
+        subflow->ack_path_ = std::numeric_limits<uint16_t>::max();
 
         retr_chunk_pool_->free_buff(chunk_addr);
         return;
@@ -1634,16 +1616,6 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
         return;
     }
 
-    /* 
-     * No need for the following code to check as we can only accept a retransmission chunk when 
-     * the barrier after this chunk has arrived.
-    */
-    
-    // auto bitmap_bucket_idx = distance / swift::Pcb::kSackBitmapBucketSize;
-    // auto cursor = distance % swift::Pcb::kSackBitmapBucketSize;
-    // auto sack_bitmap = &qpw->pcb.sack_bitmap[bitmap_bucket_idx];
-    // DCHECK(!(*sack_bitmap & (1ULL << cursor)));
-
     // Always use the latest timestamp.
     if constexpr (kTestNoHWTimestamp)
         subflow->pcb.t_remote_nic_rx = now;
@@ -1679,6 +1651,7 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
 
     if (list_empty(&subflow->ack.ack_link))
         list_add_tail(&subflow->ack.ack_link, ack_list);
+    subflow->ack_path_ = qpidx;
 
     // Send ACK if needed.
     if (subflow->rxtracking.need_imm_ack()) {
@@ -1719,8 +1692,9 @@ void RDMAContext::craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr, int num_s
     uint64_t pkt_addr = chunk_addr + CtrlChunkBuffPool::kPktSize * num_sge;
     auto *ucclsackh = reinterpret_cast<UcclSackHdr* >(pkt_addr);
 
-    ucclsackh->ackno = be32_t(subflow->pcb.ackno().to_uint32());
+    ucclsackh->ackno = be16_t(subflow->pcb.ackno().to_uint32());
     ucclsackh->fid = be16_t(subflow->fid_);
+    ucclsackh->path = be16_t(subflow->ack_path_);
 
     auto t4 = rdtsc();
     uint64_t t2;
@@ -1820,6 +1794,20 @@ void RDMAContext::__retransmit(void *context, bool rto)
             subflow->pcb.stats_fast_rexmits++;
         }
     }
+}
+
+inline uint32_t RDMAContext::select_qpidx_pot(uint32_t msize, void *subflow_context) {
+    if (can_use_last_choice(msize))
+        return last_qp_choice_;
+
+    auto *sublfow = reinterpret_cast<SubUcclFlow *>(subflow_context);
+    auto q1 = select_qpidx_rand();
+    auto q2 = select_qpidx_rand();
+
+    // Return the QP with lower RTT.
+    auto qpidx = sublfow->scoreboard_rtt_[q1] < sublfow->scoreboard_rtt_[q2] ? q1 : q2;
+    last_qp_choice_ = qpidx;
+    return qpidx;
 }
 
 // Try to arm a timer for the given flow. If the timer is already armed, do nothing.

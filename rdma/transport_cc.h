@@ -36,11 +36,6 @@ struct Pcb {
 
     Timely timely;
 
-    // Called when receving an valid ACK to update rate according to RTT.
-    inline void update_rtt_scoreboard(uint64_t newrtt_tsc) {
-        timely.update_rtt_scoreboard(newrtt_tsc);
-    }
-
     void mutliplicative_decrease() { ecn_alpha /= 2; }
     void additive_increase() {
         ecn_alpha += 0.1;

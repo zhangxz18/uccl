@@ -111,10 +111,6 @@ class Timely {
     // Last desired tx timestamp for timing wheel.
     size_t prev_desired_tx_tsc_ = 0;
 
-    inline void update_rtt_scoreboard(uint64_t newrtt_tsc) {
-        prev_rtt_ = (1 - kPPEwmaAlpha) * prev_rtt_ + kPPEwmaAlpha * to_usec(newrtt_tsc, freq_ghz);
-    }
-
     /**
      * @brief Perform a rate update
      *
