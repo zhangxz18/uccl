@@ -1157,8 +1157,8 @@ void RDMAEndpoint::stats_thread_fn() {
         std::string s;
         uint32_t eidx = 0;
         for (auto &engine : engine_vec_) {
-            s = engine->status_to_string();
             #ifdef STATS
+            s = engine->status_to_string();
             if (!s.empty()) {
                 std::cout << "[Engine#" << std::to_string(eidx++) << "]\n";
                 std::cout << s;

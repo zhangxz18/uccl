@@ -8,7 +8,7 @@
 
 #define CLOUDLAB_DEV
 
-#define STATS
+// #define STATS
 
 /// Interface configuration.
 static const uint32_t MAX_PEER = 256;
