@@ -42,6 +42,12 @@ timing_wheel_test: timing_wheel_test.cc $(DEPS) $(lib_obj)
 util_lrpc_test: util_lrpc_test.cc $(DEPS) $(lib_obj)
 	g++ util_lrpc_test.cc -o util_lrpc_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
+scattered_memcpy.o: scattered_memcpy.cu scattered_memcpy.cuh
+	nvcc -c scattered_memcpy.cu -o scattered_memcpy.o -arch=sm_70
+
+scattered_memcpy_test: scattered_memcpy_test.cc $(DEPS) $(lib_obj) scattered_memcpy.o
+	g++ scattered_memcpy_test.cc -o scattered_memcpy_test $(lib_obj) scattered_memcpy.o $(INC) $(LIBS) $(CXXFLAGS)
+
 %.o: %.cc $(DEPS)
 	g++ -c $< -o $@ $(INC) $(CXXFLAGS)
 
