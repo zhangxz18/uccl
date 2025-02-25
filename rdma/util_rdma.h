@@ -1062,22 +1062,17 @@ struct FactoryDevice {
 class RDMAFactory {
 
     std::vector<struct FactoryDevice> devices_;
-
-    // int gid_idx --> int dev
-    std::unordered_map<int, int> gid_2_dev_map;
     
     public:
 
         ~RDMAFactory() {
             devices_.clear();
-            gid_2_dev_map.clear();
         }
 
         /**
-         * @brief Initialize RDMA device for the given GID index.
-         * @param gid_idx GID index, which usually starts from 0.
+         * @brief Initialize RDMA device.
          */
-        static void init_dev(int gid_idx);
+        static void init_dev(int devname_suffix);
         /**
          * @brief Create a Context object for the given device using the given meta.
          * @param dev 
@@ -1306,15 +1301,15 @@ static inline int util_rdma_ib2eth_name(const char *ib_name, char *ethernet_name
 }
 
 /**
- * @brief This helper function gets the Infiniband name from the GID index.
+ * @brief This helper function gets the Infiniband name from the suffix.
  * 
- * @param gid_idx 
+ * @param suffix 
  * @param ib_name 
  * @return int 
  */
-static inline int util_rdma_get_ib_name_from_gididx(int gid_idx, char *ib_name)
+static inline int util_rdma_get_ib_name_from_suffix(int suffix, char *ib_name)
 {
-    sprintf(ib_name, "%s%d", IB_DEVICE_NAME_PREFIX, gid_idx);
+    sprintf(ib_name, "%s%d", IB_DEVICE_NAME_PREFIX, suffix);
     return 0;
 }
 

@@ -340,7 +340,7 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, interrupt_handler);
     signal(SIGHUP, interrupt_handler);
 
-    ep.emplace(GID_INDEX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
+    ep.emplace(DEVNAME_SUFFIX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
 
 
     // Create a thread to print throughput every second

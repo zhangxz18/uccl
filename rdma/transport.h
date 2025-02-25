@@ -364,7 +364,7 @@ class RDMAEndpoint {
     Spin active_flows_spin_[NUM_DEVICES];
 
    public:
-    RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
+    RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices, int num_engines_per_dev, int engine_cpu_start);
     ~RDMAEndpoint();
 
     /// For testing easily.

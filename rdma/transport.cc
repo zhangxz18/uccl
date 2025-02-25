@@ -500,7 +500,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
     qp_setup_thread.detach();
 }
 
-RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num_engines_per_dev, int engine_cpu_start)
+RDMAEndpoint::RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices, int num_engines_per_dev, int engine_cpu_start)
     : num_devices_(num_devices), num_engines_per_dev_(num_engines_per_dev), engine_cpu_start_(engine_cpu_start),
          stats_thread_([this]() { stats_thread_fn(); }) {
     
@@ -508,7 +508,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *gid_idx_list, int num_devices, int num
     static std::once_flag flag_once;
     std::call_once(flag_once, [&]() {
         for (int i = 0; i < num_devices; i++) {
-            RDMAFactory::init_dev(gid_idx_list[i]);
+            RDMAFactory::init_dev(devname_suffix_list[i]);
         }
     });
 

@@ -85,8 +85,7 @@ struct ucclSendComm {
 
 ncclResult_t pluginInit(ncclDebugLogger_t logFunction)
 {
-    // FLAGS_v = 4;
-    ep = std::make_shared<RDMAEndpoint>(GID_INDEX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
+    ep = std::make_shared<RDMAEndpoint>(DEVNAME_SUFFIX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
     return ncclSuccess;
 }
 

@@ -20,13 +20,13 @@ static const bool USE_ROCE = true;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
 static const uint8_t NUM_DEVICES = 2;
-static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {2,3};
+static const uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2,3};
 #else
 static const bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
 static const uint8_t NUM_DEVICES = 8;
-static const uint8_t GID_INDEX_LIST[NUM_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
+static const uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
 #endif
 static const uint8_t IB_PORT_NUM = 1;
 #ifdef CLOUDLAB_DEV
