@@ -32,11 +32,11 @@ ib_send_lat -d rdmap16s27 --report_gbits 172.31.42.140 -x 0 -c UD -F
 
 ## Run nccl-efa tests: 
 ```
-./util_efa_test --logtostderr=1
-./util_efa_test 172.31.42.140 --logtostderr=1
+./util_efa_test --logtostderr
+./util_efa_test --logtostderr 172.31.42.140
 ```
 
 ```
-./transport_test --logtostderr=1 --clientip=172.31.39.44 --test=basic
-./transport_test --logtostderr=1 --client --serverip=172.31.42.140 --test=basic
+./transport_test --logtostderr --test=bimq --clientip=172.31.39.44
+./transport_test --logtostderr --test=bimq --serverip=172.31.42.140
 ```

@@ -20,7 +20,6 @@ size_t kMaxInflight = 8;
 
 DEFINE_uint64(size, 1024000, "Size of test message.");
 DEFINE_uint64(infly, 8, "Max num of test messages in the flight.");
-DEFINE_bool(client, false, "Whether this is a client sending traffic.");
 DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
 DEFINE_string(clientip, "", "Client IP address the server tries to connect.");
 DEFINE_bool(verify, false, "Whether to check data correctness.");
@@ -39,6 +38,15 @@ int main(int argc, char* argv[]) {
 
     kTestMsgSize = FLAGS_size;
     kMaxInflight = FLAGS_infly;
+    
+    bool is_client;
+    if (!FLAGS_serverip.empty()) {
+        is_client = true;
+    } else if (!FLAGS_clientip.empty()) {
+        is_client = false;
+    } else {
+        LOG(FATAL) << "Please specify server IP or client IP, and only one of them.";
+    }
 
     TestType test_type;
     if (FLAGS_test == "basic") {
@@ -66,7 +74,7 @@ int main(int argc, char* argv[]) {
     srand(42);
     pin_thread_to_cpu(0);
 
-    if (FLAGS_client) {
+    if (is_client) {
         auto ep = Endpoint();
         DCHECK(FLAGS_serverip != "");
         auto conn_id = ep.uccl_connect(FLAGS_serverip);
@@ -354,8 +362,11 @@ int main(int argc, char* argv[]) {
         Mhandle mh[kNumEngines], mh2[kNumEngines];
 
         for (int i = 0; i < kNumEngines; i++) {
-            cudaSetDevice(i);
-            auto* dev = EFAFactory::GetEFADevice(i / kNumEnginesPerDev);
+            auto gpu_idx = get_gpu_idx_by_engine_idx(i);
+            auto dev_idx = get_dev_idx_by_engine_idx(i);
+
+            cudaSetDevice(gpu_idx);
+            auto* dev = EFAFactory::GetEFADevice(dev_idx);
 
             cudaMalloc(&data[i], kTestMsgSize);
             mh[i].mr = ibv_reg_mr(dev->pd, data[i], kTestMsgSize,
