@@ -3,16 +3,21 @@
 
 #include "scattered_memcpy.cuh"
 
-__global__ void kernelScatteredMemcpy(__grid_constant__ const copy_param_t p) {
+__global__ void kernelScatteredMemcpy(uint32_t num_copies,
+                                      __grid_constant__ const copy_param_t p) {
+    // Total threads in the grid.
+    int total_threads = gridDim.x * blockDim.x;
     // Compute our unique global thread id.
     int global_id = blockIdx.x * blockDim.x + threadIdx.x;
+    // Number of threads per copy.
+    int threads_per_copy = total_threads / num_copies;
 
     // Map each thread to a copy.
-    int copy_idx = global_id / THREADS_PER_COPY;
-    if (copy_idx >= MAX_SCATTERED_COPIES) return;  // In case of rounding
+    int copy_idx = global_id / threads_per_copy;
+    if (copy_idx >= num_copies) return;  // In case of rounding
 
     // Compute local thread index within the group assigned to this copy.
-    int local_thread_idx = global_id % THREADS_PER_COPY;
+    int local_thread_idx = global_id % threads_per_copy;
 
     // Retrieve parameters for this copy.
     uint64_t total_size = p.size[copy_idx];
@@ -27,7 +32,7 @@ __global__ void kernelScatteredMemcpy(__grid_constant__ const copy_param_t p) {
     uint64_t* dst_u64 = (uint64_t*)dst_ptr;
 
     // Each thread in the group copies its portion of 64-bit words.
-    for (uint64_t i = local_thread_idx; i < num_full; i += THREADS_PER_COPY) {
+    for (uint64_t i = local_thread_idx; i < num_full; i += threads_per_copy) {
         dst_u64[i] = src_u64[i];
     }
 
@@ -42,9 +47,10 @@ __global__ void kernelScatteredMemcpy(__grid_constant__ const copy_param_t p) {
     }
 }
 
-void launchScatteredMemcpy(const copy_param_t* params) {
+void launchScatteredMemcpy(uint32_t num_copies, const copy_param_t* params) {
     // Launch the kernel
-    kernelScatteredMemcpy<<<THREAD_BLOCKS, THREADS_PER_BLOCK>>>(*params);
+    kernelScatteredMemcpy<<<THREAD_BLOCKS, THREADS_PER_BLOCK>>>(num_copies,
+                                                                *params);
 
     // Wait for kernel to complete.
     cudaError_t err = cudaDeviceSynchronize();
@@ -54,11 +60,11 @@ void launchScatteredMemcpy(const copy_param_t* params) {
     }
 }
 
-void launchScatteredMemcpyAsync(const copy_param_t* params,
+void launchScatteredMemcpyAsync(uint32_t num_copies, const copy_param_t* params,
                                 cudaStream_t stream) {
     // Launch the kernel
     kernelScatteredMemcpy<<<THREAD_BLOCKS, THREADS_PER_BLOCK, 0, stream>>>(
-        *params);
+        num_copies, *params);
 }
 
 int pollScatteredMemcpy(cudaStream_t stream) {
