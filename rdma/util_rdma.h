@@ -624,6 +624,8 @@ public:
 
     uint16_t ack_path_;
 
+    uint32_t outstanding_bytes_ = 0;
+
     // # of chunks in the timing wheel.
     uint32_t in_wheel_cnt_;
 
@@ -844,7 +846,7 @@ class RDMAContext {
         uint32_t consecutive_same_choice_bytes_ = 0;
         uint32_t last_qp_choice_ = 0;
 
-        uint32_t outstanding_bytes_ = 0;
+        uint32_t *eob_;
 
         inline bool can_use_last_choice(uint32_t msize) {
             bool cond1 = msize <= kMAXUseCacheQPSize;
@@ -1029,7 +1031,7 @@ class RDMAContext {
 
         std::string to_string();
 
-        RDMAContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta);
+        RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *ob, int dev, uint32_t engine_offset, union CtrlMeta meta);
 
         ~RDMAContext(void);
         
@@ -1079,7 +1081,7 @@ class RDMAFactory {
          * @param meta 
          * @return RDMAContext* 
          */
-        static RDMAContext *CreateContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t engine_offset_, union CtrlMeta meta);
+        static RDMAContext *CreateContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob, int dev, uint32_t engine_offset_, union CtrlMeta meta);
         static inline struct FactoryDevice *get_factory_dev(int dev) {
             DCHECK(dev >= 0 && dev < rdma_ctl->devices_.size());
             return &rdma_ctl->devices_[dev];

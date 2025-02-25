@@ -108,6 +108,7 @@ class RDMAEndpoint;
 class UcclRDMAEngine {
    public:
     TimerManager rto_tm_;
+    uint32_t engine_outstanding_bytes_ = 0;
 
     UcclRDMAEngine() = delete;
     UcclRDMAEngine(UcclRDMAEngine const &) = delete;

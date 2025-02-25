@@ -96,9 +96,11 @@ static constexpr uint32_t kMAXUseCacheQPSize = 8192;
 static constexpr uint32_t kBypassTimingWheelThres = 9000;
 
 // Limit the per-flow outstanding bytes on each engine.
-static const uint32_t kMaxOutstandingBytes = 16 * kChunkSize;
+static const uint32_t kMaxOutstandingBytesPerFlow = 8 * kChunkSize;
+// Limit the outstanding bytes on each engine.
+static const uint32_t kMaxOutstandingBytesEngine = 24 * kChunkSize;
 // # of Tx work handled in one loop.
-static const uint32_t kMaxTxWork = 4;
+static const uint32_t kMaxTxWork = 2;
 // Maximum number of Tx bytes to be transmitted in one loop.
 static const uint32_t kMaxTxBytesThres = 32 * kChunkSize;
 // # of Rx work handled in one loop.
@@ -132,7 +134,7 @@ static const uint32_t kMaxRetr = 64;
 static const uint32_t kMaxInflightRetrChunks = 32;
 static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
-static const uint32_t kMaxBurstTW = 24;
+static const uint32_t kMaxBurstTW = 8;
 // Posting recv WQEs every kPostRQThreshold.
 static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 // When CQEs from one QP reach kMAXCumWQE, send immediate ack.

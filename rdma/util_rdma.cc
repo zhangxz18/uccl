@@ -155,13 +155,13 @@ error:
  * @param meta 
  * @return RDMAContext* 
  */
-RDMAContext *RDMAFactory::CreateContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta)
+RDMAContext *RDMAFactory::CreateContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob, int dev, uint32_t engine_offset, union CtrlMeta meta)
 {
-    RDMAContext *ctx = new RDMAContext(peer_id, rto, dev, engine_offset, meta);
+    RDMAContext *ctx = new RDMAContext(peer_id, rto, engine_ob, dev, engine_offset, meta);
     return ctx;
 }
 
-RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t engine_offset, union CtrlMeta meta): peer_id_(peer_id), rto_(rto), dev_(dev), engine_offset_(engine_offset),
+RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob, int dev, uint32_t engine_offset, union CtrlMeta meta): peer_id_(peer_id), rto_(rto), eob_(engine_ob), dev_(dev), engine_offset_(engine_offset),
     wheel_({freq_ghz, 
         us_to_cycles(kWheelSlotWidthUs, freq_ghz), 
             us_to_cycles(kWheelHorizonUs, freq_ghz), 
@@ -457,7 +457,12 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
 
     while (*sent_offset < size) {
 
-        if (outstanding_bytes_ >= kMaxOutstandingBytes) {
+        if (*eob_ >= kMaxOutstandingBytesEngine) {
+            // Push the message to the pending transmit queue.
+            return false;
+        }
+
+        if (subflow->outstanding_bytes_ >= kMaxOutstandingBytesPerFlow) {
             // Push the message to the pending transmit queue.
             return false;
         }
@@ -511,7 +516,8 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
 
             VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", fid: " << flow->flowid() << ", " << ureq->n << " with QP#" << qpidx;
 
-            outstanding_bytes_ += chunk_size;
+            subflow->outstanding_bytes_ += chunk_size;
+            *eob_ += chunk_size;
 
             continue;
         }
@@ -597,7 +603,8 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
 
         VLOG(5) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", n: " << ureq->n << " for flow#" << flow->flowid();
 
-        outstanding_bytes_ += chunk_size;
+        subflow->outstanding_bytes_ += chunk_size;
+        *eob_ += chunk_size;
     }
 
     return true;
@@ -997,10 +1004,12 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
         
         DCHECK(engine_offset_ < NUM_ENGINES);
+        auto reduced_bytes = subflow->outstanding_bytes_;
         auto newrtt_tsc = subflow->txtracking.ack_transmitted_chunks(subflow
             , this,
-            num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc, &outstanding_bytes_);
-        
+            num_acked_chunks.to_uint32(), t5, t6, remote_queueing_tsc, &subflow->outstanding_bytes_);
+        reduced_bytes -= subflow->outstanding_bytes_;
+        *eob_ -= reduced_bytes;
         if (qpidx < kPortEntropy)
             subflow->update_scoreboard_rtt(newrtt_tsc, qpidx);
         else {
@@ -1225,6 +1234,12 @@ void RDMAContext::burst_timing_wheel(void)
         subflow->in_wheel_cnt_--;
 
         wheel->ready_queue_.pop_front();
+
+        if (*eob_ >= kMaxOutstandingBytesEngine) {
+            // The code is here because we want to at least send one chunk.
+            // Push the message to the pending transmit queue.
+            return;
+        }
     }
 }
 
