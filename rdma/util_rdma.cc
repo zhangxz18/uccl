@@ -1642,8 +1642,12 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
 
     if (distance.to_uint32()) {
         subflow->rxtracking.encounter_ooo();
+        #ifdef STATS
         subflow->pcb.stats_ooo++;
         subflow->pcb.stats_maxooo = std::max(subflow->pcb.stats_maxooo, distance.to_uint32());
+        if (subflow->rxtracking.real_ooo())
+            subflow->pcb.stats_real_ooo++;
+        #endif
     }
     
     subflow->rxtracking.cumulate_wqe();
@@ -1864,10 +1868,11 @@ std::string RDMAContext::to_string()
     uint32_t stats_barrier_drop = 0;
     uint32_t stats_retr_chunk_drop = 0;
     uint32_t stats_ooo = 0;
+    uint32_t stats_real_ooo = 0;
     uint32_t stats_maxooo = 0;
 
-    // Only count 8 flows.
-    for (int fid = 0; fid < 8; fid++) {
+    // Only count 16 flows.
+    for (int fid = 0; fid < 16; fid++) {
         {
             auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
             if (flow) {
@@ -1881,6 +1886,7 @@ std::string RDMAContext::to_string()
                 stats_barrier_drop += subflow->pcb.stats_barrier_drop;
                 stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
                 stats_ooo += subflow->pcb.stats_ooo;
+                stats_real_ooo += subflow->pcb.stats_real_ooo;
                 stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
                 subflow->pcb.stats_maxooo = 0; // Inaccurate is fine.
             }
@@ -1898,6 +1904,7 @@ std::string RDMAContext::to_string()
                 stats_barrier_drop += subflow->pcb.stats_barrier_drop;
                 stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
                 stats_ooo += subflow->pcb.stats_ooo;
+                stats_real_ooo += subflow->pcb.stats_real_ooo;
                 stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
                 subflow->pcb.stats_maxooo = 0; // Inaccurate is fine.
             }
@@ -1912,6 +1919,7 @@ std::string RDMAContext::to_string()
         + "/Barrier drop:" + std::to_string(stats_barrier_drop)
         + "/Retr drop:" + std::to_string(stats_retr_chunk_drop)
         + "/OOO: " + std::to_string(stats_ooo)
+        + "/ROOO: " + std::to_string(stats_real_ooo)
         + "/MAXOOO: " + std::to_string(stats_maxooo);
 
     s += "\n";

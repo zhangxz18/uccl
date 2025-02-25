@@ -198,6 +198,7 @@ struct Pcb {
     uint32_t stats_barrier_drop{0};
     uint32_t stats_retr_chunk_drop{0};
     uint32_t stats_ooo{0};
+    uint32_t stats_real_ooo{0};
     uint32_t stats_maxooo{0};
 };
 

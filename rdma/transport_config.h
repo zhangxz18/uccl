@@ -140,6 +140,10 @@ static const uint32_t kPostRQThreshold = kMaxBatchCQ;
 static constexpr uint32_t kMAXCumWQE = 4;
 // When the cumulative bytes reach kMAXCumBytes, send immediate ack.
 static constexpr uint32_t kMAXCumBytes = kMAXCumWQE * kChunkSize;
+// Before reaching it, the receiver will not consider that it has encountered OOO,
+// and thus there is no immediate ack. This is to tolerate the OOO caused by the 
+// sender's qp scheduling.
+static constexpr uint32_t kMAXRXOOO = 8;
 
 // Sack bitmap size in bits.
 static const std::size_t kSackBitmapSize = 64 << 1;

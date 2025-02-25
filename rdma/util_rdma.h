@@ -525,7 +525,14 @@ class RXTracking {
         // Immediate Acknowledgement.
         inline void cumulate_wqe(void) { cumulative_wqe_++;}
         inline void cumulate_bytes(uint32_t bytes) { cumulative_bytes_ += bytes;}
-        inline void encounter_ooo(void) { ooo_ = true;}
+        inline void encounter_ooo(void) {
+            if (++consectutive_ooo_ >= kMAXRXOOO) {
+                ooo_ = true;
+                consectutive_ooo_ = 0;
+            }
+        }
+
+        inline bool real_ooo(void) { return ooo_;}
         
         /**
          * @brief Send ack immediately if the following conditions are met:
@@ -541,12 +548,14 @@ class RXTracking {
             ooo_ = false;
             cumulative_wqe_ = 0;
             cumulative_bytes_ = 0;
+            consectutive_ooo_ = 0;
         }
     
     private:
         bool ooo_ = false;
         uint32_t cumulative_wqe_ = 0;
         uint32_t cumulative_bytes_ = 0;
+        uint32_t consectutive_ooo_ = 0;
 };
 
 class TXTracking {
