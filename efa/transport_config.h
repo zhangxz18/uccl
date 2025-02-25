@@ -22,8 +22,8 @@ static constexpr CCType kCCType = CCType::kTimely;
 
 /// Interface configuration.
 #ifdef P4D
-static const uint8_t NUM_DEVICES = 1;
-// static const uint8_t NUM_DEVICES = 4;
+// static const uint8_t NUM_DEVICES = 1;
+static const uint8_t NUM_DEVICES = 4;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};

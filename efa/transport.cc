@@ -1182,8 +1182,8 @@ Endpoint::Endpoint()
 
     std::vector<std::future<std::unique_ptr<UcclEngine>>> engine_futures;
     for (int i = 0; i < num_queues_; i++) {
-        auto gpu_idx = i / (kNumEnginesPerDev / 2);
-        auto dev_idx = i / kNumEnginesPerDev;
+        auto gpu_idx = get_gpu_idx_by_engine_idx(i);
+        auto dev_idx = get_dev_idx_by_engine_idx(i);
         auto socket_idx = i;
         // Creating engines sequentially to have inorder QPNs.
         auto engine = std::make_unique<UcclEngine>(

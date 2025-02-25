@@ -788,4 +788,12 @@ static inline void net_barrier(int bootstrap_fd) {
     DCHECK(ret == sizeof(bool) && sync);
 }
 
+static inline uint32_t get_gpu_idx_by_engine_idx(uint32_t engine_idx) {
+    return engine_idx / (kNumEnginesPerDev / 2);
+}
+
+static inline uint32_t get_dev_idx_by_engine_idx(uint32_t engine_idx) {
+    return engine_idx / kNumEnginesPerDev;
+}
+
 }  // namespace uccl
