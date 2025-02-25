@@ -4,45 +4,47 @@
 #include "scattered_memcpy.cuh"
 
 __global__ void kernelScatteredMemcpy(__grid_constant__ const copy_param_t p) {
-    int copy_idx = blockIdx.x;  // Each block handles one copy operation
-    int thread_id = threadIdx.x;
+    // Compute our unique global thread id.
+    int global_id = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (copy_idx >= MAX_SCATTERED_COPIES || p.size[copy_idx] == 0) return;
+    // Map each thread to a copy.
+    int copy_idx = global_id / THREADS_PER_COPY;
+    if (copy_idx >= MAX_SCATTERED_COPIES) return;  // In case of rounding
 
-    char *src_ptr = (char *)p.src[copy_idx];
-    char *dst_ptr = (char *)p.dst[copy_idx];
+    // Compute local thread index within the group assigned to this copy.
+    int local_thread_idx = global_id % THREADS_PER_COPY;
+
+    // Retrieve parameters for this copy.
     uint64_t total_size = p.size[copy_idx];
+    if (total_size == 0) return;
 
-    // Use uint64_t for efficient memory transfers (8 bytes at a time)
-    uint64_t *src_u64 = (uint64_t *)src_ptr;
-    uint64_t *dst_u64 = (uint64_t *)dst_ptr;
-    uint64_t num_full_u64 = total_size / 8;
-    uint64_t thread_offset = thread_id;
+    char* src_ptr = (char*)p.src[copy_idx];
+    char* dst_ptr = (char*)p.dst[copy_idx];
 
-    // Parallelized copying of 64-bit chunks
-    for (uint64_t i = thread_offset; i < num_full_u64; i += blockDim.x) {
+    // Copy 8-byte chunks first (if possible)
+    uint64_t num_full = total_size / 8;
+    uint64_t* src_u64 = (uint64_t*)src_ptr;
+    uint64_t* dst_u64 = (uint64_t*)dst_ptr;
+
+    // Each thread in the group copies its portion of 64-bit words.
+    for (uint64_t i = local_thread_idx; i < num_full; i += THREADS_PER_COPY) {
         dst_u64[i] = src_u64[i];
     }
 
-    // Handle remaining bytes (unaligned part)
-    if (thread_id == 0) {
-        char *src_tail = src_ptr + (num_full_u64 * 8);
-        char *dst_tail = dst_ptr + (num_full_u64 * 8);
-        for (uint64_t i = 0; i < (total_size % 8); i++) {
-            dst_tail[i] = src_tail[i];
+    // Handle the remaining tail bytes (if any)
+    uint64_t tail_start = num_full * 8;
+    // Let only one thread in the copy group (e.g. local_thread_idx == 0) copy
+    // the tail.
+    if (local_thread_idx == 0) {
+        for (uint64_t i = tail_start; i < total_size; i++) {
+            dst_ptr[i] = src_ptr[i];
         }
     }
 }
 
-void launchScatteredMemcpy(const copy_param_t *params) {
-    int num_copies = MAX_SCATTERED_COPIES;
-
-    // Configure CUDA kernel launch
-    int threadsPerBlock = THREADS_PER_COPY;
-    int numBlocks = num_copies;  // One block per copy
-
+void launchScatteredMemcpy(const copy_param_t* params) {
     // Launch the kernel
-    kernelScatteredMemcpy<<<numBlocks, threadsPerBlock>>>(*params);
+    kernelScatteredMemcpy<<<THREAD_BLOCKS, THREADS_PER_BLOCK>>>(*params);
 
     // Wait for kernel to complete.
     cudaError_t err = cudaDeviceSynchronize();
@@ -52,16 +54,11 @@ void launchScatteredMemcpy(const copy_param_t *params) {
     }
 }
 
-void launchScatteredMemcpyAsync(const copy_param_t *params,
+void launchScatteredMemcpyAsync(const copy_param_t* params,
                                 cudaStream_t stream) {
-    int num_copies = MAX_SCATTERED_COPIES;
-
-    // Configure CUDA kernel launch
-    int threadsPerBlock = THREADS_PER_COPY;
-    int numBlocks = num_copies;  // One block per copy
-
     // Launch the kernel
-    kernelScatteredMemcpy<<<numBlocks, threadsPerBlock, 0, stream>>>(*params);
+    kernelScatteredMemcpy<<<THREAD_BLOCKS, THREADS_PER_BLOCK, 0, stream>>>(
+        *params);
 }
 
 int pollScatteredMemcpy(cudaStream_t stream) {

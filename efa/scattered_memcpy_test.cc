@@ -17,6 +17,17 @@ void checkCuda(cudaError_t err) {
     }
 }
 
+/**
+ * Testing results on p4d A100
+ * CUDA Scattered Memcpy Performance:
+ *      Execution Time: 13.8324 us
+ *      Memory Bandwidth: 82.6166 GB/s
+ * Async CUDA Scattered Memcpy Performance:
+ *      Launch Time: 3.39737 us
+ *      Memory Bandwidth: 336.373 GB/s
+ *      Polling Time: 0.590113 us
+ */
+
 int main() {
     copy_param_t *h_params = new copy_param_t();
 
@@ -56,7 +67,7 @@ int main() {
     double bandwidth_gbps = total_bytes / (time_us * 1e3);
 
     std::cout << "CUDA Scattered Memcpy Performance:" << std::endl;
-    std::cout << "  Launch Time: " << time_us << " us" << std::endl;
+    std::cout << "  Execution Time: " << time_us << " us" << std::endl;
     std::cout << "  Memory Bandwidth: " << bandwidth_gbps << " GB/s"
               << std::endl;
 
