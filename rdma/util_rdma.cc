@@ -232,7 +232,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, int dev, uint32_t en
         qp_init_attr.qp_type = IBV_QPT_UC;
     else
         qp_init_attr.qp_type = IBV_QPT_RC;
-    qp_init_attr.cap.max_send_wr = kMaxReq * kMaxRecv + kMaxRetr;
+    qp_init_attr.cap.max_send_wr = 2 * kMaxReq * kMaxRecv + kMaxRetr;
     qp_init_attr.cap.max_send_sge = kMaxSge;
     qp_init_attr.cap.max_inline_data = 0;
     qp_init_attr.srq = srq_;
