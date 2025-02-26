@@ -27,6 +27,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "cuda_runtime.h"
+#include "driver_types.h"
+#include "scattered_memcpy.cuh"
 #include "transport_cc.h"
 #include "transport_config.h"
 #include "transport_header.h"
@@ -137,18 +140,25 @@ class Channel {
     Channel() {
         tx_task_q_ = create_ring(sizeof(Msg), kChannelSize);
         rx_task_q_ = create_ring(sizeof(Msg), kChannelSize);
+        rx_copy_q_ = create_ring(sizeof(Msg), kChannelSize);
+        rx_copy_done_q_ = create_ring(sizeof(Msg), kChannelSize);
         ctrl_task_q_ = create_ring(sizeof(CtrlMsg), kChannelSize);
     }
 
     ~Channel() {
         free(tx_task_q_);
         free(rx_task_q_);
+        free(rx_copy_q_);
+        free(rx_copy_done_q_);
         free(ctrl_task_q_);
     }
 
     // Communicating rx/tx cmds between app thread and engine thread.
     jring_t *tx_task_q_;
     jring_t *rx_task_q_;
+    // Communicating copy requests between engine thread to copy thread.
+    jring_t *rx_copy_q_;
+    jring_t *rx_copy_done_q_;
     // Communicating ctrl cmds between app thread and engine thread.
     jring_t *ctrl_task_q_;
 
@@ -309,7 +319,7 @@ class RXTracking {
     }
 
    private:
-    void copy_complete_msgbuf_to_appbuf(Channel::Msg &rx_complete_work);
+    static void copy_thread_func(uint32_t engine_idx, UcclEngine *engine);
 
     EFASocket *socket_;
     Channel *channel_;
@@ -330,6 +340,8 @@ class RXTracking {
     std::deque<app_buf_t> app_buf_queue_;
     FrameDesc *deser_msgs_head_ = nullptr;
     FrameDesc *deser_msgs_tail_ = nullptr;
+
+    friend class Endpoint;
 };
 
 /**
@@ -674,6 +686,8 @@ class UcclEngine {
     uint64_t kSlowTimerIntervalTsc_;
     // Whether shutdown is requested.
     std::atomic<bool> shutdown_{false};
+
+    friend class RXTracking;
 };
 
 /**
@@ -694,6 +708,7 @@ class Endpoint {
     Channel *channel_vec_[kNumEngines];
     std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
+    std::vector<std::unique_ptr<std::thread>> copy_th_vec_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;

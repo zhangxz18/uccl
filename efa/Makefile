@@ -16,22 +16,20 @@ lib_src := $(filter-out %_main.cc,$(lib_src))
 lib_src := $(filter-out %_test.cc,$(lib_src))
 lib_src := $(filter-out %_plugin.cc,$(lib_src))
 lib_obj = $(lib_src:.cc=.o)
+lib_obj += scattered_memcpy.o
 
 main_src = $(wildcard *_main.cc)
 main_src += $(wildcard *_test.cc)
 main_bin = $(main_src:.cc=)
 
 .PHONY: build
-build: $(main_bin)
+build: $(main_bin) $(PLUGIN_SO)
 
 transport_test: transport_test.cc $(DEPS) $(lib_obj)
 	g++ transport_test.cc -o transport_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
-# util_efa_test: util_efa_test.cc $(DEPS) $(lib_obj)
-# 	g++ util_efa_test.cc -o util_efa_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
-
-util_efa_test: util_efa_test.cc $(DEPS) util_efa.o
-	g++ util_efa_test.cc -o util_efa_test util_efa.o $(INC) $(LIBS) $(CXXFLAGS)
+util_efa_test: util_efa_test.cc $(DEPS) $(lib_obj)
+	g++ util_efa_test.cc -o util_efa_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
 timely_test: timely_test.cc $(DEPS) $(lib_obj)
 	g++ timely_test.cc -o timely_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
@@ -42,11 +40,11 @@ timing_wheel_test: timing_wheel_test.cc $(DEPS) $(lib_obj)
 util_lrpc_test: util_lrpc_test.cc $(DEPS) $(lib_obj)
 	g++ util_lrpc_test.cc -o util_lrpc_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
-scattered_memcpy.o: scattered_memcpy.cu scattered_memcpy.cuh
-	nvcc -c scattered_memcpy.cu -o scattered_memcpy.o -arch=sm_70
+scattered_memcpy_test: scattered_memcpy_test.cc $(DEPS) $(lib_obj)
+	g++ scattered_memcpy_test.cc -o scattered_memcpy_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
 
-scattered_memcpy_test: scattered_memcpy_test.cc $(DEPS) $(lib_obj) scattered_memcpy.o
-	g++ scattered_memcpy_test.cc -o scattered_memcpy_test $(lib_obj) scattered_memcpy.o $(INC) $(LIBS) $(CXXFLAGS)
+scattered_memcpy.o: scattered_memcpy.cu scattered_memcpy.cuh
+	nvcc -c scattered_memcpy.cu -o scattered_memcpy.o -arch=sm_70 -Xcompiler -fPIC
 
 %.o: %.cc $(DEPS)
 	g++ -c $< -o $@ $(INC) $(CXXFLAGS)

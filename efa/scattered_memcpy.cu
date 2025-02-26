@@ -20,7 +20,7 @@ __global__ void kernelScatteredMemcpy(uint32_t num_copies,
     int local_thread_idx = global_id % threads_per_copy;
 
     // Retrieve parameters for this copy.
-    uint64_t total_size = p.size[copy_idx];
+    uint64_t total_size = p.len[copy_idx];
     if (total_size == 0) return;
 
     char* src_ptr = (char*)p.src[copy_idx];

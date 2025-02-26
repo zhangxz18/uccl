@@ -254,7 +254,8 @@ ncclResult_t pluginIsend(void* sendComm, void* data, int size, int tag,
     auto* req = uccl_req_pool.pop();
     req->send = true;
     req->data_len = size;
-    req->poll_ctx = ep->uccl_send_async(conn_id, data, size);
+    req->poll_ctx =
+        ep->uccl_send_async(conn_id, data, size, *(Mhandle*)mhandle);
 
     // LOG(INFO) << "pluginIsend " << size << " " << inflight_send;
 
@@ -273,7 +274,8 @@ ncclResult_t pluginIrecv(void* recvComm, int n, void** data, int* sizes,
     auto* req = uccl_req_pool.pop();
     req->send = false;
     req->data_len = sizes[0];
-    req->poll_ctx = ep->uccl_recv_async(conn_id, data[0], &req->recv_len);
+    req->poll_ctx = ep->uccl_recv_async(conn_id, data[0], &req->recv_len,
+                                        *(Mhandle*)mhandles[1]);
 
     // LOG(INFO) << "pluginIrecv " << sizes[0];
 

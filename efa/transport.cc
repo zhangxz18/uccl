@@ -213,11 +213,16 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         if (ready_msg->is_last()) {
             ready_msg->set_next(nullptr);
 
-            auto &[rx_complete_work] = app_buf_queue_.front();
-            rx_complete_work.deser_msgs = deser_msgs_head_;
+            auto &[rx_copy_work] = app_buf_queue_.front();
+            rx_copy_work.deser_msgs = deser_msgs_head_;
+
+            // The len field is not used in RX, we reuse it to pass counter
+            // address so that copy thread can update.
+            rx_copy_work.len = (uint64_t)(&num_unconsumed_msgbufs_);
 
             // Copy the complete message to the app buffer.
-            copy_complete_msgbuf_to_appbuf(rx_complete_work);
+            rx_copy_work.poll_ctx->write_barrier();
+            Channel::enqueue_sp(channel_->rx_copy_q_, &rx_copy_work);
 
             app_buf_queue_.pop_front();
             deser_msgs_head_ = nullptr;
@@ -225,56 +230,112 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
             VLOG(2) << "Received a complete message";
         }
     }
+
+    Channel::Msg rx_copy_done_work;
+    if (Channel::dequeue_sc(channel_->rx_copy_done_q_, &rx_copy_done_work)) {
+        auto *num_unconsumed_msgbufs = (uint32_t *)rx_copy_done_work.len;
+        auto ready_msg = rx_copy_done_work.deser_msgs;
+
+        while (ready_msg != nullptr) {
+            // Free received frames that have been copied to app buf.
+            socket_->push_pkt_hdr(ready_msg->get_pkt_hdr_addr());
+            socket_->push_pkt_data(ready_msg->get_pkt_data_addr());
+            socket_->push_frame_desc((uint64_t)ready_msg);
+
+            ready_msg = ready_msg->next();
+            (*num_unconsumed_msgbufs)--;
+        }
+    }
 }
 
-void RXTracking::copy_complete_msgbuf_to_appbuf(
-    Channel::Msg &rx_complete_work) {
-    FrameDesc *ready_msg = rx_complete_work.deser_msgs;
-    auto *app_buf = rx_complete_work.data;
-    auto *app_buf_len_p = rx_complete_work.len_p;
-    auto *poll_ctx = rx_complete_work.poll_ctx;
-    size_t cur_offset = 0;
+void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
+    copy_param_t *copy_param_ = new copy_param_t();
+    cudaStream_t copy_stream_;
 
-    while (ready_msg != nullptr) {
-        auto *pkt_addr =
-            (uint8_t *)ready_msg->get_pkt_hdr_addr() + EFA_UD_ADDITION;
-        DCHECK(pkt_addr) << "pkt_addr is nullptr when copy to app buf "
-                         << std::hex << "0x" << ready_msg << std::dec
-                         << ready_msg->to_string();
+    auto ret = cudaSetDevice(get_gpu_idx_by_engine_idx(engine_idx));
+    CHECK(ret == cudaSuccess) << "cudaSetDevice failed";
+    ret = cudaStreamCreate(&copy_stream_);
+    CHECK(ret == cudaSuccess) << "Failed to create cuda stream";
 
-        const auto *ucclh = reinterpret_cast<const UcclPktHdr *>(pkt_addr);
-        auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
-        VLOG(2) << "payload_len: " << payload_len << " seqno: " << std::dec
-                << ucclh->seqno.value();
+    // Temporarily buffering Msg that are being copied by the cuda kernel.
+    std::deque<Channel::Msg> being_copy_queue_;
+    auto *socket = engine->socket_;
+    auto *channel = engine->channel_;
 
-        // TODO(yang): cudaMemcpy or custom cuda kernel for reassembly.
-        // auto *payload_addr = (uint8_t *)ready_msg->get_pkt_data_addr();
-        // memcpy((uint8_t *)app_buf + cur_offset, payload_addr, payload_len);
+    while (!engine->shutdown_) {
+        Channel::Msg rx_copy_work;
+        if (Channel::dequeue_sc(channel->rx_copy_q_, &rx_copy_work)) {
+            FrameDesc *ready_msg = rx_copy_work.deser_msgs;
+            auto *app_buf = rx_copy_work.data;
+            auto *app_buf_len_p = rx_copy_work.len_p;
+            auto *poll_ctx = rx_copy_work.poll_ctx;
+            poll_ctx->read_barrier();
 
-        cur_offset += payload_len;
-        auto *last_ready_msg = ready_msg;
+            size_t cur_offset = 0;
+            int copy_idx = 0;
+            while (ready_msg != nullptr) {
+                auto *pkt_addr =
+                    (uint8_t *)ready_msg->get_pkt_hdr_addr() + EFA_UD_ADDITION;
+                DCHECK(pkt_addr)
+                    << "pkt_addr is nullptr when copy to app buf " << std::hex
+                    << "0x" << ready_msg << std::dec << ready_msg->to_string();
+                const auto *ucclh =
+                    reinterpret_cast<const UcclPktHdr *>(pkt_addr);
+                auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
+                VLOG(2) << "payload_len: " << payload_len
+                        << " seqno: " << std::dec << ucclh->seqno.value();
 
-        // We have a complete message. Let's deliver it to the app.
-        if (ready_msg->is_last()) {
-            *app_buf_len_p = cur_offset;
+                // TODO(yang): cudaMemcpy or custom cuda kernel for reassembly.
+                // auto *payload_addr = (uint8_t
+                // *)ready_msg->get_pkt_data_addr(); memcpy((uint8_t *)app_buf +
+                // cur_offset, payload_addr, payload_len);
+                copy_param_->dst[copy_idx] = (uint64_t)app_buf + cur_offset;
+                copy_param_->src[copy_idx] = ready_msg->get_pkt_data_addr();
+                copy_param_->len[copy_idx] = (uint32_t)payload_len;
 
-            // Wakeup app thread waiting on endpoint.
-            poll_ctx->write_barrier();
-            {
-                std::lock_guard<std::mutex> lock(poll_ctx->mu);
-                poll_ctx->done = true;
-                poll_ctx->cv.notify_one();
+                copy_idx++;
+                cur_offset += payload_len;
+
+                // We have a complete message. Let's deliver it to the app.
+                if (ready_msg->is_last()) {
+                    *app_buf_len_p = cur_offset;
+                    // Delaying wake up the app thread until all messages are
+                    // copied.
+                }
+
+                ready_msg = ready_msg->next();
             }
-            VLOG(2) << "Received a complete message " << cur_offset << " bytes";
+
+            launchScatteredMemcpyAsync(copy_idx, copy_param_, copy_stream_);
+            being_copy_queue_.push_back(rx_copy_work);
         }
 
-        ready_msg = ready_msg->next();
-        // Free received frames that have been copied to app buf.
-        socket_->push_pkt_hdr(last_ready_msg->get_pkt_hdr_addr());
-        socket_->push_pkt_data(last_ready_msg->get_pkt_data_addr());
-        socket_->push_frame_desc((uint64_t)last_ready_msg);
+        // TODO(yang): using multiple streams to fine-grained poll when each
+        // kernel finishes.
+        auto copy_done = pollScatteredMemcpy(copy_stream_);
+        if (copy_done) {
+            while (!being_copy_queue_.empty()) {
+                auto &rx_copy_done_work = being_copy_queue_.back();
+                auto poll_ctx = rx_copy_done_work.poll_ctx;
+                auto *app_buf_len_p = rx_copy_done_work.len_p;
 
-        num_unconsumed_msgbufs_--;
+                Channel::enqueue_sp(channel->rx_copy_done_q_,
+                                    &rx_copy_done_work);
+
+                // Wakeup app thread waiting on endpoint.
+                poll_ctx->write_barrier();
+                {
+                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                    poll_ctx->done = true;
+                    poll_ctx->cv.notify_one();
+                }
+                VLOG(2) << "Received a complete message " << *app_buf_len_p
+                        << " bytes";
+
+                being_copy_queue_.pop_back();
+            }
+        }
+        // LOG(INFO) << "being_copy_queue_ size: " << being_copy_queue_.size();
     }
 }
 
@@ -1217,6 +1278,18 @@ Endpoint::Endpoint()
         ctx_pool_[i] = new PollCtxPool();
     }
 
+    // Creating copy thread for each engine.
+    for (int i = 0; i < kNumEngines; i++) {
+        copy_th_vec_.emplace_back(std::make_unique<std::thread>(
+            [this, i, engine = engines[i],
+             copy_th_cpuid = ENGINE_CPU_START + kNumEngines + i]() {
+                pin_thread_to_cpu(copy_th_cpuid);
+                LOG(INFO) << "[Copy] thread " << i << " running on CPU "
+                          << copy_th_cpuid;
+                RXTracking::copy_thread_func(i, engine);
+            }));
+    }
+
     // Create listening socket
     listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     DCHECK(listen_fd_ >= 0) << "ERROR: opening socket";
@@ -1243,6 +1316,7 @@ Endpoint::Endpoint()
 Endpoint::~Endpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
+    for (auto &copy_th : copy_th_vec_) copy_th->join();
     for (int i = 0; i < num_queues_; i++) delete channel_vec_[i];
     for (int i = 0; i < kNumEngines; i++) delete ctx_pool_[i];
 

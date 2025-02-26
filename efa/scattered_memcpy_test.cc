@@ -41,7 +41,7 @@ void checkCuda(cudaError_t err) {
  */
 
 int main() {
-    uint32_t num_copies = MAX_SCATTERED_COPIES;
+    uint32_t num_copies = MAX_COPIES;
 
     copy_param_t *h_params = new copy_param_t();
 
@@ -52,25 +52,25 @@ int main() {
 
     // Allocate and initialize GPU memory for copies
     for (int i = 0; i < num_copies; i++) {
-        uint64_t size = EFA_MTU - i * 16;
-        h_params->size[i] = size;
+        uint64_t len = EFA_MTU - i * 16;
+        h_params->len[i] = len;
 
-        cudaMalloc((void **)&h_params->src[i], size);
+        cudaMalloc((void **)&h_params->src[i], len);
         h_params->dst[i] = (uint64_t)((uint8_t *)dst_buf + dst_offset);
 
-        dst_offset += size;
+        dst_offset += len;
 
         // Initialize source memory with some data
-        uint8_t *h_src = new uint8_t[size];
-        memset(h_src, 1, size);
-        cudaMemcpy((void *)h_params->src[i], h_src, size,
+        uint8_t *h_src = new uint8_t[len];
+        memset(h_src, 1, len);
+        cudaMemcpy((void *)h_params->src[i], h_src, len,
                    cudaMemcpyHostToDevice);
         delete[] h_src;
     }
 
     uint64_t total_bytes = 0;
     for (int i = 0; i < num_copies; i++) {
-        total_bytes += h_params->size[i];
+        total_bytes += h_params->len[i];
     }
 
     // Warm up.
