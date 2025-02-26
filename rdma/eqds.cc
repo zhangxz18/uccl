@@ -12,11 +12,9 @@ void EQDS::run_pacer(void)
     while (jring_sc_dequeue_bulk(channel_.cmdq_, &msg, 1, nullptr) == 1) {
         switch (msg.opcode) {
             case EQDSChannel::Msg::kRequestPull:
-                for (int i = 0; i < kPortEntropy; i++) {
-                    active_senders_.push_back(&msg.eqds_qpcc[i]);
-                    msg.eqds_qpcc[i].in_pull_ = true;
-                    std::atomic_thread_fence(std::memory_order_acquire);
-                }
+                active_senders_.push_back(msg.eqds_cc);
+                msg.eqds_cc->in_pull_ = true;
+                std::atomic_thread_fence(std::memory_order_acquire);
                 VLOG(5) << "Registered in pacer pull queue.";
                 break;
             default:

@@ -38,7 +38,7 @@ static inline PullQuanta quantize_ceil(uint32_t bytes) {
 }
 
 // Per-QP congestion control state for EQDS.
-struct EQDSQPCC {
+struct EQDSCC {
 
     static constexpr PullQuanta INIT_PULL_QUANTA = 1000000000;
     static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
@@ -138,7 +138,7 @@ public:
             kRequestPull,
         };
         Op opcode;
-        EQDSQPCC *eqds_qpcc;
+        EQDSCC *eqds_cc;
     };
     static_assert(sizeof(Msg) % 4 == 0, "channelMsg must be 32-bit aligned");
 
@@ -171,12 +171,11 @@ public:
     // Here we use resort to RTT-based stall.
     void update_cc_state(void);
 
-    // Request pacer to grant credit to this flow.
-    // This function is thread-safe.
-    inline void request_pull(EQDSQPCC *eqds_qpcc) {        
+    // [Thread-safe] Request pacer to grant credit to this flow.
+    inline void request_pull(EQDSCC *eqds_cc) {        
         EQDSChannel::Msg msg = {
             .opcode = EQDSChannel::Msg::Op::kRequestPull,
-            .eqds_qpcc = eqds_qpcc,
+            .eqds_cc = eqds_cc,
         };
         while (jring_mp_enqueue_bulk(channel_.cmdq_, &msg, 1, nullptr) != 1) {}
     }
@@ -205,8 +204,8 @@ private:
     std::thread pacer_th_;
     int dev_;
 
-    std::list<EQDSQPCC *> active_senders_;
-    std::list<EQDSQPCC *> idle_senders_;
+    std::list<EQDSCC *> active_senders_;
+    std::list<EQDSCC *> idle_senders_;
 
     bool shutdown_ = false;
 };

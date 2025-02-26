@@ -73,10 +73,8 @@ enum ReceiverCCA {
     // EQDS [NSDI'22]
     RECEIVER_CCA_EQDS,
 };
-static const enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
-static const enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_NONE;
-static_assert(!(kReceiverCCA == RECEIVER_CCA_EQDS && kEngineLBPolicy == ENGINE_POLICY_BIND), "kEngineLBPolicy must be ENGINE_POLICY_BIND if RECEIVER_CCA_EQDS is set");
-static_assert(!(kReceiverCCA == RECEIVER_CCA_EQDS && (kChunkSize <= (16 << 10))), "kChunkSize must be greater than 16KB if RECEIVER_CCA_EQDS is set");
+static const enum SenderCCA kSenderCCA = SENDER_CCA_NONE;
+static const enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_EQDS;
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 

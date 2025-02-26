@@ -342,8 +342,28 @@ void UcclRDMAEngine::periodic_process() {
     // Handle RTOs for all UC QPs.
     if constexpr (!kUSERC)
         handle_rto();
+    
     // Handle control plane requests.
     process_ctl_reqs();
+    
+    // Handle pending eqds registration.
+    if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS)
+        handle_eqds_work();
+}
+
+void UcclRDMAEngine::handle_eqds_work()
+{
+    for (auto it = pending_eqds_works_.begin(); it != pending_eqds_works_.end();) {
+        volatile bool *in_pull = it->first;
+        PollCtx *poll_ctx = it->second;
+        if (*in_pull) {
+            uccl_wakeup(poll_ctx);
+            it = pending_eqds_works_.erase(it);
+            VLOG(5) << "Hello eqds";
+        } else {
+            it++;
+        }
+    }
 }
 
 void UcclRDMAEngine::handle_rto() {
@@ -398,8 +418,17 @@ void UcclRDMAEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work)
 
     if (is_send)
         rdma_ctx->sender_flow_tbl_[flow_id] = flow;
-    else
+    else {
         rdma_ctx->receiver_flow_tbl_[flow_id] = flow;
+        if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
+            auto *subflow = flow->sub_flows_[engine_idx_ % NUM_ENGINES];
+            eqds_->request_pull(&subflow->eqds_cc);
+
+            // To avoid blocking the engine, we store the checking work to the pending_eqds_works_.
+            pending_eqds_works_.push_back(std::make_pair(&subflow->eqds_cc.in_pull_, poll_ctx));
+            return;
+        }
+    }
 
     uccl_wakeup(poll_ctx);
 }
@@ -483,16 +512,6 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             DCHECK(ret == 0) << "Failed to modify Retr QP to RTS";
         }
 
-        if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {            
-            
-            // Register this QP to pacer.
-            eqds_->request_pull(rdma_ctx->eqds_qp_cc_);
-            
-            // Wait until pacer is ready.
-            volatile bool *done = &rdma_ctx->eqds_qp_cc_[kPortEntropy - 1].in_pull_;
-            while (!*done) {}
-        }
-
         uccl_wakeup(poll_ctx);
     });
 
@@ -523,7 +542,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices, 
     for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();
 
     if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
-        // Receiver-driven congestion control.
+        // Receiver-driven congestion control per device.
         for (int i = 0; i < num_devices; i++)
             eqds_[i] = new eqds::EQDS(i);
     }

@@ -140,6 +140,8 @@ class UcclRDMAEngine {
             last_host_clock_ = rdtsc();
     }
 
+    void handle_eqds_work(void);
+
     /**
      * @brief Handling aysnc send requests from Endpoint for all flows.
      */
@@ -263,6 +265,9 @@ class UcclRDMAEngine {
     std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_rx_works_;
     // Pending tx work due to reaching the max outstanding bytes.
     std::deque<std::pair<RDMAContext *, struct ucclRequest *>> pending_tx_works_;
+    // Pending work due to waiting for the completion of EQDS registration.
+    std::deque<std::pair<bool *, PollCtx *> > pending_eqds_works_;
+
     // Timestamp of last periodic process execution.
     uint64_t last_periodic_tsc_;
     // Slow timer interval in TSC.

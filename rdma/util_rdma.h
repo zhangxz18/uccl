@@ -187,58 +187,6 @@ class CtrlChunkBuffPool : public BuffPool {
         ~CtrlChunkBuffPool() = default;
 };
 
-class IMMDataEQDS {
-    public:
-        // High----------------32bit------------------Low
-        //  | PULLTARGET  |  NCHUNK  |  CSN  |  RID  |
-        //       10bit        6bit      8bit    8bit
-        constexpr static int kRID = 0;
-        constexpr static int kCSN = 8;
-        constexpr static int kNCHUNK = kCSN + UINT_CSN_BIT;
-        constexpr static int kPULLTARGET = kNCHUNK + 6;
-
-        IMMDataEQDS(uint32_t imm_data):imm_data_(imm_data) {}
-        
-        inline uint32_t GetPULLTARGET(void) {
-            return (imm_data_ >> kPULLTARGET) & 0x3FF;
-        }
-
-        inline uint32_t GetNCHUNK(void) {
-            return (imm_data_ >> kNCHUNK) & 0x3F;
-        }
-
-        inline uint32_t GetCSN(void) {
-            return (imm_data_ >> kCSN) & UINT_CSN_MASK;
-        }
-
-        inline uint32_t GetRID(void) {
-            return (imm_data_ >> kRID) & 0xFF;
-        }
-
-        inline void SetPULLTARGET(uint32_t pulltarget) {
-            imm_data_ |= (pulltarget & 0x3FF) << kPULLTARGET;
-        }
-
-        inline void SetNCHUNK(uint32_t nchunk) {
-            imm_data_ |= (nchunk & 0x3F) << kNCHUNK;
-        }
-
-        inline void SetCSN(uint32_t csn) {
-            imm_data_ |= (csn & UINT_CSN_MASK) << kCSN;
-        }
-
-        inline void SetRID(uint32_t rid) {
-            imm_data_ |= (rid & 0xFF) << kRID;
-        }
-
-        inline uint32_t GetImmData(void) {
-            return imm_data_;
-        }
-
-    private:
-        uint32_t imm_data_;
-};
-
 class IMMDataRC {
     public:
         // High--------------------32bit----------------------Low
@@ -353,9 +301,29 @@ class IMMData {
             return imm_data_;
         }
 
-    private:
+    protected:
         uint32_t imm_data_;
 };
+
+class IMMDataEQDS : public IMMData {
+    public:
+        // PULL_TARGET: Target for pulling data.
+        // High-----------------32bit------------------Low
+        //  | HINT | PULL_TARGET |  CSN  |  RID  |  FID  |
+        //    1bit      8bit         8bit    7bit    8bit
+        constexpr static int kPULL_TARGET = kRESERVED;
+
+        IMMDataEQDS(uint32_t imm_data) : IMMData(imm_data) {}
+
+        inline uint32_t GetPULL_TARGET(void) {
+            return (imm_data_ >> kPULL_TARGET) & 0xFF;
+        }
+
+        inline void SetPULL_TARGET(uint32_t pull_target) {
+            imm_data_ |= (pull_target & 0xFF) << kPULL_TARGET;
+        }
+};
+
 /**
  * @brief Metadata for control messages.
  */
@@ -646,6 +614,8 @@ public:
     // Scoreboard for RTT.
     double scoreboard_rtt_[kPortEntropy];
 
+    eqds::EQDSCC eqds_cc;
+
     inline void update_scoreboard_rtt(uint64_t newrtt_tsc, uint32_t qpidx) {
         scoreboard_rtt_[qpidx] = (1 - kPPEwmaAlpha) * scoreboard_rtt_[qpidx] + kPPEwmaAlpha * to_usec(newrtt_tsc, freq_ghz);
     }
@@ -756,9 +726,6 @@ class RDMAContext {
 
         // QPs for data transfer based on UC or RC.
         struct UCQPWrapper dp_qps_[kPortEntropy];
-
-        // Receiver congestion control state per QP.
-        eqds::EQDSQPCC eqds_qp_cc_[kPortEntropy];
 
         // Data path QPN to index mapping.
         std::unordered_map<uint32_t, int> qpn2idx_;

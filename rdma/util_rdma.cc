@@ -431,7 +431,7 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
 
 bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
 {
-    return true;
+    return senderCC_tx_messages(ureq);
 }
 
 bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
@@ -1577,11 +1577,12 @@ void RDMAContext::rc_rx_chunk(void)
 
 void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
 {
+    senderCC_rx_chunk(ack_list);
 }
 
 void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
 {
-    VLOG(5) << "rx_chunk";
+    VLOG(5) << "senderCC_rx_chunk";
     auto cq_ex = recv_cq_ex_;
     auto now = rdtsc();
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
