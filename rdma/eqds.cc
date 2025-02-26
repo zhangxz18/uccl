@@ -1,5 +1,8 @@
 #include "eqds.h"
 #include "transport_config.h"
+#include "util_list.h"
+#include "util_rdma.h"
+#include <infiniband/verbs.h>
 
 namespace uccl {
 
@@ -8,12 +11,115 @@ namespace eqds {
 // Make progress on the pacer.
 void EQDS::run_pacer(void) 
 {
+    auto now = rdtsc();
+    handle_pull_request();
+
+    // It is our responsibility to poll Tx completion events.
+    handle_poll_cq();
+
+    if (now - last_pacing_tsc_ >= pacing_interval_tsc_) {
+        handle_grant_credit();
+        last_pacing_tsc_ = now;
+    }
+}
+
+void EQDS::handle_grant_credit()
+{   
+    struct list_head *pos, *n;
+    uint32_t budget = 0;
+    
+    if (!list_empty(&active_senders_)) {
+        list_for_each_safe(pos, n, &active_senders_) {
+            auto item = list_entry(pos, struct active_item, active_link);
+            auto *sink = item->eqds_cc;
+            list_del(pos);
+
+            if (grant_credit(sink)) {
+                // Grant done, add it to idle sender list.
+                DCHECK(list_empty(&sink->idle_item.idle_link));
+                list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
+            } else {
+                // We have not satisfied its demand, re-add it to the active sender list.
+                list_add_tail(pos, &active_senders_);
+            }
+
+            if (++budget >= kSendersPerPull) break;
+        }
+    } else {
+        // No active sender.
+        list_for_each_safe(pos, n, &idle_senders_) {
+            auto item = list_entry(pos, struct idle_item, idle_link);
+            auto *sink = item->eqds_cc;
+            list_del(pos);
+
+            if (grant_credit(sink) && !sink->idle_credit_enough()) {
+                // Grant done but we can still grant more credit for this sender.
+                list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
+            }
+        }
+    }
+
+}
+
+void EQDS::handle_poll_cq(void)
+{
+    struct list_head *pos, *n;
+    list_for_each_safe(pos, n, &poll_cq_list_) {
+        auto item = list_entry(pos, struct pacer_credit_cq_item, poll_link);
+        auto pc_qpw = item->pc_qpw;
+        if (poll_cq(pc_qpw)) {
+            // Remove it from the poll list since is has no pending completion event.
+            list_del(pos);
+        }
+    }
+}
+
+bool EQDS::poll_cq(struct PacerCreditQPWrapper *pc_qpw)
+{
+    if (!pc_qpw->poll_cq_cnt_) return true;
+    auto cq_ex = pc_qpw->pacer_credit_cq_;
+    int cq_budget = 0;
+
+    struct ibv_poll_cq_attr poll_cq_attr = {};
+    if (ibv_start_poll(cq_ex, &poll_cq_attr)) return false;
+
+    while (1) {
+        if (cq_ex->status == IBV_WC_SUCCESS) {
+            auto chunk_addr = cq_ex->wr_id;
+            pc_qpw->pacer_credit_chunk_pool_->free_buff(chunk_addr);
+        } else {
+            LOG(ERROR) << "pacer credit CQ state error: " << cq_ex->status;
+        }
+
+        pc_qpw->poll_cq_cnt_--;
+
+        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex)) break;
+    }
+    ibv_end_poll(cq_ex);
+
+    return pc_qpw->poll_cq_cnt_ == 0;
+}
+
+void EQDS::handle_pull_request(void)
+{
     EQDSChannel::Msg msg;
+    int budget = 0;
+    EQDSCC *sink;
+
     while (jring_sc_dequeue_bulk(channel_.cmdq_, &msg, 1, nullptr) == 1) {
         switch (msg.opcode) {
             case EQDSChannel::Msg::kRequestPull:
-                active_senders_.push_back(msg.eqds_cc);
-                msg.eqds_cc->in_pull_ = true;
+                sink = msg.eqds_cc;
+                if (list_empty(&sink->active_item.active_link)) {
+                    if (!list_empty(&sink->idle_item.idle_link)) {
+                        // Remove it from the idle list.
+                        list_del(&sink->idle_item.idle_link);
+                    }
+                    // Add it to the active list.
+                    list_add_tail(&sink->active_item.active_link, &active_senders_);
+                } else {
+                    // Already in the active list. Do nothing.
+                }
                 std::atomic_thread_fence(std::memory_order_acquire);
                 VLOG(5) << "Registered in pacer pull queue.";
                 break;
@@ -21,19 +127,59 @@ void EQDS::run_pacer(void)
                 LOG(ERROR) << "Unknown opcode: " << msg.opcode;
                 break;
         }
+        if (++budget >= 16) break;
     }
 }
 
-// Grant credit to the sender of this flow.
-void EQDS::grant_credit(void) 
+bool EQDS::send_pull_packet(EQDSCC *eqds_cc)
 {
+    uint64_t chunk_addr;
+    auto *pc_qpw = eqds_cc->pc_qpw_;
+    
+    if (pc_qpw->pacer_credit_chunk_pool_->alloc_buff(&chunk_addr)) return false;
+    
+    auto *pullhdr = reinterpret_cast<struct UcclPullHdr *>(chunk_addr);
+    pullhdr->fid = be16_t(eqds_cc->fid_);
+    pullhdr->pullno = be16_t(eqds_cc->latest_pull_);
 
+    struct ibv_sge sge = {
+        .addr = chunk_addr,
+        .length = CreditChunkBuffPool::kPktSize,
+        .lkey = pc_qpw->pacer_credit_chunk_pool_->get_lkey(),  
+    };
+
+    struct ibv_send_wr wr, *bad_wr;
+    wr.num_sge = 1;
+    wr.sg_list = &sge;
+
+    wr.wr_id = chunk_addr;
+    wr.opcode = IBV_WR_SEND;
+    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+    wr.next = nullptr;
+
+    DCHECK(ibv_post_send(pc_qpw->credit_qp_, &wr, &bad_wr) == 0);
+
+    pc_qpw->poll_cq_cnt_++;
+
+    if (list_empty(&pc_qpw->poll_item.poll_link)) {
+        // Add to the poll list.
+        list_add_tail(&pc_qpw->poll_item.poll_link, &poll_cq_list_);
+    }
+
+    return true;
 }
 
-// Handle pull target requested by the sender of this flow.
-void EQDS::handle_pull_target(uint32_t pull_target /* unit of chunks */)
+// Grant credit to the sender of this flow.
+bool EQDS::grant_credit(EQDSCC *eqds_cc) 
 {
+    eqds_cc->latest_pull_ += kCreditPerPull;
 
+    if (!send_pull_packet(eqds_cc)) {
+        eqds_cc->latest_pull_ -= kCreditPerPull;
+        VLOG(5) << "Failed to send pull packet.";
+    }
+
+    return eqds_cc->backlog() == 0;
 }
 
 // For original EQDS, it stalls the pacer when ECN ratio reaches a threshold (i.e., 10%).

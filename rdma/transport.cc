@@ -11,6 +11,7 @@
 
 #include "transport_config.h"
 #include "util.h"
+#include "util_list.h"
 #include "util_rdma.h"
 #include "util_timer.h"
 
@@ -198,11 +199,15 @@ void UcclRDMAEngine::rc_handle_completion(void)
 void UcclRDMAEngine::uc_handle_completion(void) 
 {
     int work = 0;
-    // First, poll the CQ for Ctrl QPs.
+    // First, poll the CQ for Ctrl QPs and Credit QPs.
     for (auto& it : rdma_ctx_map_) {
         // Update ratio and offset
         it.second->update_clock(ratio_, offset_);
+        
         work += it.second->poll_ctrl_cq();
+
+        if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS)
+            work += it.second->poll_credit_cq();
     }
 
     for (auto& it : rdma_ctx_map_) {
@@ -213,6 +218,9 @@ void UcclRDMAEngine::uc_handle_completion(void)
         // Foce check when there is no work.
         it.second->check_srq(!work);
         it.second->check_ctrl_rq(!work);
+
+        if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS)
+            it.second->check_credit_rq(!work);
     }
 }
 
@@ -345,25 +353,6 @@ void UcclRDMAEngine::periodic_process() {
     
     // Handle control plane requests.
     process_ctl_reqs();
-    
-    // Handle pending eqds registration.
-    if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS)
-        handle_eqds_work();
-}
-
-void UcclRDMAEngine::handle_eqds_work()
-{
-    for (auto it = pending_eqds_works_.begin(); it != pending_eqds_works_.end();) {
-        volatile bool *in_pull = it->first;
-        PollCtx *poll_ctx = it->second;
-        if (*in_pull) {
-            uccl_wakeup(poll_ctx);
-            it = pending_eqds_works_.erase(it);
-            VLOG(5) << "Hello eqds";
-        } else {
-            it++;
-        }
-    }
 }
 
 void UcclRDMAEngine::handle_rto() {
@@ -421,12 +410,19 @@ void UcclRDMAEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work)
     else {
         rdma_ctx->receiver_flow_tbl_[flow_id] = flow;
         if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
+            
             auto *subflow = flow->sub_flows_[engine_idx_ % NUM_ENGINES];
-            eqds_->request_pull(&subflow->eqds_cc);
+            
+            subflow->eqds_cc.set_fid(flow_id);
+            
+            // All subflows belong to the same RDMAContext share the same PacerCreditQPWrapper.
+            subflow->eqds_cc.set_pacer_credit_qpw(&rdma_ctx->pc_qpw_);
 
-            // To avoid blocking the engine, we store the checking work to the pending_eqds_works_.
-            pending_eqds_works_.push_back(std::make_pair(&subflow->eqds_cc.in_pull_, poll_ctx));
-            return;
+            subflow->eqds_cc.init_active_item();
+
+            subflow->eqds_cc.init_idle_item();
+
+            eqds_->request_pull(&subflow->eqds_cc);
         }
     }
 
@@ -446,7 +442,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
 
     {
         DCHECK(rdma_ctx_map_.find(ctrl_work.peer_id) == rdma_ctx_map_.end());
-        rdma_ctx = RDMAFactory::CreateContext(ctrl_work.peer_id, &rto_tm_, &engine_outstanding_bytes_, dev, engine_idx_ % NUM_ENGINES, meta);
+        rdma_ctx = RDMAFactory::CreateContext(ctrl_work.peer_id, &rto_tm_, &engine_outstanding_bytes_, eqds_, dev, engine_idx_ % NUM_ENGINES, meta);
         std::tie(std::ignore, ret) = rdma_ctx_map_.insert({ctrl_work.peer_id, rdma_ctx});
         DCHECK(ret);
     }
@@ -463,12 +459,16 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             memcpy(buf + i * size, &rdma_ctx->dp_qps_[i].local_psn, sizeof(uint32_t));
             memcpy(buf + i * size + sizeof(uint32_t), &rdma_ctx->dp_qps_[i].qp->qp_num, sizeof(uint32_t));
         }
+        
+        memcpy(buf + kPortEntropy * size, &rdma_ctx->credit_local_psn_, sizeof(uint32_t));
+        memcpy(buf + kPortEntropy * size + sizeof(uint32_t), &rdma_ctx->credit_qp_->qp_num, sizeof(uint32_t));
+
         if constexpr (!kUSERC) {
-            memcpy(buf + kPortEntropy * size, &rdma_ctx->ctrl_local_psn_, sizeof(uint32_t));
-            memcpy(buf + kPortEntropy * size + sizeof(uint32_t), &rdma_ctx->ctrl_qp_->qp_num, sizeof(uint32_t));
+            memcpy(buf + (kPortEntropy+1) * size, &rdma_ctx->ctrl_local_psn_, sizeof(uint32_t));
+            memcpy(buf + (kPortEntropy+1) * size + sizeof(uint32_t), &rdma_ctx->ctrl_qp_->qp_num, sizeof(uint32_t));
     
-            memcpy(buf + (kPortEntropy+1) * size, &rdma_ctx->retr_local_psn_, sizeof(uint32_t));
-            memcpy(buf + (kPortEntropy+1) * size + sizeof(uint32_t), &rdma_ctx->retr_qp_->qp_num, sizeof(uint32_t));
+            memcpy(buf + (kPortEntropy+2) * size, &rdma_ctx->retr_local_psn_, sizeof(uint32_t));
+            memcpy(buf + (kPortEntropy+2) * size + sizeof(uint32_t), &rdma_ctx->retr_qp_->qp_num, sizeof(uint32_t));
         }
 
         int ret = send_message(bootstrap_fd, buf, kTotalQP * size);
@@ -491,9 +491,18 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
             DCHECK(ret == 0) << "Failed to modify data path QP to RTS";
         }
 
+        auto credit_rpsn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size);
+        auto credit_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
+        auto credit_qp = rdma_ctx->credit_qp_;
+
+        ret = modify_qp_rtr(credit_qp, dev, &rdma_ctx->remote_ctx_, credit_rqpn, credit_rpsn, 1);
+        DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
+
+        ret = modify_qp_rts(credit_qp, rdma_ctx->credit_local_psn_, false);
+
         if constexpr (!kUSERC) {
-            auto ctrl_rpsn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size);
-            auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + kPortEntropy * size + sizeof(uint32_t));
+            auto ctrl_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size);
+            auto ctrl_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
             auto ctrl_qp = rdma_ctx->ctrl_qp_;
     
             ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn, ctrl_rpsn, 1);
@@ -501,8 +510,8 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work)
     
             ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);
     
-            auto retr_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size);
-            auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+1) * size + sizeof(uint32_t));
+            auto retr_rpsn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+2) * size);
+            auto retr_rqpn = *reinterpret_cast<uint32_t*>(buf + (kPortEntropy+2) * size + sizeof(uint32_t));
             auto retr_qp = rdma_ctx->retr_qp_;
     
             ret = modify_qp_rtr(retr_qp, dev, &rdma_ctx->remote_ctx_, retr_rqpn, retr_rpsn, 0);

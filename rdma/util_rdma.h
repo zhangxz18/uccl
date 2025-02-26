@@ -17,6 +17,7 @@
 #include "transport_cc.h"
 
 #include "util.h"
+#include "util_buffpool.h"
 #include "util_endian.h"
 #include "util_list.h"
 
@@ -42,80 +43,6 @@ static constexpr uint32_t BASE_PSN = 0;
 static constexpr uint32_t MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV4_HDR_OVERHEAD;
 static constexpr uint32_t MAX_CHUNK_ROCE_IPV6_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * ROCE_IPV6_HDR_OVERHEAD;
 static constexpr uint32_t MAX_CHUNK_IB_4096_HDR_OVERHEAD = ((kChunkSize + 4096) / 4096) * IB_HDR_OVERHEAD;
-
-/**
- * @brief A buffer pool with the following properties:
- * - Constructed with a memory region provided by the caller or mmap by itself.
- * - Not thread-safe, single producer, single consumer.
- * - Fixed size elements.
- * - Size must be power of 2.
- * - Actual size is num_elements - 1.
- */
-class BuffPool {
-    public:
-
-        BuffPool(uint32_t num_elements, size_t element_size, struct ibv_mr *mr = nullptr, void (*init_cb)(uint64_t buff) = nullptr)
-            : num_elements_(num_elements), element_size_(element_size), mr_(mr) {
-            if (mr_) {
-                base_addr_ = mr->addr;
-            } else {
-                base_addr_ = mmap(nullptr, num_elements_ * element_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                if (base_addr_ == MAP_FAILED)
-                    throw std::runtime_error("Failed to allocate memory for BuffPool.");
-            }
-            buffer_pool_ = new uint64_t[num_elements_];
-            head_ = tail_ = 0;
-            // Reserve one element for distinguished empty/full state.
-            for (uint32_t i = 0; i < num_elements_ - 1; i++) {
-                if (init_cb) init_cb((uint64_t)base_addr_ + i * element_size_);
-                free_buff((uint64_t)base_addr_ + i * element_size_);
-            }
-        }
-
-        ~BuffPool() {
-            if (!mr_) {
-                munmap(base_addr_, num_elements_ * element_size_);
-            }
-            delete[] buffer_pool_;
-        }
-
-        inline bool full(void) {
-            return ((tail_ + 1) & (num_elements_ - 1)) == head_;
-        }
-
-        inline bool empty(void) {
-            return head_ == tail_;
-        }
-
-        inline uint32_t get_lkey(void) {
-            if (!mr_) return 0;
-            return mr_->lkey;
-        }
-
-        inline int alloc_buff(uint64_t *buff_addr) {
-            if (empty()) return -1;
-
-            *buff_addr = (uint64_t)base_addr_ + buffer_pool_[head_];
-            head_ = (head_ + 1) & (num_elements_ - 1);
-            return 0;
-        }
-
-        inline void free_buff(uint64_t buff_addr) {
-            if (full()) return;
-            buff_addr -= (uint64_t)base_addr_;
-            buffer_pool_[tail_] = buff_addr;
-            tail_ = (tail_ + 1) & (num_elements_ - 1);
-        }
-
-    protected:
-        void *base_addr_;
-        uint32_t head_;
-        uint32_t tail_;
-        uint32_t num_elements_;
-        size_t element_size_;
-        struct ibv_mr *mr_;
-        uint64_t *buffer_pool_;
-};
 
 /**
  * @brief Buffer pool for work request extension.
@@ -310,16 +237,16 @@ class IMMDataEQDS : public IMMData {
         // PULL_TARGET: Target for pulling data.
         // High-----------------32bit------------------Low
         //  | HINT | PULL_TARGET |  CSN  |  RID  |  FID  |
-        //    1bit      8bit         8bit    7bit    8bit
+        //    1bit      8bit        8bit    7bit    8bit
         constexpr static int kPULL_TARGET = kRESERVED;
 
         IMMDataEQDS(uint32_t imm_data) : IMMData(imm_data) {}
 
-        inline uint32_t GetPULL_TARGET(void) {
+        inline uint32_t GetTarget(void) {
             return (imm_data_ >> kPULL_TARGET) & 0xFF;
         }
 
-        inline void SetPULL_TARGET(uint32_t pull_target) {
+        inline void SetTarget(uint32_t pull_target) {
             imm_data_ |= (pull_target & 0xFF) << kPULL_TARGET;
         }
 };
@@ -594,6 +521,8 @@ public:
 
     uint32_t outstanding_bytes_ = 0;
 
+    uint32_t backlog_bytes_ = 0;
+
     // # of chunks in the timing wheel.
     uint32_t in_wheel_cnt_;
 
@@ -646,6 +575,15 @@ struct __attribute__((packed)) UcclSackHdr {
                        swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
                                                             // SACKs received.
 };
+
+/**
+ * @brief UCCL Pull Packet Header for each QP.
+ */
+struct __attribute__((packed)) UcclPullHdr {
+    be16_t fid;
+    be16_t pullno;
+};
+
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
 static_assert(kUcclSackHdrLen == 32, "UcclSackHdr size mismatch");
 static_assert(CtrlChunkBuffPool::kPktSize >= kUcclSackHdrLen, "CtrlChunkBuffPool::PktSize must be larger than UcclSackHdr");
@@ -707,6 +645,8 @@ class RDMAContext {
 
         TimerManager *rto_;
 
+        eqds::EQDS *eqds_;
+
         // Try to arm a timer for the given flow. If the timer is already armed, do nothing.
         void arm_timer_for_flow(void *context);
 
@@ -734,6 +674,23 @@ class RDMAContext {
         struct ibv_cq_ex *send_cq_ex_;
         struct ibv_cq_ex *recv_cq_ex_;
         struct ibv_srq *srq_;
+
+        // (high-priority) QP for credit messages (e.g., pull of EQDS).
+        struct ibv_qp *credit_qp_;
+        // Local PSN for credit messages.
+        uint32_t credit_local_psn_;
+        // Remote PSN for credit messages.
+        uint32_t credit_remote_psn_;
+        // (Engine only) Dedicated CQ for credit messages.
+        struct ibv_cq_ex *engine_credit_cq_ex_;
+        // (Engine only) Memory region for credit messages.
+        struct ibv_mr *engine_credit_mr_;
+        // (Pacer only) Dedicated CQ for credit messages.
+        struct ibv_cq_ex *pacer_credit_cq_ex_;
+        // (Pacer only) Memory region for credit messages.
+        struct ibv_mr *pacer_credit_mr_;
+
+        eqds::PacerCreditQPWrapper pc_qpw_;
         
         // (high-priority) QP for control messages (e.g., ACK).
         struct ibv_qp *ctrl_qp_;
@@ -773,6 +730,12 @@ class RDMAContext {
         // GID index of this device.
         uint8_t sgid_index_;
 
+        // (Engine) Buffer pool for credit chunks.
+        std::optional<eqds::CreditChunkBuffPool> engine_credit_chunk_pool_;
+        
+        // (Pacer) Buffer pool for credit chunks.
+        std::optional<eqds::CreditChunkBuffPool> pacer_credit_chunk_pool_;
+
         // Buffer pool for control chunks.
         std::optional<CtrlChunkBuffPool> ctrl_chunk_pool_;
 
@@ -790,10 +753,14 @@ class RDMAContext {
 
         // WQE for sending ACKs.
         struct ibv_send_wr tx_ack_wr_;
+
+        // Pre-allocated WQEs/SGEs for receiving credits.
+        struct ibv_recv_wr rx_credit_wrs_[kPostRQThreshold];
+        struct ibv_sge rx_credit_sges_[kPostRQThreshold];
+        uint32_t post_credit_rq_cnt_ = 0;
         
-        // Pre-allocated WQEs for receiving ACKs.
+        // Pre-allocated WQEs/SGEs for receiving ACKs.
         struct ibv_recv_wr rx_ack_wrs_[kPostRQThreshold];
-        // Pre-allocted SGEs for receiving ACKs.
         struct ibv_sge rx_ack_sges_[kPostRQThreshold];
         uint32_t post_ctrl_rq_cnt_ = 0;
 
@@ -903,11 +870,15 @@ class RDMAContext {
          */
         int poll_ctrl_cq(void);
 
+        int poll_credit_cq(void);
+
         /**
          * @brief Poll the completion queue for the Retr QP.
          * SQ and RQ use the same completion queue.
          */
         int poll_retr_cq(void);
+
+        void check_credit_rq(bool force = false);
 
         /**
          * @brief Check if we need to post enough recv WQEs to the Ctrl QP.
@@ -961,6 +932,8 @@ class RDMAContext {
          */
         void rx_ack(uint64_t pkt_addr);
 
+        void rx_credit(uint64_t pkt_addr);
+
         /**
          * @brief Craft an ACK for a subUcclFlow using the given WR index.
          * 
@@ -998,7 +971,7 @@ class RDMAContext {
 
         std::string to_string();
 
-        RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *ob, int dev, uint32_t engine_offset, union CtrlMeta meta);
+        RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *ob, eqds::EQDS *eqds, int dev, uint32_t engine_offset, union CtrlMeta meta);
 
         ~RDMAContext(void);
         
@@ -1048,7 +1021,7 @@ class RDMAFactory {
          * @param meta 
          * @return RDMAContext* 
          */
-        static RDMAContext *CreateContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob, int dev, uint32_t engine_offset_, union CtrlMeta meta);
+        static RDMAContext *CreateContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob, eqds::EQDS *eqds, int dev, uint32_t engine_offset_, union CtrlMeta meta);
         static inline struct FactoryDevice *get_factory_dev(int dev) {
             DCHECK(dev >= 0 && dev < rdma_ctl->devices_.size());
             return &rdma_ctl->devices_[dev];
@@ -1176,6 +1149,69 @@ static inline int modify_qp_rts(struct ibv_qp *qp, uint32_t local_psn, bool rc)
     }
     
     return ibv_modify_qp(qp, &attr, attr_mask);
+}
+
+static inline void util_rdma_create_qp_seperate_cq(struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex, bool ts,
+    struct ibv_cq **scq, struct ibv_cq **rcq, bool share_cq, uint32_t cqsize, struct ibv_pd *pd, uint32_t max_send_wr, uint32_t max_recv_wr, uint32_t max_send_sge, uint32_t max_recv_sge)
+{
+    // Creating SCQ and RCQ
+    if (!share_cq) {
+        if (cq_ex) {
+            struct ibv_cq_init_attr_ex cq_ex_attr;
+            cq_ex_attr.cqe = cqsize;
+            cq_ex_attr.cq_context = nullptr;
+            cq_ex_attr.channel = nullptr;
+            cq_ex_attr.comp_vector = 0;
+            cq_ex_attr.wc_flags = IBV_WC_EX_WITH_BYTE_LEN | IBV_WC_EX_WITH_IMM | IBV_WC_EX_WITH_QP_NUM | IBV_WC_EX_WITH_SRC_QP | 
+                IBV_WC_EX_WITH_COMPLETION_TIMESTAMP; // Timestamp support.
+            if constexpr (kTestNoHWTimestamp)
+                cq_ex_attr.wc_flags &= ~IBV_WC_EX_WITH_COMPLETION_TIMESTAMP;
+            cq_ex_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_FLAGS;
+            cq_ex_attr.flags = IBV_CREATE_CQ_ATTR_SINGLE_THREADED | IBV_CREATE_CQ_ATTR_IGNORE_OVERRUN;
+            auto scq_ex = (struct ibv_cq_ex **)scq;
+            *scq_ex= ibv_create_cq_ex(context, &cq_ex_attr);
+            UCCL_INIT_CHECK(*scq_ex != nullptr, "ibv_create_cq_ex failed");
+            
+            auto rcq_ex = (struct ibv_cq_ex **)rcq;
+            *rcq_ex= ibv_create_cq_ex(context, &cq_ex_attr);
+            UCCL_INIT_CHECK(*rcq_ex != nullptr, "ibv_create_cq_ex failed");
+        } else {
+            *scq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
+            UCCL_INIT_CHECK(*scq != nullptr, "ibv_create_cq failed");
+            
+            *rcq = ibv_create_cq(context, cqsize, nullptr, nullptr, 0);
+            UCCL_INIT_CHECK(*rcq != nullptr, "ibv_create_cq failed");
+        }
+    }
+
+    struct ibv_qp_init_attr qp_init_attr;
+    memset(&qp_init_attr, 0, sizeof(qp_init_attr));
+
+    qp_init_attr.send_cq = *scq;
+    qp_init_attr.recv_cq = *rcq;
+    qp_init_attr.qp_type = qp_type;
+
+    qp_init_attr.cap.max_send_wr = max_send_wr;
+    qp_init_attr.cap.max_recv_wr = max_recv_wr;
+    qp_init_attr.cap.max_send_sge = max_send_sge;
+    qp_init_attr.cap.max_recv_sge = max_recv_sge;
+    // kMaxRecv * sizeof(struct FifoItem)
+    qp_init_attr.cap.max_inline_data = kMaxInline;
+
+    // Creating QP
+    *qp = ibv_create_qp(pd, &qp_init_attr);
+    UCCL_INIT_CHECK(*qp != nullptr, "ibv_create_qp failed");
+
+    // Modifying QP state to INIT
+    struct ibv_qp_attr qp_attr;
+    int attr_mask = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+    memset(&qp_attr, 0, sizeof(qp_attr));
+    qp_attr.qp_state = IBV_QPS_INIT;
+    qp_attr.pkey_index = 0;
+    qp_attr.port_num = IB_PORT_NUM;
+    qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | ((qp_type == IBV_QPT_RC) ? IBV_ACCESS_REMOTE_READ : 0);
+
+    UCCL_INIT_CHECK(ibv_modify_qp(*qp, &qp_attr, attr_mask) == 0, "ibv_modify_qp failed");
 }
 
 static inline void util_rdma_create_qp(struct ibv_context *context, struct ibv_qp **qp, enum ibv_qp_type qp_type, bool cq_ex, bool ts,
