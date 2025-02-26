@@ -13,9 +13,10 @@
 using namespace uccl;
 
 const size_t kTestIters = 1024000000000UL;
+const std::chrono::duration kReportIntervalSec = std::chrono::seconds(2);
+const size_t kReportIters = 5000;
+
 size_t kTestMsgSize = 1024000;
-size_t kReportIters = 5000;
-// Using larger inlights like 64 will cause severe cache miss, impacting perf.
 size_t kMaxInflight = 8;
 
 DEFINE_uint64(size, 1024000, "Size of test message.");
@@ -132,7 +133,9 @@ int main(int argc, char* argv[]) {
 
         std::deque<PollCtx*> poll_ctxs;
         PollCtx* last_ctx = nullptr;
-        for (size_t i = 0; i < kTestIters; i++) {
+        uint32_t inflight_msgs[kNumEngines] = {0};
+
+        for (size_t i = 0; i < kTestIters;) {
             send_len = kTestMsgSize;
             if (FLAGS_rand) send_len = distribution(generator);
 
@@ -144,6 +147,7 @@ int main(int argc, char* argv[]) {
                 cudaMemcpy(data_u64, host_data_u64, send_len,
                            cudaMemcpyHostToDevice);
             }
+
             switch (test_type) {
                 case kBasic: {
                     TscTimer timer;
@@ -153,6 +157,7 @@ int main(int argc, char* argv[]) {
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len;
+                    i++;
                     break;
                 }
                 case kAsync: {
@@ -179,6 +184,7 @@ int main(int argc, char* argv[]) {
                             to_usec(rdtsc() - async_start, freq_ghz));
                     }
                     sent_bytes += send_len;
+                    i++;
                     break;
                 }
                 case kPingpong: {
@@ -195,7 +201,8 @@ int main(int argc, char* argv[]) {
                     ep.uccl_poll(poll_ctx2);
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
-                    sent_bytes += send_len;
+                    sent_bytes += send_len * 2;
+                    i += 2;
                     break;
                 }
                 case kMt: {
@@ -217,7 +224,8 @@ int main(int argc, char* argv[]) {
                     t2.join();
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
-                    sent_bytes += send_len;
+                    sent_bytes += send_len * 2;
+                    i += 2;
                     break;
                 }
                 case kMc: {
@@ -235,33 +243,42 @@ int main(int argc, char* argv[]) {
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len * 2;
+                    i += 2;
                     break;
                 }
                 case kMq: {
-                    for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < kNumEngines; j++) {
+                    for (int j = 0; j < kNumEngines; j++) {
+                        while (inflight_msgs[j] < kMaxInflight) {
                             auto& __conn_id = conn_id_vec[j];
                             auto poll_ctx = ep.uccl_send_async(
                                 __conn_id, data[__conn_id.engine_idx], send_len,
                                 mh[__conn_id.engine_idx]);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
+                            inflight_msgs[j]++;
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
+                    auto inflights = poll_ctxs.size();
+                    for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         auto async_start = poll_ctx->timestamp;
-                        ep.uccl_poll(poll_ctx);
-                        rtts.push_back(
-                            to_usec(rdtsc() - async_start, freq_ghz));
-                        sent_bytes += send_len;
+                        auto engine_idx = poll_ctx->engine_idx;
+                        if (ep.uccl_poll_once(poll_ctx)) {
+                            rtts.push_back(
+                                to_usec(rdtsc() - async_start, freq_ghz));
+                            sent_bytes += send_len;
+                            i++;
+                            inflight_msgs[engine_idx]--;
+                        } else {
+                            poll_ctxs.push_back(poll_ctx);
+                        }
                     }
                     break;
                 }
                 case kBiMq: {
-                    for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < kNumEngines; j++) {
+                    for (int j = 0; j < kNumEngines; j++) {
+                        while (inflight_msgs[j] < kMaxInflight) {
                             auto& __conn_id = conn_id_vec[j];
                             auto* poll_ctx =
                                 (j % 2 == 0)
@@ -273,16 +290,24 @@ int main(int argc, char* argv[]) {
                                           &recv_len, mh[__conn_id.engine_idx]);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
+                            inflight_msgs[j]++;
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
+                    auto inflights = poll_ctxs.size();
+                    for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         auto async_start = poll_ctx->timestamp;
-                        ep.uccl_poll(poll_ctx);
-                        rtts.push_back(
-                            to_usec(rdtsc() - async_start, freq_ghz));
-                        sent_bytes += send_len;
+                        auto engine_idx = poll_ctx->engine_idx;
+                        if (ep.uccl_poll_once(poll_ctx)) {
+                            rtts.push_back(
+                                to_usec(rdtsc() - async_start, freq_ghz));
+                            sent_bytes += send_len;
+                            i++;
+                            inflight_msgs[engine_idx]--;
+                        } else {
+                            poll_ctxs.push_back(poll_ctx);
+                        }
                     }
                     CHECK(send_len == recv_len) << "send_len: " << send_len
                                                 << ", recv_len: " << recv_len;
@@ -299,6 +324,7 @@ int main(int argc, char* argv[]) {
                         rtts.push_back(
                             to_usec(rdtsc() - async_start, freq_ghz));
                         sent_bytes += send_len;
+                        i++;
                     }
                     last_ctx = poll_ctx;
                     break;
@@ -309,29 +335,34 @@ int main(int argc, char* argv[]) {
 
             if ((i + 1) % kReportIters == 0) {
                 auto end_bw_mea = std::chrono::high_resolution_clock::now();
+
+                auto duration_sec =
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        end_bw_mea - start_bw_mea);
+
+                if (duration_sec < kReportIntervalSec) continue;
+
                 // Clear to avoid Percentile() taking too much time.
                 if (rtts.size() > 100000) {
                     rtts.assign(rtts.end() - 100000, rtts.end());
                 }
 
+                auto duaration_usec =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        end_bw_mea - start_bw_mea)
+                        .count();
+
                 uint64_t med_latency, tail_latency;
                 med_latency = Percentile(rtts, 50);
                 tail_latency = Percentile(rtts, 99);
+
                 // 24B: 4B FCS + 8B frame delimiter + 12B interframe gap
                 auto bw_gbps =
                     sent_bytes *
                     ((EFA_MTU * 1.0 + 24) / (EFA_MTU - kUcclPktHdrLen)) * 8.0 /
-                    1000 / 1000 / 1000 /
-                    (std::chrono::duration_cast<std::chrono::microseconds>(
-                         end_bw_mea - start_bw_mea)
-                         .count() *
-                     1e-6);
-                auto app_bw_gbps =
-                    sent_bytes * 8.0 / 1000 / 1000 / 1000 /
-                    (std::chrono::duration_cast<std::chrono::microseconds>(
-                         end_bw_mea - start_bw_mea)
-                         .count() *
-                     1e-6);
+                    1000 / 1000 / 1000 / (duaration_usec * 1e-6);
+                auto app_bw_gbps = sent_bytes * 8.0 / 1000 / 1000 / 1000 /
+                                   (duaration_usec * 1e-6);
                 sent_bytes = 0;
 
                 LOG(INFO) << "Sent " << i + 1
@@ -386,18 +417,21 @@ int main(int argc, char* argv[]) {
 
         uint64_t* data_u64;
         data_u64 = reinterpret_cast<uint64_t*>(data[0]);
+        auto start = std::chrono::high_resolution_clock::now();
 
         std::deque<PollCtx*> poll_ctxs;
         PollCtx* last_ctx = nullptr;
-        for (size_t i = 0; i < kTestIters; i++) {
+        uint32_t inflight_msgs[kNumEngines] = {0};
+
+        for (size_t i = 0; i < kTestIters;) {
             send_len = kTestMsgSize;
             if (FLAGS_rand) send_len = distribution(generator);
 
-            auto start = std::chrono::high_resolution_clock::now();
             switch (test_type) {
                 case kBasic: {
                     ep.uccl_recv(conn_id, data[conn_id.engine_idx], &recv_len,
                                  mh[conn_id.engine_idx], /*busypoll=*/true);
+                    i++;
                     break;
                 }
                 case kAsync: {
@@ -423,6 +457,7 @@ int main(int argc, char* argv[]) {
                     for (auto len : recv_lens) {
                         recv_len += len;
                     }
+                    i++;
                     break;
                 }
                 case kPingpong: {
@@ -435,6 +470,7 @@ int main(int argc, char* argv[]) {
                                            send_len, mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
+                    i += 2;
                     break;
                 }
                 case kMt: {
@@ -452,6 +488,7 @@ int main(int argc, char* argv[]) {
                     });
                     t1.join();
                     t2.join();
+                    i += 2;
                     break;
                 }
                 case kMc: {
@@ -464,28 +501,37 @@ int main(int argc, char* argv[]) {
                                            &recv_len, mh2[conn_id2.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
+                    i += 2;
                     break;
                 }
                 case kMq: {
-                    for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < kNumEngines; j++) {
+                    for (int j = 0; j < kNumEngines; j++) {
+                        while (inflight_msgs[j] < kMaxInflight) {
                             auto& __conn_id = conn_id_vec[j];
                             auto poll_ctx = ep.uccl_recv_async(
                                 __conn_id, data[__conn_id.engine_idx],
                                 &recv_len, mh[__conn_id.engine_idx]);
                             poll_ctxs.push_back(poll_ctx);
+                            inflight_msgs[j]++;
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
+                    auto inflights = poll_ctxs.size();
+                    for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
-                        ep.uccl_poll(poll_ctx);
+                        auto engine_idx = poll_ctx->engine_idx;
+                        if (ep.uccl_poll_once(poll_ctx)) {
+                            inflight_msgs[engine_idx]--;
+                            i++;
+                        } else {
+                            poll_ctxs.push_back(poll_ctx);
+                        }
                     }
                     break;
                 }
                 case kBiMq: {
-                    for (int k = 0; k < kMaxInflight; k++) {
-                        for (int j = 0; j < kNumEngines; j++) {
+                    for (int j = 0; j < kNumEngines; j++) {
+                        while (inflight_msgs[j] < kMaxInflight) {
                             auto& __conn_id = conn_id_vec[j];
                             auto* poll_ctx =
                                 (j % 2 == 0)
@@ -496,12 +542,20 @@ int main(int argc, char* argv[]) {
                                           __conn_id, data[__conn_id.engine_idx],
                                           send_len, mh[__conn_id.engine_idx]);
                             poll_ctxs.push_back(poll_ctx);
+                            inflight_msgs[j]++;
                         }
                     }
-                    while (poll_ctxs.size() > kMaxInflight * kNumEngines) {
+                    auto inflights = poll_ctxs.size();
+                    for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
-                        ep.uccl_poll(poll_ctx);
+                        auto engine_idx = poll_ctx->engine_idx;
+                        if (ep.uccl_poll_once(poll_ctx)) {
+                            inflight_msgs[engine_idx]--;
+                            i++;
+                        } else {
+                            poll_ctxs.push_back(poll_ctx);
+                        }
                     }
                     CHECK(send_len == recv_len) << "send_len: " << send_len
                                                 << ", recv_len: " << recv_len;
@@ -512,14 +566,23 @@ int main(int argc, char* argv[]) {
                         conn_id, data, &recv_len, mh[conn_id.engine_idx]);
                     if (last_ctx) ep.uccl_poll(last_ctx);
                     last_ctx = poll_ctx;
+                    i++;
                     break;
                 }
                 default:
                     break;
             }
-            auto duration_us =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::high_resolution_clock::now() - start);
+
+            if ((i + 1) % kReportIters == 0) {
+                auto duration_sec =
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::high_resolution_clock::now() - start);
+                if (duration_sec < kReportIntervalSec) continue;
+
+                LOG(INFO) << "Received " << i + 1 << " messages";
+
+                start = std::chrono::high_resolution_clock::now();
+            }
 
             if (FLAGS_verify) {
                 auto host_data_u64 = get_host_ptr(data_u64, send_len);
@@ -545,10 +608,6 @@ int main(int argc, char* argv[]) {
                 cudaMemcpy(data_u64, host_data_u64, send_len,
                            cudaMemcpyHostToDevice);
             }
-
-            LOG_EVERY_N(INFO, kReportIters)
-                << "Received " << i << " messages, rtt " << duration_us.count()
-                << " us";
         }
     }
 

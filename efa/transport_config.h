@@ -7,6 +7,7 @@
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
 // #define USE_SRD
+// #define EMULATE_RC_ZC
 // #define RTT_STATS
 
 enum class CCType {

@@ -221,8 +221,21 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
             rx_copy_work.len = (uint64_t)(&num_unconsumed_msgbufs_);
 
             // Copy the complete message to the app buffer.
+#ifdef EMULATE_RC_ZC
+            Channel::enqueue_sp(channel_->rx_copy_done_q_, &rx_copy_work);
+
+            auto poll_ctx = rx_copy_work.poll_ctx;
+            // Wakeup app thread waiting on endpoint.
+            poll_ctx->write_barrier();
+            {
+                std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                poll_ctx->done = true;
+                poll_ctx->cv.notify_one();
+            }
+#else
             rx_copy_work.poll_ctx->write_barrier();
             Channel::enqueue_sp(channel_->rx_copy_q_, &rx_copy_work);
+#endif
 
             app_buf_queue_.pop_front();
             deser_msgs_head_ = nullptr;
@@ -232,7 +245,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
     }
 
     Channel::Msg rx_copy_done_work;
-    if (Channel::dequeue_sc(channel_->rx_copy_done_q_, &rx_copy_done_work)) {
+    while (Channel::dequeue_sc(channel_->rx_copy_done_q_, &rx_copy_done_work)) {
         auto *num_unconsumed_msgbufs = (uint32_t *)rx_copy_done_work.len;
         auto ready_msg = rx_copy_done_work.deser_msgs;
 
@@ -263,8 +276,38 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
     auto *channel = engine->channel_;
 
     while (!engine->shutdown_) {
+        // TODO(yang): using multiple streams to fine-grained poll when each
+        // kernel finishes; however, this consumes more resources.
+        auto copy_done = pollScatteredMemcpy(copy_stream_);
+        if (copy_done) {
+            while (!ongoing_copy_queue.empty()) {
+                auto &rx_copy_done_work = ongoing_copy_queue.back();
+                auto poll_ctx = rx_copy_done_work.poll_ctx;
+                auto *app_buf_len_p = rx_copy_done_work.len_p;
+
+                Channel::enqueue_sp(channel->rx_copy_done_q_,
+                                    &rx_copy_done_work);
+
+                // Wakeup app thread waiting on endpoint.
+                poll_ctx->write_barrier();
+                {
+                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                    poll_ctx->done = true;
+                    poll_ctx->cv.notify_one();
+                }
+                VLOG(2) << "Received a complete message " << *app_buf_len_p
+                        << " bytes";
+
+                ongoing_copy_queue.pop_back();
+            }
+        }
+
         Channel::Msg rx_copy_work;
-        if (Channel::dequeue_sc(channel->rx_copy_q_, &rx_copy_work)) {
+        int copy_idx = 0;
+
+        // Using adapative batching to launch a larger memcpy kernel; this is
+        // good for small messages with high inflights.
+        while (Channel::dequeue_sc(channel->rx_copy_q_, &rx_copy_work)) {
             FrameDesc *ready_msg = rx_copy_work.deser_msgs;
             auto *app_buf = rx_copy_work.data;
             auto *app_buf_len_p = rx_copy_work.len_p;
@@ -272,7 +315,6 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
             poll_ctx->read_barrier();
 
             size_t cur_offset = 0;
-            int copy_idx = 0;
             while (ready_msg != nullptr) {
                 auto *pkt_addr =
                     (uint8_t *)ready_msg->get_pkt_hdr_addr() + EFA_UD_ADDITION;
@@ -301,63 +343,16 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
 
                 ready_msg = ready_msg->next();
             }
+            ongoing_copy_queue.push_back(rx_copy_work);
 
-            CHECK(copy_idx <= MAX_COPIES)
-                << "Too many copies in one message chunk";
-
-            if (copy_idx <= 4) {
-                launchScatteredMemcpy(copy_idx, copy_param_);
-
-                // for (int i = 0; i < copy_idx; i++) {
-                //     cudaMemcpy((void *)copy_param_->dst[i],
-                //                (void *)copy_param_->src[i], copy_param_->len[i],
-                //                cudaMemcpyDeviceToDevice);
-                // }
-
-                Channel::enqueue_sp(channel->rx_copy_done_q_, &rx_copy_work);
-
-                // Wakeup app thread waiting on endpoint.
-                poll_ctx->write_barrier();
-                {
-                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
-                    poll_ctx->done = true;
-                    poll_ctx->cv.notify_one();
-                }
-                VLOG(2) << "Received a complete message " << *app_buf_len_p
-                        << " bytes";
-            } else {
-                launchScatteredMemcpyAsync(copy_idx, copy_param_, copy_stream_);
-                ongoing_copy_queue.push_back(rx_copy_work);
+            if (copy_idx > MAX_COPIES / 2) {
+                break;
             }
         }
 
-        // TODO(yang): using multiple streams to fine-grained poll when each
-        // kernel finishes.
-        auto copy_done = pollScatteredMemcpy(copy_stream_);
-        if (copy_done) {
-            while (!ongoing_copy_queue.empty()) {
-                auto &rx_copy_done_work = ongoing_copy_queue.back();
-                auto poll_ctx = rx_copy_done_work.poll_ctx;
-                auto *app_buf_len_p = rx_copy_done_work.len_p;
-
-                Channel::enqueue_sp(channel->rx_copy_done_q_,
-                                    &rx_copy_done_work);
-
-                // Wakeup app thread waiting on endpoint.
-                poll_ctx->write_barrier();
-                {
-                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
-                    poll_ctx->done = true;
-                    poll_ctx->cv.notify_one();
-                }
-                VLOG(2) << "Received a complete message " << *app_buf_len_p
-                        << " bytes";
-
-                ongoing_copy_queue.pop_back();
-            }
+        if (copy_idx) {
+            launchScatteredMemcpyAsync(copy_idx, copy_param_, copy_stream_);
         }
-        // LOG(INFO) << "ongoing_copy_queue size: " <<
-        // ongoing_copy_queue.size();
     }
 }
 
