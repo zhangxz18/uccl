@@ -72,7 +72,8 @@ static const uint32_t kMaxCqeTotal = 16384;
 static const uint32_t kMaxPollBatch = 32;
 static const uint32_t kMaxRecvWrDeficit = 32;
 static const uint32_t kMaxChainedWr = 32;
-const static uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
+static const uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
+static const uint32_t kMaxMultiRecv = 8;
 
 // Path configuration.
 #ifdef USE_SRD

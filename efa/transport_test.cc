@@ -85,27 +85,38 @@ int main(int argc, char* argv[]) {
     if (is_client) {
         auto ep = Endpoint();
         DCHECK(FLAGS_serverip != "");
-        auto conn_id = ep.uccl_connect(FLAGS_serverip);
-        ConnID conn_id2;
+        ConnID conn_id, conn_id2;
         ConnID conn_id_vec[kNumEngines];
+        int remote_devs[kNumEngines];
+
+        conn_id = ep.uccl_connect(get_dev_idx_by_engine_idx(0),
+                                  get_dev_idx_by_engine_idx(0), FLAGS_serverip);
         if (test_type == kMc) {
-            conn_id2 = ep.uccl_connect(FLAGS_serverip);
+            conn_id2 =
+                ep.uccl_connect(get_dev_idx_by_engine_idx(1),
+                                get_dev_idx_by_engine_idx(1), FLAGS_serverip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++)
-                conn_id_vec[i] = ep.uccl_connect(FLAGS_serverip);
+                conn_id_vec[i] = ep.uccl_connect(get_dev_idx_by_engine_idx(i),
+                                                 get_dev_idx_by_engine_idx(i),
+                                                 FLAGS_serverip);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
-                    conn_id_vec[i] = ep.uccl_connect(FLAGS_serverip);
+                    conn_id_vec[i] = ep.uccl_connect(
+                        get_dev_idx_by_engine_idx(i),
+                        get_dev_idx_by_engine_idx(i), FLAGS_serverip);
                 else
-                    conn_id_vec[i] = ep.uccl_accept(remote_ip);
+                    conn_id_vec[i] =
+                        ep.uccl_accept(get_dev_idx_by_engine_idx(i),
+                                       &remote_devs[i], remote_ip);
             }
         }
 
-        size_t send_len = kTestMsgSize, recv_len = kTestMsgSize;
+        int send_len = kTestMsgSize, recv_len = kTestMsgSize;
         uint8_t *data[kNumEngines], *data2[kNumEngines];
         Mhandle mh[kNumEngines], mh2[kNumEngines];
 
@@ -153,7 +164,7 @@ int main(int argc, char* argv[]) {
                     TscTimer timer;
                     timer.start();
                     ep.uccl_send(conn_id, data[conn_id.engine_idx], send_len,
-                                 mh[conn_id.engine_idx], /*busypoll=*/true);
+                                 &mh[conn_id.engine_idx], /*busypoll=*/true);
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len;
@@ -172,7 +183,7 @@ int main(int argc, char* argv[]) {
                         PollCtx* poll_ctx;
                         poll_ctx =
                             ep.uccl_send_async(conn_id, iter_data, iter_len,
-                                               mh[conn_id.engine_idx]);
+                                               &mh[conn_id.engine_idx]);
                         poll_ctx->timestamp = rdtsc();
                         poll_ctxs.push_back(poll_ctx);
                     }
@@ -193,10 +204,10 @@ int main(int argc, char* argv[]) {
                     timer.start();
                     poll_ctx1 =
                         ep.uccl_send_async(conn_id, data[conn_id.engine_idx],
-                                           send_len, mh[conn_id.engine_idx]);
+                                           send_len, &mh[conn_id.engine_idx]);
                     poll_ctx2 =
                         ep.uccl_recv_async(conn_id, data2[conn_id.engine_idx],
-                                           &recv_len, mh2[conn_id.engine_idx]);
+                                           &recv_len, &mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     timer.stop();
@@ -208,18 +219,20 @@ int main(int argc, char* argv[]) {
                 case kMt: {
                     TscTimer timer;
                     timer.start();
-                    std::thread t1([&ep, conn_id, data, send_len, mh]() {
-                        PollCtx* poll_ctx = ep.uccl_send_async(
-                            conn_id, data[conn_id.engine_idx], send_len,
-                            mh[conn_id.engine_idx]);
-                        ep.uccl_poll(poll_ctx);
-                    });
-                    std::thread t2([&ep, conn_id, data2, &recv_len, mh2]() {
-                        PollCtx* poll_ctx = ep.uccl_recv_async(
-                            conn_id, data2[conn_id.engine_idx], &recv_len,
-                            mh2[conn_id.engine_idx]);
-                        ep.uccl_poll(poll_ctx);
-                    });
+                    std::thread t1(
+                        [&ep, conn_id, data, send_len, mh]() mutable {
+                            PollCtx* poll_ctx = ep.uccl_send_async(
+                                conn_id, data[conn_id.engine_idx], send_len,
+                                &mh[conn_id.engine_idx]);
+                            ep.uccl_poll(poll_ctx);
+                        });
+                    std::thread t2(
+                        [&ep, conn_id, data2, &recv_len, mh2]() mutable {
+                            PollCtx* poll_ctx = ep.uccl_recv_async(
+                                conn_id, data2[conn_id.engine_idx], &recv_len,
+                                &mh2[conn_id.engine_idx]);
+                            ep.uccl_poll(poll_ctx);
+                        });
                     t1.join();
                     t2.join();
                     timer.stop();
@@ -234,10 +247,10 @@ int main(int argc, char* argv[]) {
                     timer.start();
                     poll_ctx1 =
                         ep.uccl_send_async(conn_id, data[conn_id.engine_idx],
-                                           send_len, mh[conn_id.engine_idx]);
+                                           send_len, &mh[conn_id.engine_idx]);
                     poll_ctx2 =
                         ep.uccl_send_async(conn_id2, data2[conn_id2.engine_idx],
-                                           send_len, mh2[conn_id2.engine_idx]);
+                                           send_len, &mh2[conn_id2.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     timer.stop();
@@ -252,7 +265,7 @@ int main(int argc, char* argv[]) {
                             auto& __conn_id = conn_id_vec[j];
                             auto poll_ctx = ep.uccl_send_async(
                                 __conn_id, data[__conn_id.engine_idx], send_len,
-                                mh[__conn_id.engine_idx]);
+                                &mh[__conn_id.engine_idx]);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
                             inflight_msgs[j]++;
@@ -284,10 +297,13 @@ int main(int argc, char* argv[]) {
                                 (j % 2 == 0)
                                     ? ep.uccl_send_async(
                                           __conn_id, data[__conn_id.engine_idx],
-                                          send_len, mh[__conn_id.engine_idx])
-                                    : ep.uccl_recv_async(
-                                          __conn_id, data[__conn_id.engine_idx],
-                                          &recv_len, mh[__conn_id.engine_idx]);
+                                          send_len, &mh[__conn_id.engine_idx])
+                                    : ep.uccl_recv_multi_async(
+                                          __conn_id,
+                                          (void**)&(data[__conn_id.engine_idx]),
+                                          &recv_len,
+                                          (Mhandle**)&mh[__conn_id.engine_idx],
+                                          1);
                             poll_ctx->timestamp = rdtsc();
                             poll_ctxs.push_back(poll_ctx);
                             inflight_msgs[j]++;
@@ -316,7 +332,7 @@ int main(int argc, char* argv[]) {
                 case kTput: {
                     auto* poll_ctx =
                         ep.uccl_send_async(conn_id, data[conn_id.engine_idx],
-                                           send_len, mh[conn_id.engine_idx]);
+                                           send_len, &mh[conn_id.engine_idx]);
                     poll_ctx->timestamp = rdtsc();
                     if (last_ctx) {
                         auto async_start = last_ctx->timestamp;
@@ -376,27 +392,36 @@ int main(int argc, char* argv[]) {
     } else {
         auto ep = Endpoint();
         std::string remote_ip;
-        auto conn_id = ep.uccl_accept(remote_ip);
-        ConnID conn_id2;
+        ConnID conn_id, conn_id2;
         ConnID conn_id_vec[kNumEngines];
+        int remote_devs[kNumEngines];
+
+        conn_id = ep.uccl_accept(get_dev_idx_by_engine_idx(0), &remote_devs[0],
+                                 remote_ip);
         if (test_type == kMc) {
-            conn_id2 = ep.uccl_accept(remote_ip);
+            conn_id2 = ep.uccl_accept(get_dev_idx_by_engine_idx(1),
+                                      &remote_devs[1], remote_ip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++)
-                conn_id_vec[i] = ep.uccl_accept(remote_ip);
+                conn_id_vec[i] = ep.uccl_accept(get_dev_idx_by_engine_idx(i),
+                                                &remote_devs[i], remote_ip);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
-                    conn_id_vec[i] = ep.uccl_accept(remote_ip);
+                    conn_id_vec[i] =
+                        ep.uccl_accept(get_dev_idx_by_engine_idx(i),
+                                       &remote_devs[i], remote_ip);
                 else
-                    conn_id_vec[i] = ep.uccl_connect(FLAGS_clientip);
+                    conn_id_vec[i] = ep.uccl_connect(
+                        get_dev_idx_by_engine_idx(i),
+                        get_dev_idx_by_engine_idx(i), FLAGS_clientip);
             }
         }
 
-        size_t send_len = kTestMsgSize, recv_len = kTestMsgSize;
+        int send_len = kTestMsgSize, recv_len = kTestMsgSize;
         uint8_t *data[kNumEngines], *data2[kNumEngines];
         Mhandle mh[kNumEngines], mh2[kNumEngines];
 
@@ -430,13 +455,13 @@ int main(int argc, char* argv[]) {
             switch (test_type) {
                 case kBasic: {
                     ep.uccl_recv(conn_id, data[conn_id.engine_idx], &recv_len,
-                                 mh[conn_id.engine_idx], /*busypoll=*/true);
+                                 &mh[conn_id.engine_idx], /*busypoll=*/true);
                     i++;
                     break;
                 }
                 case kAsync: {
                     size_t step_size = send_len / kMaxInflight + 1;
-                    size_t recv_lens[kMaxInflight] = {0};
+                    int recv_lens[kMaxInflight] = {0};
                     std::vector<PollCtx*> poll_ctxs;
                     for (int j = 0; j < kMaxInflight; j++) {
                         auto iter_len =
@@ -447,7 +472,7 @@ int main(int argc, char* argv[]) {
                         PollCtx* poll_ctx;
                         poll_ctx = ep.uccl_recv_async(conn_id, iter_data,
                                                       &recv_lens[j],
-                                                      mh[conn_id.engine_idx]);
+                                                      &mh[conn_id.engine_idx]);
                         poll_ctxs.push_back(poll_ctx);
                     }
                     for (auto poll_ctx : poll_ctxs) {
@@ -464,28 +489,30 @@ int main(int argc, char* argv[]) {
                     PollCtx *poll_ctx1, *poll_ctx2;
                     poll_ctx1 =
                         ep.uccl_recv_async(conn_id, data[conn_id.engine_idx],
-                                           &recv_len, mh[conn_id.engine_idx]);
+                                           &recv_len, &mh[conn_id.engine_idx]);
                     poll_ctx2 =
                         ep.uccl_send_async(conn_id, data2[conn_id.engine_idx],
-                                           send_len, mh2[conn_id.engine_idx]);
+                                           send_len, &mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     i += 2;
                     break;
                 }
                 case kMt: {
-                    std::thread t1([&ep, conn_id, data, &recv_len, mh]() {
-                        PollCtx* poll_ctx = ep.uccl_recv_async(
-                            conn_id, data[conn_id.engine_idx], &recv_len,
-                            mh[conn_id.engine_idx]);
-                        ep.uccl_poll(poll_ctx);
-                    });
-                    std::thread t2([&ep, conn_id, data2, send_len, mh2]() {
-                        PollCtx* poll_ctx = ep.uccl_send_async(
-                            conn_id, data2[conn_id.engine_idx], send_len,
-                            mh2[conn_id.engine_idx]);
-                        ep.uccl_poll(poll_ctx);
-                    });
+                    std::thread t1(
+                        [&ep, conn_id, data, &recv_len, mh]() mutable {
+                            PollCtx* poll_ctx = ep.uccl_recv_async(
+                                conn_id, data[conn_id.engine_idx], &recv_len,
+                                &mh[conn_id.engine_idx]);
+                            ep.uccl_poll(poll_ctx);
+                        });
+                    std::thread t2(
+                        [&ep, conn_id, data2, send_len, mh2]() mutable {
+                            PollCtx* poll_ctx = ep.uccl_send_async(
+                                conn_id, data2[conn_id.engine_idx], send_len,
+                                &mh2[conn_id.engine_idx]);
+                            ep.uccl_poll(poll_ctx);
+                        });
                     t1.join();
                     t2.join();
                     i += 2;
@@ -495,10 +522,10 @@ int main(int argc, char* argv[]) {
                     PollCtx *poll_ctx1, *poll_ctx2;
                     poll_ctx1 =
                         ep.uccl_recv_async(conn_id, data[conn_id.engine_idx],
-                                           &recv_len, mh[conn_id.engine_idx]);
-                    poll_ctx2 =
-                        ep.uccl_recv_async(conn_id2, data2[conn_id2.engine_idx],
-                                           &recv_len, mh2[conn_id2.engine_idx]);
+                                           &recv_len, &mh[conn_id.engine_idx]);
+                    poll_ctx2 = ep.uccl_recv_async(
+                        conn_id2, data2[conn_id2.engine_idx], &recv_len,
+                        &mh2[conn_id2.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
                     i += 2;
@@ -510,7 +537,7 @@ int main(int argc, char* argv[]) {
                             auto& __conn_id = conn_id_vec[j];
                             auto poll_ctx = ep.uccl_recv_async(
                                 __conn_id, data[__conn_id.engine_idx],
-                                &recv_len, mh[__conn_id.engine_idx]);
+                                &recv_len, &mh[__conn_id.engine_idx]);
                             poll_ctxs.push_back(poll_ctx);
                             inflight_msgs[j]++;
                         }
@@ -537,10 +564,10 @@ int main(int argc, char* argv[]) {
                                 (j % 2 == 0)
                                     ? ep.uccl_recv_async(
                                           __conn_id, data[__conn_id.engine_idx],
-                                          &recv_len, mh[__conn_id.engine_idx])
+                                          &recv_len, &mh[__conn_id.engine_idx])
                                     : ep.uccl_send_async(
                                           __conn_id, data[__conn_id.engine_idx],
-                                          send_len, mh[__conn_id.engine_idx]);
+                                          send_len, &mh[__conn_id.engine_idx]);
                             poll_ctxs.push_back(poll_ctx);
                             inflight_msgs[j]++;
                         }
@@ -563,7 +590,7 @@ int main(int argc, char* argv[]) {
                 }
                 case kTput: {
                     auto* poll_ctx = ep.uccl_recv_async(
-                        conn_id, data, &recv_len, mh[conn_id.engine_idx]);
+                        conn_id, data, &recv_len, &mh[conn_id.engine_idx]);
                     if (last_ctx) ep.uccl_poll(last_ctx);
                     last_ctx = poll_ctx;
                     i++;

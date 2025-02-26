@@ -2,24 +2,24 @@
 
 source ../shared.sh
 
-# Usage: ./run_nccl_test.sh [tcp|afxdp] [num of processes] [ens6|enp199s0]
+# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [ens32]
 
-TEST=${1:-tcp}
-UCCL_HOME="/opt/uccl"
+TEST=${1:-srd}
+UCCL_HOME="/opt/uccl_rdma"
 LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=all_reduce_perf
+PROG_NAME=alltoall_perf
 NUM_PROCS=${2:-4}
-NIC=${3:-ens6} # enp199s0 for g4.metal
+NIC=${3:-ens32}
 NODES=$(get_nodes "../nodes.txt")
 
 echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, ${NODES}"
 
-if [ "$TEST" = "tcp" ]; then
+if [ "$TEST" = "srd" ]; then
 
     # PLUGIN_PATH="${UCCL_HOME}/nccl/ext-net/google-fastsocket/libnccl-net.so"
-    PLUGIN_PATH="/opt/aws-ofi-nccl/lib/libnccl-net.so"
+    PLUGIN_PATH="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so"
 
     mpirun --bind-to none -np ${NUM_PROCS} -N 1 --host ${NODES} \
         --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
@@ -27,33 +27,27 @@ if [ "$TEST" = "tcp" ]; then
         --mca btl_tcp_if_include ${NIC} \
         -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
         -x NCCL_DEBUG=INFO \
-        -x NCCL_SOCKET_NTHREADS=4 \
-        -x NCCL_NSOCKS_PERTHREAD=2 \
-        -x NCCL_MAX_NCHANNELS=8 \
-        -x NCCL_MIN_NCHANNELS=8 \
+        -x NCCL_P2P_DISABLE=1 \
+        -x NCCL_SHM_DISABLE=1 \
+        -x NCCL_NET_DISABLE=0 \
+        -x NCCL_P2P_NET_CHUNKSIZE=524288 \
+        -x NCCL_BUFFSIZE=8388608 \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -t 1
+        -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -t 8
 
-        # -x NCCL_SOCKET_IFNAME=${NIC} \
+        # -x NCCL_SOCKET_NTHREADS=4 \
+        # -x NCCL_NSOCKS_PERTHREAD=2 \
+        # -x NCCL_MAX_NCHANNELS=8 \
+        # -x NCCL_MIN_NCHANNELS=8 \
 
-        # Does not help and causes perf degradation for large sizes. 
-        # -x NCCL_SOCKET_NTHREADS=16 \
-        # -x NCCL_NSOCKS_PERTHREAD=4 \
-        # -x NCCL_MAX_NCHANNELS=16 \
-        # -x NCCL_MIN_NCHANNELS=16 \
-
-        # -x NCCL_P2P_DISABLE=1 \
-        # -x NCCL_SHM_DISABLE=1 \
-        # -x NCCL_NET_DISABLE=0 \
-
-elif [ "$TEST" = "afxdp" ]; then
+elif [ "$TEST" = "ud" ]; then
 
     # Clear existing files for all ranks
     for ((rank = 0; rank < NUM_PROCS; rank++)); do
         >"output_rank_$rank.log" # Truncate or create empty file
     done
 
-    PLUGIN_PATH="${UCCL_HOME}/afxdp/libnccl-net.so"
+    PLUGIN_PATH="${UCCL_HOME}/efa/libnccl-net.so"
 
     mpirun --bind-to none -np ${NUM_PROCS} -N 1 --host ${NODES} \
         --tag-output --merge-stderr-to-stdout \

@@ -57,11 +57,12 @@ struct Mhandle {
 struct alignas(64) PollCtx {
     std::mutex mu;
     std::condition_variable cv;
-    std::atomic<bool> fence;  // Sync rx/tx memcpy visibility.
-    std::atomic<bool> done;   // Sync cv wake-up.
-    uint64_t timestamp;       // Timestamp for request issuing.
-    uint32_t engine_idx;      // Engine index for request issuing.
-    PollCtx() : fence(false), done(false), timestamp(0) {};
+    std::atomic<bool> fence;               // Sync rx/tx memcpy visibility.
+    std::atomic<bool> done;                // Sync cv wake-up.
+    std::atomic<uint16_t> num_unfinished;  // Number of unfinished requests.
+    uint64_t timestamp;                    // Timestamp for request issuing.
+    uint32_t engine_idx;                   // Engine index for request issuing.
+    PollCtx() : fence(false), done(false), num_unfinished(0), timestamp(0) {};
     ~PollCtx() { clear(); }
 
     inline void clear() {
@@ -69,6 +70,7 @@ struct alignas(64) PollCtx {
         cv.~condition_variable();
         fence = false;
         done = false;
+        num_unfinished = 0;
         timestamp = 0;
     }
 
@@ -111,15 +113,17 @@ class Channel {
             kRx = 1,
         };
         Op opcode;
-        FlowID flow_id;
+        uint8_t unused_bytes[3];
+        int len;
+        int *len_p;
         void *data;
-        size_t len;
-        size_t *len_p;
-        Mhandle mhandle;
+        Mhandle *mhandle;
+        FlowID flow_id;
         // A list of FrameDesc bw deser_th and engine_th.
         FrameDesc *deser_msgs;
         // Wakeup handler
         PollCtx *poll_ctx;
+        uint64_t reserved;
     };
     static_assert(sizeof(Msg) % 4 == 0, "Msg must be 32-bit aligned");
 
@@ -169,6 +173,16 @@ class Channel {
     }
     static inline void enqueue_mp(jring_t *ring, const void *data) {
         while (jring_mp_enqueue_bulk(ring, data, 1, nullptr) != 1) {
+        }
+    }
+    static inline void enqueue_sp_multi(jring_t *ring, const void *data,
+                                        int n) {
+        while (jring_sp_enqueue_bulk(ring, data, n, nullptr) != n) {
+        }
+    }
+    static inline void enqueue_mp_multi(jring_t *ring, const void *data,
+                                        int n) {
+        while (jring_mp_enqueue_bulk(ring, data, n, nullptr) != n) {
         }
     }
     static inline bool dequeue_sc(jring_t *ring, void *data) {
@@ -715,44 +729,53 @@ class Endpoint {
     std::array<int, kNumEngines> engine_load_vec_ = {0};
 
     PollCtxPool *ctx_pool_[kNumEngines];
+    int listen_fd_[NUM_DEVICES];
 
-    int listen_fd_;
-
-    std::mutex bootstrap_fd_map_mu_;
+    std::mutex fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
-    std::unordered_map<FlowID, int> bootstrap_fd_map_;
+    std::unordered_map<FlowID, int> fd_map_;
 
    public:
     Endpoint();
     ~Endpoint();
 
     // Connecting to a remote address; thread-safe
-    ConnID uccl_connect(std::string remote_ip);
+    ConnID uccl_connect(int local_dev, int remote_dev, std::string remote_ip);
     // Accepting a connection from a remote address; thread-safe
-    ConnID uccl_accept(std::string &remote_ip);
+    ConnID uccl_accept(int local_dev, int *remote_dev, std::string &remote_ip);
 
     // Sending the data by leveraging multiple port combinations.
-    bool uccl_send(ConnID flow_id, const void *data, const size_t len,
-                   Mhandle mhandle, bool busypoll = false);
+    bool uccl_send(ConnID conn_id, const void *data, const int len,
+                   Mhandle *mhandle, bool busypoll = false);
     // Receiving the data by leveraging multiple port combinations.
-    bool uccl_recv(ConnID flow_id, void *data, size_t *len_p, Mhandle mhandle,
+    bool uccl_recv(ConnID conn_id, void *data, int *len_p, Mhandle *mhandle,
                    bool busypoll = false);
+    bool uccl_recv_multi(ConnID conn_id, void **data, int *len_p,
+                         Mhandle **mhandle, int n, bool busypoll = false);
 
     // Sending the data by leveraging multiple port combinations.
-    PollCtx *uccl_send_async(ConnID flow_id, const void *data, const size_t len,
-                             Mhandle mhandle);
+    PollCtx *uccl_send_async(ConnID conn_id, const void *data, const int len,
+                             Mhandle *mhandle);
     // Receiving the data by leveraging multiple port combinations.
-    PollCtx *uccl_recv_async(ConnID flow_id, void *data, size_t *len_p,
-                             Mhandle mhandle);
+    PollCtx *uccl_recv_async(ConnID conn_id, void *data, int *len_p,
+                             Mhandle *mhandle);
+    PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,
+                                   Mhandle **mhandle, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);
     bool uccl_poll_once(PollCtx *ctx);
 
+    int uccl_regmr_dmabuf(int dev, void *addr, size_t len, int type, int offset,
+                          int fd, struct Mhandle **mhandle);
+    int uccl_regmr(int dev, void *addr, size_t len, int type /*unsed for now*/,
+                   struct Mhandle **mhandle);
+    void uccl_deregmr(struct Mhandle *mhandle);
+
    private:
     void install_flow_on_engine(FlowID flow_id, const std::string &remote_ip,
                                 uint32_t local_engine_idx, int bootstrap_fd);
-    inline int find_least_loaded_engine_idx_and_update();
+    inline int find_least_loaded_engine_idx_and_update(int dev_idx);
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
     std::mutex stats_mu_;

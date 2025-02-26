@@ -32,7 +32,7 @@ void TXTracking::receive_acks(uint32_t num_acked_pkts) {
             DCHECK(!poll_ctxs_.empty());
             auto poll_ctx = poll_ctxs_.front();
             poll_ctxs_.pop_front();
-            {
+            if (--(poll_ctx->num_unfinished) == 0) {
                 std::lock_guard<std::mutex> lock(poll_ctx->mu);
                 poll_ctx->done = true;
                 poll_ctx->cv.notify_one();
@@ -218,7 +218,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 
             // The len field is not used in RX, we reuse it to pass counter
             // address so that copy thread can update.
-            rx_copy_work.len = (uint64_t)(&num_unconsumed_msgbufs_);
+            rx_copy_work.reserved = (uint64_t)(&num_unconsumed_msgbufs_);
 
             // Copy the complete message to the app buffer.
 #ifdef EMULATE_RC_ZC
@@ -226,8 +226,8 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 
             auto poll_ctx = rx_copy_work.poll_ctx;
             // Wakeup app thread waiting on endpoint.
-            poll_ctx->write_barrier();
-            {
+            if (--(poll_ctx->num_unfinished) == 0) {
+                poll_ctx->write_barrier();
                 std::lock_guard<std::mutex> lock(poll_ctx->mu);
                 poll_ctx->done = true;
                 poll_ctx->cv.notify_one();
@@ -246,7 +246,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 
     Channel::Msg rx_copy_done_work;
     while (Channel::dequeue_sc(channel_->rx_copy_done_q_, &rx_copy_done_work)) {
-        auto *num_unconsumed_msgbufs = (uint32_t *)rx_copy_done_work.len;
+        auto *num_unconsumed_msgbufs = (uint32_t *)rx_copy_done_work.reserved;
         auto ready_msg = rx_copy_done_work.deser_msgs;
 
         while (ready_msg != nullptr) {
@@ -289,8 +289,8 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
                                     &rx_copy_done_work);
 
                 // Wakeup app thread waiting on endpoint.
-                poll_ctx->write_barrier();
-                {
+                if (--(poll_ctx->num_unfinished) == 0) {
+                    poll_ctx->write_barrier();
                     std::lock_guard<std::mutex> lock(poll_ctx->mu);
                     poll_ctx->done = true;
                     poll_ctx->cv.notify_one();
@@ -452,10 +452,13 @@ void UcclFlow::rx_messages() {
 void UcclFlow::tx_messages(Channel::Msg &tx_work) {
     // This happens to NCCL plugin!!!
     if (tx_work.len == 0) {
-        std::lock_guard<std::mutex> lock(tx_work.poll_ctx->mu);
-        tx_work.poll_ctx->done = true;
-        tx_work.poll_ctx->cv.notify_one();
-        return;
+        auto poll_ctx = tx_work.poll_ctx;
+        if (--(poll_ctx->num_unfinished) == 0) {
+            std::lock_guard<std::mutex> lock(poll_ctx->mu);
+            poll_ctx->done = true;
+            poll_ctx->cv.notify_one();
+            return;
+        }
     }
 
     // deser tx_work into a FrameDesc chain, then pass to deser_th.
@@ -463,9 +466,9 @@ void UcclFlow::tx_messages(Channel::Msg &tx_work) {
     FrameDesc *deser_msgs_tail = nullptr;
     auto *app_buf_cursor = tx_work.data;
     auto remaining_bytes = tx_work.len;
-    auto *app_mr = tx_work.mhandle.mr;
+    auto *app_mr = tx_work.mhandle->mr;
     while (remaining_bytes > 0) {
-        auto payload_len = std::min(remaining_bytes, kUcclPktDataMaxLen);
+        auto payload_len = std::min(remaining_bytes, (int)kUcclPktDataMaxLen);
         auto frame_desc = socket_->pop_frame_desc();
         auto pkt_hdr = socket_->pop_pkt_hdr();
 
@@ -1214,7 +1217,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
               << " <-> " << remote_ip_str << Format("(%d)", remote_engine_idx);
 
     // Wakeup app thread waiting on endpoint.
-    {
+    if (--(poll_ctx->num_unfinished) == 0) {
         std::lock_guard<std::mutex> lock(poll_ctx->mu);
         poll_ctx->done = true;
         poll_ctx->cv.notify_one();
@@ -1307,41 +1310,43 @@ Endpoint::Endpoint()
             }));
     }
 
-    // Create listening socket
-    listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    DCHECK(listen_fd_ >= 0) << "ERROR: opening socket";
+    for (int i = 0; i < NUM_DEVICES; i++) {
+        // Create listening socket
+        listen_fd_[i] = socket(AF_INET, SOCK_STREAM, 0);
+        DCHECK(listen_fd_[i] >= 0) << "ERROR: opening socket";
 
-    int flag = 1;
-    DCHECK(setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &flag,
-                      sizeof(int)) >= 0)
-        << "ERROR: setsockopt SO_REUSEADDR fails";
+        int flag = 1;
+        DCHECK(setsockopt(listen_fd_[i], SOL_SOCKET, SO_REUSEADDR, &flag,
+                          sizeof(int)) >= 0)
+            << "ERROR: setsockopt SO_REUSEADDR fails";
 
-    struct sockaddr_in serv_addr;
-    bzero((char *)&serv_addr, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(kBootstrapPort);
-    DCHECK(bind(listen_fd_, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >=
-           0)
-        << "ERROR: binding";
+        struct sockaddr_in serv_addr;
+        bzero((char *)&serv_addr, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = INADDR_ANY;
+        // Note: EFA dev i listens on kBootstrapPort + i.
+        serv_addr.sin_port = htons(kBootstrapPort + i);
+        DCHECK(bind(listen_fd_[i], (struct sockaddr *)&serv_addr,
+                    sizeof(serv_addr)) >= 0)
+            << "ERROR: binding";
 
-    DCHECK(!listen(listen_fd_, 128)) << "ERROR: listen";
-    LOG(INFO) << "[Endpoint] server ready, listening on port "
-              << kBootstrapPort;
+        DCHECK(!listen(listen_fd_[i], 128)) << "ERROR: listen";
+        LOG(INFO) << "[Endpoint] server ready, listening on port "
+                  << kBootstrapPort + i;
+    }
 }
 
 Endpoint::~Endpoint() {
     for (auto &engine : engine_vec_) engine->shutdown();
     for (auto &engine_th : engine_th_vec_) engine_th->join();
     for (auto &copy_th : copy_th_vec_) copy_th->join();
-    for (int i = 0; i < num_queues_; i++) delete channel_vec_[i];
+    for (int i = 0; i < kNumEngines; i++) delete channel_vec_[i];
     for (int i = 0; i < kNumEngines; i++) delete ctx_pool_[i];
-
-    close(listen_fd_);
+    for (int i = 0; i < NUM_DEVICES; i++) close(listen_fd_[i]);
 
     {
-        std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
-        for (auto &[flow_id, boostrap_id] : bootstrap_fd_map_) {
+        std::lock_guard<std::mutex> lock(fd_map_mu_);
+        for (auto &[flow_id, boostrap_id] : fd_map_) {
             close(boostrap_id);
         }
     }
@@ -1357,37 +1362,41 @@ Endpoint::~Endpoint() {
     stats_thread_.join();
 }
 
-ConnID Endpoint::uccl_connect(std::string remote_ip) {
-    struct sockaddr_in serv_addr;
+ConnID Endpoint::uccl_connect(int local_dev, int remote_dev,
+                              std::string remote_ip) {
+    struct sockaddr_in serv_addr = {};
     struct hostent *server;
+    int ret;
     int bootstrap_fd;
+    bool local_lock_first = false;
 
     bootstrap_fd = socket(AF_INET, SOCK_STREAM, 0);
-    DCHECK(bootstrap_fd >= 0);
+    DCHECK(bootstrap_fd >= 0) << "uccl_connect: socket()";
 
     server = gethostbyname(remote_ip.c_str());
-    DCHECK(server);
-
-    bzero((char *)&serv_addr, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
-          server->h_length);
-    serv_addr.sin_port = htons(kBootstrapPort);
+    DCHECK(server) << "uccl_connect: gethostbyname()";
 
     // Force the socket to bind to the local IP address.
     sockaddr_in localaddr = {0};
     localaddr.sin_family = AF_INET;
-    localaddr.sin_addr.s_addr = str_to_ip(local_ip_str_.c_str());
-    bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
+    auto *factory_dev = EFAFactory::GetEFADevice(local_dev);
+    localaddr.sin_addr.s_addr = str_to_ip(factory_dev->local_ip_str.c_str());
+    ret = bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
+    DCHECK(ret == 0) << "uccl_connect: bind()";
 
-    LOG(INFO) << "[Endpoint] connecting to " << remote_ip << ":"
-              << kBootstrapPort;
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = str_to_ip(remote_ip.c_str());
+    // Note: EFA dev i listens on kBootstrapPort + i.
+    serv_addr.sin_port = htons(kBootstrapPort + remote_dev);
+
+    LOG(INFO) << "[Endpoint] connecting to <" << remote_ip << ", " << remote_dev
+              << ">:" << kBootstrapPort + remote_dev;
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
                    sizeof(serv_addr))) {
         LOG(INFO) << "[Endpoint] connecting... Make sure the server is up.";
-        sleep(1);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
@@ -1395,7 +1404,7 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
 
-    auto local_engine_idx = find_least_loaded_engine_idx_and_update();
+    auto local_engine_idx = find_least_loaded_engine_idx_and_update(local_dev);
     CHECK_GE(local_engine_idx, 0);
 
     FlowID flow_id;
@@ -1408,16 +1417,29 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
         // Check if the flow ID is unique, and return it to the server.
         bool unique;
         {
-            std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
-            unique =
-                (bootstrap_fd_map_.find(flow_id) == bootstrap_fd_map_.end());
-            if (unique) bootstrap_fd_map_[flow_id] = bootstrap_fd;
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            unique = (fd_map_.find(flow_id) == fd_map_.end());
+            if (unique) fd_map_[flow_id] = bootstrap_fd;
         }
 
         ret = send_message(bootstrap_fd, &unique, sizeof(bool));
         DCHECK(ret == sizeof(bool));
 
-        if (unique) break;
+        if (unique) {
+            // Send our device ID to the server.
+            ret = send_message(bootstrap_fd, &local_dev, sizeof(int));
+            DCHECK(ret == sizeof(int)) << "uccl_connect: send_message()";
+            break;
+        }
+    }
+
+    if (str_to_ip(factory_dev->local_ip_str.c_str()) <
+        str_to_ip(remote_ip.c_str())) {
+        local_lock_first = true;
+    } else if (str_to_ip(factory_dev->local_ip_str.c_str()) ==
+               str_to_ip(remote_ip.c_str())) {
+        // Handle the intra-node case.
+        if (local_dev < remote_dev) local_lock_first = true;
     }
 
     install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
@@ -1427,14 +1449,18 @@ ConnID Endpoint::uccl_connect(std::string remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-ConnID Endpoint::uccl_accept(std::string &remote_ip) {
+ConnID Endpoint::uccl_accept(int local_dev, int *remote_dev,
+                             std::string &remote_ip) {
     struct sockaddr_in cli_addr;
     socklen_t clilen = sizeof(cli_addr);
     int bootstrap_fd;
+    int ret;
+    bool local_lock_first = false;
+    int listen_fd = listen_fd_[local_dev];
 
     // Accept connection and set nonblocking and nodelay
-    bootstrap_fd = accept(listen_fd_, (struct sockaddr *)&cli_addr, &clilen);
-    DCHECK(bootstrap_fd >= 0);
+    bootstrap_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clilen);
+    DCHECK(bootstrap_fd >= 0) << "uccl_accept: accept()";
     remote_ip = ip_to_str(cli_addr.sin_addr.s_addr);
 
     LOG(INFO) << "[Endpoint] accept from " << remote_ip << ":"
@@ -1445,7 +1471,7 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
 
-    auto local_engine_idx = find_least_loaded_engine_idx_and_update();
+    auto local_engine_idx = find_least_loaded_engine_idx_and_update(local_dev);
     CHECK_GE(local_engine_idx, 0);
 
     // Generate unique flow ID for both client and server.
@@ -1454,12 +1480,11 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
         flow_id = U64Rand(0, std::numeric_limits<FlowID>::max());
         bool unique;
         {
-            std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
-            unique =
-                (bootstrap_fd_map_.find(flow_id) == bootstrap_fd_map_.end());
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            unique = (fd_map_.find(flow_id) == fd_map_.end());
             if (unique) {
                 // Speculatively insert the flow ID.
-                bootstrap_fd_map_[flow_id] = bootstrap_fd;
+                fd_map_[flow_id] = bootstrap_fd;
             } else {
                 continue;
             }
@@ -1476,12 +1501,25 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
         DCHECK(ret == sizeof(bool));
 
         if (unique_from_client) {
+            // Receive the remote_dev from client.
+            ret = receive_message(bootstrap_fd, remote_dev, sizeof(int));
+            DCHECK(ret == sizeof(int));
             break;
         } else {
             // Remove the speculatively inserted flow ID.
-            std::lock_guard<std::mutex> lock(bootstrap_fd_map_mu_);
-            DCHECK(1 == bootstrap_fd_map_.erase(flow_id));
+            std::lock_guard<std::mutex> lock(fd_map_mu_);
+            DCHECK(1 == fd_map_.erase(flow_id));
         }
+    }
+
+    auto factory_dev = EFAFactory::GetEFADevice(local_dev);
+    if (str_to_ip(factory_dev->local_ip_str.c_str()) <
+        str_to_ip(remote_ip.c_str())) {
+        local_lock_first = true;
+    } else if (str_to_ip(factory_dev->local_ip_str.c_str()) ==
+               str_to_ip(remote_ip.c_str())) {
+        // Handle the intra-node case.
+        if (local_dev < *remote_dev) local_lock_first = true;
     }
 
     install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
@@ -1491,32 +1529,39 @@ ConnID Endpoint::uccl_accept(std::string &remote_ip) {
                   .boostrap_id = bootstrap_fd};
 }
 
-bool Endpoint::uccl_send(ConnID conn_id, const void *data, const size_t len,
-                         Mhandle mhandle, bool busypoll) {
+bool Endpoint::uccl_send(ConnID conn_id, const void *data, const int len,
+                         Mhandle *mhandle, bool busypoll) {
     auto *poll_ctx = uccl_send_async(conn_id, data, len, mhandle);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
-bool Endpoint::uccl_recv(ConnID conn_id, void *data, size_t *len_p,
-                         Mhandle mhandle, bool busypoll) {
+bool Endpoint::uccl_recv(ConnID conn_id, void *data, int *len_p,
+                         Mhandle *mhandle, bool busypoll) {
     auto *poll_ctx = uccl_recv_async(conn_id, data, len_p, mhandle);
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
+bool Endpoint::uccl_recv_multi(ConnID conn_id, void **data, int *len_p,
+                               Mhandle **mhandle, int n, bool busypoll) {
+    auto *poll_ctx = uccl_recv_multi_async(conn_id, data, len_p, mhandle, n);
+    return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
+}
+
 PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
-                                   const size_t len, Mhandle mhandle) {
+                                   const int len, Mhandle *mhandle) {
     uint64_t poll_ctx_;
     DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
     auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
     poll_ctx->engine_idx = conn_id.engine_idx;
+    poll_ctx->num_unfinished = 1;
 
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
-        .flow_id = conn_id.flow_id,
-        .data = const_cast<void *>(data),
         .len = len,
         .len_p = nullptr,
+        .data = const_cast<void *>(data),
         .mhandle = mhandle,
+        .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
         .poll_ctx = poll_ctx,
     };
@@ -1525,24 +1570,51 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
     return poll_ctx;
 }
 
-PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, size_t *len_p,
-                                   Mhandle mhandle) {
+PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
+                                   Mhandle *mhandle) {
     uint64_t poll_ctx_;
     DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
     auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
     poll_ctx->engine_idx = conn_id.engine_idx;
+    poll_ctx->num_unfinished = 1;
 
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
-        .flow_id = conn_id.flow_id,
-        .data = data,
         .len = 0,
         .len_p = len_p,
+        .data = data,
         .mhandle = mhandle,
+        .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
         .poll_ctx = poll_ctx,
     };
     Channel::enqueue_mp(channel_vec_[conn_id.engine_idx]->rx_task_q_, &msg);
+    return poll_ctx;
+}
+
+PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
+                                         int *len_p, Mhandle **mhandle, int n) {
+    uint64_t poll_ctx_;
+    DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
+    auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
+    poll_ctx->engine_idx = conn_id.engine_idx;
+    poll_ctx->num_unfinished = n;
+
+    Channel::Msg msg[kMaxMultiRecv];
+    for (int i = 0; i < n; i++) {
+        msg[i] = {
+            .opcode = Channel::Msg::Op::kRx,
+            .len = 0,
+            .len_p = &len_p[i],
+            .data = data[i],
+            .mhandle = mhandle[i],
+            .flow_id = conn_id.flow_id,
+            .deser_msgs = nullptr,
+            .poll_ctx = poll_ctx,
+        };
+    }
+    Channel::enqueue_mp_multi(channel_vec_[conn_id.engine_idx]->rx_task_q_,
+                              (void *)msg, n);
     return poll_ctx;
 }
 
@@ -1566,6 +1638,34 @@ bool Endpoint::uccl_poll_once(PollCtx *ctx) {
     return true;
 }
 
+int Endpoint::uccl_regmr_dmabuf(int dev, void *addr, size_t len, int type,
+                                int offset, int fd, struct Mhandle **mhandle) {
+    auto factory_dev = EFAFactory::GetEFADevice(dev);
+    *mhandle = new Mhandle();
+
+    (*mhandle)->mr =
+        ibv_reg_dmabuf_mr(factory_dev->pd, offset, len, (uint64_t)addr, fd,
+                          IBV_ACCESS_LOCAL_WRITE);
+
+    return 0;
+}
+
+int Endpoint::uccl_regmr(int dev, void *addr, size_t len,
+                         int type /*unsed for now*/, struct Mhandle **mhandle) {
+    auto factory_dev = EFAFactory::GetEFADevice(dev);
+
+    *mhandle = new Mhandle();
+    (*mhandle)->mr =
+        ibv_reg_mr(factory_dev->pd, addr, len, IBV_ACCESS_LOCAL_WRITE);
+
+    return 0;
+}
+
+void Endpoint::uccl_deregmr(struct Mhandle *mhandle) {
+    ibv_dereg_mr(mhandle->mr);
+    delete mhandle;
+}
+
 void Endpoint::install_flow_on_engine(FlowID flow_id,
                                       const std::string &remote_ip,
                                       uint32_t local_engine_idx,
@@ -1580,6 +1680,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
 
     // Install flow and dst ports on engine.
     auto *poll_ctx = new PollCtx();
+    poll_ctx->num_unfinished = 1;
     Channel::CtrlMsg ctrl_msg = {
         .opcode = Channel::CtrlMsg::Op::kInstallFlow,
         .flow_id = flow_id,
@@ -1602,12 +1703,14 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     net_barrier(bootstrap_fd);
 }
 
-inline int Endpoint::find_least_loaded_engine_idx_and_update() {
+inline int Endpoint::find_least_loaded_engine_idx_and_update(int dev_idx) {
     std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
-    if (engine_load_vec_.empty()) return -1;  // Handle empty vector case
 
-    auto minElementIter =
-        std::min_element(engine_load_vec_.begin(), engine_load_vec_.end());
+    auto si = dev_idx * kNumEnginesPerDev;
+    auto ei = (dev_idx + 1) * kNumEnginesPerDev;
+
+    auto minElementIter = std::min_element(engine_load_vec_.begin() + si,
+                                           engine_load_vec_.begin() + ei);
     *minElementIter += 1;
     return std::distance(engine_load_vec_.begin(), minElementIter);
 }
