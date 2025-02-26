@@ -4,7 +4,7 @@ AWS EFA support for UCCL.
 
 ## Install dependencies
 ```
-sudo apt-get install libibverbs-dev libpci-dev -y
+sudo apt-get install libibverbs-dev libpci-dev nvtop -y
 ```
 
 ## Install lastest perftest to benchmark EFA

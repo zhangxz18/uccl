@@ -258,7 +258,7 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
     CHECK(ret == cudaSuccess) << "Failed to create cuda stream";
 
     // Temporarily buffering Msg that are being copied by the cuda kernel.
-    std::deque<Channel::Msg> being_copy_queue_;
+    std::deque<Channel::Msg> ongoing_copy_queue;
     auto *socket = engine->socket_;
     auto *channel = engine->channel_;
 
@@ -285,10 +285,6 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
                 VLOG(2) << "payload_len: " << payload_len
                         << " seqno: " << std::dec << ucclh->seqno.value();
 
-                // TODO(yang): cudaMemcpy or custom cuda kernel for reassembly.
-                // auto *payload_addr = (uint8_t
-                // *)ready_msg->get_pkt_data_addr(); memcpy((uint8_t *)app_buf +
-                // cur_offset, payload_addr, payload_len);
                 copy_param_->dst[copy_idx] = (uint64_t)app_buf + cur_offset;
                 copy_param_->src[copy_idx] = ready_msg->get_pkt_data_addr();
                 copy_param_->len[copy_idx] = (uint32_t)payload_len;
@@ -306,16 +302,41 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
                 ready_msg = ready_msg->next();
             }
 
-            launchScatteredMemcpyAsync(copy_idx, copy_param_, copy_stream_);
-            being_copy_queue_.push_back(rx_copy_work);
+            CHECK(copy_idx <= MAX_COPIES)
+                << "Too many copies in one message chunk";
+
+            if (copy_idx <= 4) {
+                launchScatteredMemcpy(copy_idx, copy_param_);
+
+                // for (int i = 0; i < copy_idx; i++) {
+                //     cudaMemcpy((void *)copy_param_->dst[i],
+                //                (void *)copy_param_->src[i], copy_param_->len[i],
+                //                cudaMemcpyDeviceToDevice);
+                // }
+
+                Channel::enqueue_sp(channel->rx_copy_done_q_, &rx_copy_work);
+
+                // Wakeup app thread waiting on endpoint.
+                poll_ctx->write_barrier();
+                {
+                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                    poll_ctx->done = true;
+                    poll_ctx->cv.notify_one();
+                }
+                VLOG(2) << "Received a complete message " << *app_buf_len_p
+                        << " bytes";
+            } else {
+                launchScatteredMemcpyAsync(copy_idx, copy_param_, copy_stream_);
+                ongoing_copy_queue.push_back(rx_copy_work);
+            }
         }
 
         // TODO(yang): using multiple streams to fine-grained poll when each
         // kernel finishes.
         auto copy_done = pollScatteredMemcpy(copy_stream_);
         if (copy_done) {
-            while (!being_copy_queue_.empty()) {
-                auto &rx_copy_done_work = being_copy_queue_.back();
+            while (!ongoing_copy_queue.empty()) {
+                auto &rx_copy_done_work = ongoing_copy_queue.back();
                 auto poll_ctx = rx_copy_done_work.poll_ctx;
                 auto *app_buf_len_p = rx_copy_done_work.len_p;
 
@@ -332,10 +353,11 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
                 VLOG(2) << "Received a complete message " << *app_buf_len_p
                         << " bytes";
 
-                being_copy_queue_.pop_back();
+                ongoing_copy_queue.pop_back();
             }
         }
-        // LOG(INFO) << "being_copy_queue_ size: " << being_copy_queue_.size();
+        // LOG(INFO) << "ongoing_copy_queue size: " <<
+        // ongoing_copy_queue.size();
     }
 }
 

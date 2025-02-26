@@ -31,6 +31,12 @@ DEFINE_string(
 
 enum TestType { kBasic, kAsync, kPingpong, kMt, kMc, kMq, kBiMq, kTput };
 
+uint64_t* get_host_ptr(uint64_t* dev_ptr, size_t size) {
+    uint64_t* host_ptr = (uint64_t*)malloc(size);
+    cudaMemcpy(host_ptr, dev_ptr, size, cudaMemcpyDeviceToHost);
+    return host_ptr;
+}
+
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
@@ -38,14 +44,15 @@ int main(int argc, char* argv[]) {
 
     kTestMsgSize = FLAGS_size;
     kMaxInflight = FLAGS_infly;
-    
+
     bool is_client;
     if (!FLAGS_serverip.empty()) {
         is_client = true;
     } else if (!FLAGS_clientip.empty()) {
         is_client = false;
     } else {
-        LOG(FATAL) << "Please specify server IP or client IP, and only one of them.";
+        LOG(FATAL)
+            << "Please specify server IP or client IP, and only one of them.";
     }
 
     TestType test_type;
@@ -116,10 +123,8 @@ int main(int argc, char* argv[]) {
                                    IBV_ACCESS_LOCAL_WRITE);
         }
 
-        uint64_t* data_u64[kNumEngines];
-        for (int i = 0; i < kNumEngines; i++) {
-            data_u64[i] = reinterpret_cast<uint64_t*>(data[i]);
-        }
+        uint64_t* data_u64;
+        data_u64 = reinterpret_cast<uint64_t*>(data[0]);
 
         size_t sent_bytes = 0;
         std::vector<uint64_t> rtts;
@@ -132,9 +137,12 @@ int main(int argc, char* argv[]) {
             if (FLAGS_rand) send_len = distribution(generator);
 
             if (FLAGS_verify) {
-                // for (int j = 0; j < send_len / sizeof(uint64_t); j++) {
-                //     data_u64[j] = (uint64_t)i * (uint64_t)j;
-                // }
+                auto host_data_u64 = get_host_ptr(data_u64, send_len);
+                for (int j = 0; j < send_len / sizeof(uint64_t); j++) {
+                    host_data_u64[j] = (uint64_t)i * (uint64_t)j;
+                }
+                cudaMemcpy(data_u64, host_data_u64, send_len,
+                           cudaMemcpyHostToDevice);
             }
             switch (test_type) {
                 case kBasic: {
@@ -376,10 +384,8 @@ int main(int argc, char* argv[]) {
                                    IBV_ACCESS_LOCAL_WRITE);
         }
 
-        uint64_t* data_u64[kNumEngines];
-        for (int i = 0; i < kNumEngines; i++) {
-            data_u64[i] = reinterpret_cast<uint64_t*>(data[i]);
-        }
+        uint64_t* data_u64;
+        data_u64 = reinterpret_cast<uint64_t*>(data[0]);
 
         std::deque<PollCtx*> poll_ctxs;
         PollCtx* last_ctx = nullptr;
@@ -516,26 +522,28 @@ int main(int argc, char* argv[]) {
                     std::chrono::high_resolution_clock::now() - start);
 
             if (FLAGS_verify) {
-                // bool data_mismatch = false;
-                // auto expected_len = FLAGS_rand ? send_len : kTestMsgSize;
-                // if (recv_len != expected_len) {
-                //     LOG(ERROR) << "Received message size mismatches, expected
-                //     "
-                //                << expected_len << ", received " << recv_len;
-                //     data_mismatch = true;
-                // }
-                // for (int j = 0; j < recv_len / sizeof(uint64_t); j++) {
-                //     if (data_u64[j] != (uint64_t)i * (uint64_t)j) {
-                //         data_mismatch = true;
-                //         LOG_EVERY_N(ERROR, 1000)
-                //             << "Data mismatch at index " << j *
-                //             sizeof(uint64_t)
-                //             << ", expected " << (uint64_t)i * (uint64_t)j
-                //             << ", received " << data_u64[j];
-                //     }
-                // }
-                // CHECK(!data_mismatch) << "Data mismatch at iter " << i;
-                // memset(data, 0, recv_len);
+                auto host_data_u64 = get_host_ptr(data_u64, send_len);
+
+                bool data_mismatch = false;
+                auto expected_len = FLAGS_rand ? send_len : kTestMsgSize;
+                if (recv_len != expected_len) {
+                    LOG(ERROR) << "Received message size mismatches, expected "
+                               << expected_len << ", received " << recv_len;
+                    data_mismatch = true;
+                }
+                for (int j = 0; j < recv_len / sizeof(uint64_t); j++) {
+                    if (host_data_u64[j] != (uint64_t)i * (uint64_t)j) {
+                        data_mismatch = true;
+                        LOG_EVERY_N(ERROR, 1000)
+                            << "Data mismatch at index " << j * sizeof(uint64_t)
+                            << ", expected " << (uint64_t)i * (uint64_t)j
+                            << ", received " << host_data_u64[j];
+                    }
+                }
+                CHECK(!data_mismatch) << "Data mismatch at iter " << i;
+                memset(host_data_u64, 0, recv_len);
+                cudaMemcpy(data_u64, host_data_u64, send_len,
+                           cudaMemcpyHostToDevice);
             }
 
             LOG_EVERY_N(INFO, kReportIters)
