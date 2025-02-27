@@ -257,17 +257,17 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
 
     struct ibv_recv_wr wr;
     memset(&wr, 0, sizeof(wr));
-
+    
     // Create Credit QP, SCQ/RCQ and MR for engine or pacer.
     credit_local_psn_ = BASE_PSN;
     util_rdma_create_qp_seperate_cq(context_, &credit_qp_, IBV_QPT_UC, true, false, 
         (struct ibv_cq **)&pacer_credit_cq_ex_, (struct ibv_cq **)&engine_credit_cq_ex_, false, kCQSize, pd_, eqds::CreditChunkBuffPool::kNumChunk, eqds::CreditChunkBuffPool::kNumChunk, 1, 1);
-    
+        
     auto addr = mmap(nullptr, eqds::CreditChunkBuffPool::kCreditMRSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     UCCL_INIT_CHECK(addr != MAP_FAILED, "mmap failed");
     engine_credit_mr_ = ibv_reg_mr(pd_, addr, eqds::CreditChunkBuffPool::kCreditMRSize, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     UCCL_INIT_CHECK(engine_credit_mr_ != nullptr, "ibv_reg_mr failed for engine credit MR");
-
+    
     addr = mmap(nullptr, eqds::CreditChunkBuffPool::kCreditMRSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     UCCL_INIT_CHECK(addr != MAP_FAILED, "mmap failed");
     pacer_credit_mr_ = ibv_reg_mr(pd_, addr, eqds::CreditChunkBuffPool::kCreditMRSize, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
@@ -280,9 +280,11 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
     pc_qpw_.credit_qp_ = credit_qp_;
     pc_qpw_.pacer_credit_cq_ = pacer_credit_cq_ex_;
     pc_qpw_.pacer_credit_chunk_pool_ = &(*pacer_credit_chunk_pool_);
-    INIT_LIST_HEAD(&pc_qpw_.poll_item.poll_link);
 
-    // Populate recv work requests on Ctrl QP for consuming control packets.
+    INIT_LIST_HEAD(&pc_qpw_.poll_item.poll_link);
+    pc_qpw_.poll_item.pc_qpw = &pc_qpw_;
+
+    // Populate recv work requests on Credit QP for consuming credit packets.
     {
         struct ibv_sge sge;
         for (int i = 0; i < (eqds::CreditChunkBuffPool::kNumChunk - 1) / 2; i++) {
@@ -297,7 +299,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
             wr.sg_list = &sge;
             wr.num_sge = 1;
             struct ibv_recv_wr *bad_wr;
-            if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
+            if (ibv_post_recv(credit_qp_, &wr, &bad_wr))
                 throw std::runtime_error("ibv_post_recv failed");
         }
     }

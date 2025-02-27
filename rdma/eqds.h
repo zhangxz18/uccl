@@ -45,7 +45,7 @@ struct PacerCreditQPWrapper {
 class CreditChunkBuffPool : public BuffPool {
 public:
     static constexpr uint32_t kPktSize = 4;
-    static constexpr uint32_t kChunkSize = kPktSize * kMaxBatchCQ;
+    static constexpr uint32_t kChunkSize = kPktSize * 1;
     static constexpr uint32_t kNumChunk = kMaxBatchCQ << 6;
     static constexpr uint32_t kCreditMRSize = kNumChunk * kChunkSize;
     static_assert((kNumChunk & (kNumChunk - 1)) == 0, "kNumChunk must be power of 2");
@@ -67,8 +67,24 @@ struct idle_item {
 
 typedef uint8_t PullQuanta;
 
-#define PULL_QUANTUM 4096
-#define PULL_SHIFT 12
+constexpr bool pullno_lt(PullQuanta a, PullQuanta b) {
+    return static_cast<int8_t>(a - b) < 0;
+}
+constexpr bool pullno_le(PullQuanta a, PullQuanta b) {
+    return static_cast<int8_t>(a - b) <= 0;
+}
+constexpr bool pullno_eq(PullQuanta a, PullQuanta b) {
+    return static_cast<int8_t>(a - b) == 0;
+}
+constexpr bool pullno_ge(PullQuanta a, PullQuanta b) {
+    return static_cast<int8_t>(a - b) >= 0;
+}
+constexpr bool pullno_gt(PullQuanta a, PullQuanta b) {
+    return static_cast<int8_t>(a - b) > 0;
+}
+
+#define PULL_QUANTUM 16384
+#define PULL_SHIFT 14
 
 static inline uint32_t unquantize(uint8_t pull_quanta) {
     return (uint32_t)pull_quanta << PULL_SHIFT;
@@ -187,7 +203,7 @@ struct EQDSCC {
 
     inline bool handle_pull_target(PullQuanta pull_target) {
         PullQuanta hpt = highest_pull_target_.load();
-        if (pull_target > hpt) {
+        if (pullno_gt(pull_target, hpt)) {
             // Only we can increase the pull target.
             highest_pull_target_.store(pull_target);
             return true;
@@ -196,7 +212,7 @@ struct EQDSCC {
     }
 
     inline bool handle_pull(PullQuanta pullno) {
-        if (pullno > pull_) {
+        if (pullno_gt(pullno, pull_)) {
             PullQuanta extra_credit = pullno - pull_;
             credit_pull_ += unquantize(extra_credit);
             if (credit_pull_ > kEQDSMaxCwnd) {
@@ -220,15 +236,17 @@ struct EQDSCC {
 
     inline void init_active_item(void) {
         INIT_LIST_HEAD(&active_item.active_link);
+        active_item.eqds_cc = this;
     }
 
     inline void init_idle_item(void) {
         INIT_LIST_HEAD(&idle_item.idle_link);
+        idle_item.eqds_cc = this;
     }
 
     inline PullQuanta backlog() {
         auto hpt = highest_pull_target_.load();
-        if (hpt > latest_pull_) {
+        if (pullno_gt(hpt, latest_pull_)) {
             return hpt - latest_pull_;
         } else {
             return 0;
@@ -239,7 +257,7 @@ struct EQDSCC {
         PullQuanta idle_cumulate_credit;
         auto hpt = highest_pull_target_.load();
 
-        if (hpt >= latest_pull_) {
+        if (pullno_ge(hpt, latest_pull_)) {
             idle_cumulate_credit = 0;
         } else {
             idle_cumulate_credit = latest_pull_ - hpt;
@@ -278,11 +296,11 @@ class EQDS {
 public:
 
     // How many credits to grant per pull.
-    static constexpr PullQuanta kCreditPerPull = 8;
+    static constexpr PullQuanta kCreditPerPull = 4;
     // How many senders to grant credit per iteration.
-    static constexpr uint32_t kSendersPerPull = 4;
+    static constexpr uint32_t kSendersPerPull = 2;
 
-    // Reference: for PULL_QUANTUM = 4096, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 8, kSendersPerPull = 4,
+    // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 4, kSendersPerPull = 2,
     // kPacingIntervalUs ~= 2.65 us.
     static constexpr uint64_t kPacingIntervalUs = 0.99 /* slower than line rate */ * 8 * (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 * kSendersPerPull / (kLinkBandwidth * 8);
 
