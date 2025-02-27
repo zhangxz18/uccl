@@ -337,7 +337,7 @@ struct ucclRequest {
         } recv;
         struct {
             int data_len;
-            int tx_events;
+            int inc_backlog;
             uint64_t laddr;
             uint64_t raddr;
             uint32_t lkey;

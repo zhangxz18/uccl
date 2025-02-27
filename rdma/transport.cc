@@ -1079,7 +1079,7 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle, const
             }
         }
         ureq->context = flow;
-        ureq->send.tx_events = 0;
+        ureq->send.inc_backlog = 0;
         // Track this request.
         ureqs[i] = ureq;
 

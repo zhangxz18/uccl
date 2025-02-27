@@ -510,8 +510,8 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
 
     auto now = rdtsc();
 
-    if (ureq->send.tx_events == 0) {
-        ureq->send.tx_events = (size + kChunkSize - 1) / kChunkSize;
+    if (ureq->send.inc_backlog == 0) {
+        ureq->send.inc_backlog = 1;
         subflow->backlog_bytes_ += size;
     }
 
@@ -598,10 +598,6 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
     uint32_t chunk_size;
 
     auto now = rdtsc();
-
-    if (ureq->send.tx_events == 0) {
-        ureq->send.tx_events = (size + kChunkSize - 1) / kChunkSize;
-    }
 
     while (*sent_offset < size) {
 
