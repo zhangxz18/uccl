@@ -422,6 +422,9 @@ void UcclRDMAEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work)
 
             subflow->eqds_cc.init_idle_item();
 
+            subflow->eqds_cc.highest_pull_target_.store(eqds::EQDSCC::INIT_PULL_QUANTA);
+            subflow->eqds_cc.latest_pull_ = eqds::EQDSCC::INIT_PULL_QUANTA;
+
             eqds_->request_pull(&subflow->eqds_cc);
         }
     }

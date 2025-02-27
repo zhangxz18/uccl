@@ -85,7 +85,7 @@ static inline PullQuanta quantize_ceil(uint32_t bytes) {
 // Per-QP congestion control state for EQDS.
 struct EQDSCC {
 
-    static constexpr PullQuanta INIT_PULL_QUANTA = 200;
+    static constexpr PullQuanta INIT_PULL_QUANTA = 50;
     static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
     
     /********************************************************************/
@@ -95,7 +95,7 @@ struct EQDSCC {
     // Last received highest credit in PullQuanta.
     PullQuanta pull_ = INIT_PULL_QUANTA;
 
-    PullQuanta pull_target_ = INIT_PULL_QUANTA;
+    PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
 
     // Receive request credit in PullQuanta, but consume it in bytes
     uint32_t credit_pull_ = 0;
@@ -168,9 +168,9 @@ struct EQDSCC {
         else
             pull_target_bytes = 0;
 
-        pull_target_bytes += quantize_ceil(pull_);
+        pull_target_bytes += unquantize(pull_);
 
-        PullQuanta old_pull_target_bytes = unquantize(pull_target_);
+        PullQuanta old_pull_target_bytes = unquantize(last_sent_pull_target_);
 
         if (!in_speculating_ && credit_spec_ > 0 && pull_target_bytes - old_pull_target_bytes < PULL_QUANTUM/2) {
             if (credit_spec_ > PULL_QUANTUM)
@@ -180,9 +180,9 @@ struct EQDSCC {
             pull_target_bytes += PULL_QUANTUM;
         }
 
-        pull_target_ = quantize_ceil(pull_target_bytes);
+        last_sent_pull_target_ = quantize_ceil(pull_target_bytes);
 
-        return pull_target_;
+        return last_sent_pull_target_;
     }
 
     inline bool handle_pull_target(PullQuanta pull_target) {
