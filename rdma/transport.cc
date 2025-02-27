@@ -414,12 +414,10 @@ void UcclRDMAEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work)
             auto *subflow = flow->sub_flows_[engine_idx_ % NUM_ENGINES];
             
             subflow->eqds_cc.set_fid(flow_id);
-            
             // All subflows belong to the same RDMAContext share the same PacerCreditQPWrapper.
             subflow->eqds_cc.set_pacer_credit_qpw(&rdma_ctx->pc_qpw_);
 
             subflow->eqds_cc.init_active_item();
-
             subflow->eqds_cc.init_idle_item();
 
             subflow->eqds_cc.highest_pull_target_.store(eqds::EQDSCC::INIT_PULL_QUANTA);
@@ -866,6 +864,8 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int remote_dev, std::string remote_ip
     // Step3: install RDMAContexts on both sides if needed.
     safe_install_ctx(dev, bootstrap_fd, local_lock_first, remote_ip, remote_dev, &peer_id, &remote_ctx);
 
+    CHECK(peer_id < MAX_PEER);
+
     // Step4: negotiate FlowID with server.
     ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
     DCHECK(ret == sizeof(FlowID)) << "uccl_connect: receive_message()";
@@ -922,6 +922,8 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, std::string &remote_ip,
 
     // Step3: install RDMAContexts on both sides if needed.
     safe_install_ctx(dev, bootstrap_fd, local_lock_first, remote_ip, *remote_dev, &peer_id, &remote_ctx);
+
+    CHECK(peer_id < MAX_PEER);
      
     // Step4: negotiate FlowID with client.
     flow_id_spin_[dev][peer_id].Lock();

@@ -606,8 +606,8 @@ class RDMAContext {
 
         uint32_t engine_offset_;
 
-        void *sender_flow_tbl_[MAX_FLOW];
-        void *receiver_flow_tbl_[MAX_FLOW];
+        void *sender_flow_tbl_[MAX_FLOW] = {};
+        void *receiver_flow_tbl_[MAX_FLOW] = {};
 
         // Track outstanding RECV requests.
         struct RecvRequest reqs_[kMaxReq];
