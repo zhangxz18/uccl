@@ -56,14 +56,10 @@ elif [ "$TEST" = "ud" ]; then
         --mca btl_tcp_if_include ${NIC} \
         -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
         -x NCCL_DEBUG=INFO \
-        -x UCCL_ENGINE_QUIET=1 \
+        -x UCCL_ENGINE_QUIET=0 \
         -x GLOG_logtostderr=1 \
-        -x NCCL_SOCKET_NTHREADS=4 \
-        -x NCCL_NSOCKS_PERTHREAD=2 \
-        -x NCCL_MAX_NCHANNELS=8 \
-        -x NCCL_MIN_NCHANNELS=8 \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 1K -e 1G -f 2 -g 1 -w 1 -n 100 -t 1 \
+        -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -t 1 \
         2>&1 | while read -r line; do
         # Extract rank from the format [1,2]
         if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
@@ -76,6 +72,11 @@ elif [ "$TEST" = "ud" ]; then
         fi
 
         # gdb -ex run --args \
+
+        # -x NCCL_SOCKET_NTHREADS=4 \
+        # -x NCCL_NSOCKS_PERTHREAD=2 \
+        # -x NCCL_MAX_NCHANNELS=8 \
+        # -x NCCL_MIN_NCHANNELS=8 \
     done
 else
     echo "Invalid test: ${TEST}"

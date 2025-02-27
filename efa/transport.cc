@@ -1246,9 +1246,6 @@ Endpoint::Endpoint()
     static std::once_flag flag_once;
     std::call_once(flag_once, []() { EFAFactory::Init(); });
 
-    auto ret = util_efa_get_ip_from_dev_idx(0, &local_ip_str_);
-    CHECK_EQ(ret, 0) << "Failed to get IP address from dev idx 0";
-
     CHECK_LE(num_queues_, NUM_CPUS / 4)
         << "num_queues should be less than or equal to the number of CPUs / 4";
 
@@ -1266,9 +1263,14 @@ Endpoint::Endpoint()
         auto gpu_idx = get_gpu_idx_by_engine_idx(i);
         auto dev_idx = get_dev_idx_by_engine_idx(i);
         auto socket_idx = i;
+
+        std::string local_ip_str;
+        auto ret = util_efa_get_ip_from_dev_idx(dev_idx, &local_ip_str);
+        CHECK_EQ(ret, 0) << "Failed to get IP address from dev idx 0";
+
         // Creating engines sequentially to have inorder QPNs.
         auto engine = std::make_unique<UcclEngine>(
-            local_ip_str_, gpu_idx, dev_idx, socket_idx, channel_vec_[i]);
+            local_ip_str, gpu_idx, dev_idx, socket_idx, channel_vec_[i]);
 
         std::promise<std::unique_ptr<UcclEngine>> engine_promise;
         auto engine_future = engine_promise.get_future();
@@ -1605,7 +1607,7 @@ PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
         msg[i] = {
             .opcode = Channel::Msg::Op::kRx,
             .len = 0,
-            .len_p = &len_p[i],
+            .len_p = &(len_p[i]),
             .data = data[i],
             .mhandle = mhandle[i],
             .flow_id = conn_id.flow_id,

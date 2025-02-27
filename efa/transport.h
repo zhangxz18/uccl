@@ -718,7 +718,6 @@ class Endpoint {
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
     int num_queues_;
-    std::string local_ip_str_;
     Channel *channel_vec_[kNumEngines];
     std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
