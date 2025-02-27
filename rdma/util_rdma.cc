@@ -517,9 +517,11 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
 
     while (*sent_offset < size) {
 
-        chunk_size = std::min(size - *sent_offset, kChunkSize);
+        chunk_size = std::min(kChunkSize, eqds->credit());
+        
+        chunk_size = std::min(chunk_size, size - *sent_offset);
 
-        if (!eqds->credit() || !eqds->spend_credit(chunk_size)) return false;
+        if (!chunk_size || !eqds->spend_credit(chunk_size)) return false;
 
         subflow->backlog_bytes_ -= chunk_size;
 
@@ -565,11 +567,11 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
         struct ibv_send_wr *bad_wr;
         DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
-        *sent_offset += chunk_size;
         // Track this chunk.
-        subflow->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
+        subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
         // Arm timer for TX
         arm_timer_for_flow(subflow);
+        *sent_offset += chunk_size;
 
         VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", fid: " << flow->flowid() << ", " << ureq->n << " with QP#" << qpidx;
 
@@ -654,11 +656,11 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
             struct ibv_send_wr *bad_wr;
             DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
-            *sent_offset += chunk_size;
             // Track this chunk.
-            subflow->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
+            subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
             // Arm timer for TX
             arm_timer_for_flow(subflow);
+            *sent_offset += chunk_size;
 
             VLOG(3) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", fid: " << flow->flowid() << ", " << ureq->n << " with QP#" << qpidx;
 
@@ -695,8 +697,6 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
         imm_data.SetCSN(subflow->pcb.get_snd_nxt().to_uint32());
 
         wr->imm_data = htonl(imm_data.GetImmData());
-
-        *sent_offset += chunk_size;
 
         {
             auto wheel = &wheel_;
@@ -739,13 +739,15 @@ bool RDMAContext::senderCC_tx_messages(struct ucclRequest *ureq)
                 DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
                 // Track this chunk.
-                subflow->txtracking.track_chunk(ureq, imm_data.GetCSN(), wr_ex, now);
+                subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
                 // Arm timer for TX
                 arm_timer_for_flow(subflow);
 
                 VLOG(5) << "Directly sent " << chunk_size << " bytes to QP#" << qpidx;
             }
         }
+
+        *sent_offset += chunk_size;
 
         VLOG(5) << "Sending: csn: " << imm_data.GetCSN() << ", rid: " << ureq->send.rid << ", n: " << ureq->n << " for flow#" << flow->flowid();
 
@@ -769,7 +771,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context, RDMAContext *
     
     while (num_acked_chunks) {
         auto &chunk = unacked_chunks_.front();
-        if (--chunk.ureq->send.tx_events == 0) {
+        if (chunk.last_chunk) {
             auto poll_ctx = chunk.ureq->poll_ctx;
             // Wakeup app thread waiting one endpoint
             uccl_wakeup(poll_ctx);
@@ -973,7 +975,7 @@ void RDMAContext::check_credit_rq(bool force)
             rx_credit_wrs_[i].wr_id = chunk_addr;
         }
         DCHECK(ibv_post_recv(credit_qp_, &rx_credit_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << post_credit_rq_cnt_ << " recv requests for Ctrl QP";
+        VLOG(6) << "Posted " << post_credit_rq_cnt_ << " recv requests for Credit QP";
         post_credit_rq_cnt_ -= kPostRQThreshold;
     }
 
@@ -987,7 +989,7 @@ void RDMAContext::check_credit_rq(bool force)
         }
         rx_credit_wrs_[post_credit_rq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_recv(credit_qp_, &rx_credit_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << post_credit_rq_cnt_ << " recv requests for Ctrl QP";
+        VLOG(6) << "Posted " << post_credit_rq_cnt_ << " recv requests for Credit QP";
         rx_credit_wrs_[post_credit_rq_cnt_ - 1].next = &rx_credit_wrs_[post_credit_rq_cnt_];
         post_credit_rq_cnt_ = 0;
     }
@@ -1005,7 +1007,7 @@ void RDMAContext::check_ctrl_rq(bool force)
             rx_ack_wrs_[i].wr_id = chunk_addr;
         }
         DCHECK(ibv_post_recv(ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
+        VLOG(6) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
         post_ctrl_rq_cnt_ -= kPostRQThreshold;
     }
 
@@ -1019,7 +1021,7 @@ void RDMAContext::check_ctrl_rq(bool force)
         }
         rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_recv(ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
+        VLOG(6) << "Posted " << post_ctrl_rq_cnt_ << " recv requests for Ctrl QP";
         rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = &rx_ack_wrs_[post_ctrl_rq_cnt_];
         post_ctrl_rq_cnt_ = 0;
     }
@@ -1030,7 +1032,7 @@ void RDMAContext::check_srq(bool force)
     while (post_srq_cnt_ >= kPostRQThreshold) {
         struct ibv_recv_wr *bad_wr;
         DCHECK(ibv_post_srq_recv(srq_, &imm_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << kPostRQThreshold << " recv requests for SRQ";
+        VLOG(6) << "Posted " << kPostRQThreshold << " recv requests for SRQ";
         post_srq_cnt_ -= kPostRQThreshold;
     }
 
@@ -1038,7 +1040,7 @@ void RDMAContext::check_srq(bool force)
         struct ibv_recv_wr *bad_wr;
         imm_wrs_[post_srq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_srq_recv(srq_, &imm_wrs_[0], &bad_wr) == 0);
-        VLOG(5) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
+        VLOG(6) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
         imm_wrs_[post_srq_cnt_ - 1].next = &imm_wrs_[post_srq_cnt_];
         post_srq_cnt_ = 0;
     }
@@ -1466,11 +1468,10 @@ void RDMAContext::burst_timing_wheel(void)
 
         auto ret = ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr);
         DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
-
         
         // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
-        subflow->txtracking.track_chunk(wr_ex->ureq, imm_data.GetCSN(), wr_ex, rdtsc());
+        subflow->txtracking.track_chunk(wr_ex->ureq, wr_ex, rdtsc(), imm_data.GetCSN(), imm_data.GetHINT());
         VLOG(5) << "Burst send: csn: " << imm_data.GetCSN() << " with QP#" << wr_ex->qpidx;
         // Arm timer for TX
         arm_timer_for_flow(subflow);
@@ -1826,7 +1827,7 @@ void RDMAContext::rc_rx_chunk(void)
 
 void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
 {
-    VLOG(5) << "senderCC_rx_chunk";
+    VLOG(5) << "receiverCC_rx_chunk";
     auto cq_ex = recv_cq_ex_;
     auto now = rdtsc();
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
@@ -2052,6 +2053,8 @@ void RDMAContext::flush_acks(int num_ack, uint64_t chunk_addr)
 
     struct ibv_send_wr *bad_wr;
     DCHECK(ibv_post_send(ctrl_qp_, &tx_ack_wr_, &bad_wr) == 0);
+
+    VLOG(5) << "Flush " << num_ack << " ACKs";
 }
 
 void RDMAContext::craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr, int num_sge)

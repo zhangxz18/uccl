@@ -151,7 +151,7 @@ static constexpr std::size_t kSackBitmapSize = 64 << 1;
 // This is true for flow-level ECMP, which is the common case.
 // When the network supports adaptive routing, duplicate acks may be caused by adaptive routing.
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
-static constexpr std::size_t kFastRexmitDupAckThres = 16;
+static constexpr std::size_t kFastRexmitDupAckThres = 64;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static constexpr uint32_t kRTOAbortThreshold = 50;
@@ -178,5 +178,5 @@ static constexpr bool kTestConstantRate = false;
 static constexpr bool kTestLoss = false;
 static constexpr double kTestLossRate = 0.0;
 // Disable RTO.
-static constexpr bool kTestNoRTO = false;
+static constexpr bool kTestNoRTO = true;
 /// Debugging and testing.

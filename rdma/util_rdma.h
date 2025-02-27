@@ -457,9 +457,10 @@ class TXTracking {
     public:
         struct ChunkTrack {
             struct ucclRequest *ureq;
-            uint32_t csn;
             struct wr_ex *wr_ex;
             uint64_t timestamp;
+            uint32_t csn;
+            bool last_chunk;
         };
 
         TXTracking() = default;
@@ -480,8 +481,8 @@ class TXTracking {
         uint64_t ack_transmitted_chunks(void *subflow_context, RDMAContext *rdma_ctx, uint32_t num_acked_chunks, 
                 uint64_t t5, uint64_t t6, uint64_t remote_queueing_tsc, uint32_t *outstanding_bytes);
 
-        inline void track_chunk(struct ucclRequest *ureq, uint32_t csn, struct wr_ex * wr_ex, uint64_t timestamp) {
-            unacked_chunks_.push_back({ureq, csn, wr_ex, timestamp});
+        inline void track_chunk(struct ucclRequest *ureq, struct wr_ex * wr_ex, uint64_t timestamp, uint32_t csn, bool last_chunk) {
+            unacked_chunks_.push_back({ureq, wr_ex, timestamp, csn, last_chunk});
         }
 
         inline size_t track_size(void) {

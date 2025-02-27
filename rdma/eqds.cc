@@ -118,11 +118,11 @@ void EQDS::handle_pull_request(void)
                     }
                     // Add it to the active list.
                     list_add_tail(&sink->active_item.active_link, &active_senders_);
+                    VLOG(5) << "Registered in pacer pull queue.";
                 } else {
                     // Already in the active list. Do nothing.
                 }
                 std::atomic_thread_fence(std::memory_order_acquire);
-                VLOG(5) << "Registered in pacer pull queue.";
                 break;
             default:
                 LOG(ERROR) << "Unknown opcode: " << msg.opcode;
