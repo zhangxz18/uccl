@@ -46,6 +46,27 @@ void EQDS::handle_grant_credit()
 
             if (++budget >= kSendersPerPull) break;
         }
+
+        if (budget < kSendersPerPull) {
+            // Once again.
+            list_for_each_safe(pos, n, &active_senders_) {
+                auto item = list_entry(pos, struct active_item, active_link);
+                auto *sink = item->eqds_cc;
+                list_del(pos);
+    
+                if (grant_credit(sink)) {
+                    // Grant done, add it to idle sender list.
+                    DCHECK(list_empty(&sink->idle_item.idle_link));
+                    list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
+                } else {
+                    // We have not satisfied its demand, re-add it to the active sender list.
+                    list_add_tail(pos, &active_senders_);
+                }
+    
+                if (++budget >= kSendersPerPull) break;
+            }
+        }
+
     } else {
         // No active sender.
         list_for_each_safe(pos, n, &idle_senders_) {
@@ -57,6 +78,8 @@ void EQDS::handle_grant_credit()
                 // Grant done but we can still grant more credit for this sender.
                 list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
             }
+
+            break;
         }
     }
 

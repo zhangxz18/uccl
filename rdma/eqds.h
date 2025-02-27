@@ -290,7 +290,7 @@ public:
     // How many credits to grant per pull.
     static constexpr PullQuanta kCreditPerPull = 4;
     // How many senders to grant credit per iteration.
-    static constexpr uint32_t kSendersPerPull = 2;
+    static constexpr uint32_t kSendersPerPull = 4;
 
     // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 4, kSendersPerPull = 2,
     // kPacingIntervalUs ~= 2.65 us.
