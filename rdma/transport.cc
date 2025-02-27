@@ -429,6 +429,8 @@ void UcclRDMAEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work)
         }
     }
 
+    VLOG(5) << "Installed flow: " << flow_id << " on engine: " << engine_idx_ << (is_send ? " (send)" : " (recv)");
+
     uccl_wakeup(poll_ctx);
 }
 

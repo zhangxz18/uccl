@@ -1110,6 +1110,13 @@ void RDMAContext::rx_credit(uint64_t pkt_addr)
     auto pullno = ucclpullh->pullno.value();
 
     auto *flow = reinterpret_cast<UcclFlow *>(sender_flow_tbl_[fid]);
+
+    if (unlikely(!flow)) {
+        // No Bug. This only happens during connection setup when the sender 
+        // is not ready while the receiver has already started to send credits.
+        return;
+    }
+
     auto *subflow = flow->sub_flows_[engine_offset_];
 
     if (subflow->eqds_cc.handle_pull(pullno)) {

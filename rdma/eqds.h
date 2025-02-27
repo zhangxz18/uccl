@@ -102,7 +102,7 @@ static inline PullQuanta quantize_ceil(uint32_t bytes) {
 struct EQDSCC {
 
     static constexpr PullQuanta INIT_PULL_QUANTA = 50;
-    static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
+    static constexpr uint32_t kEQDSMaxCwnd = 100000; // Bytes
     
     /********************************************************************/
     /************************ Sender-side states ************************/
@@ -110,15 +110,11 @@ struct EQDSCC {
     
     // Last received highest credit in PullQuanta.
     PullQuanta pull_ = INIT_PULL_QUANTA;
-
     PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
-
     // Receive request credit in PullQuanta, but consume it in bytes
     uint32_t credit_pull_ = 0;
     uint32_t credit_spec_ = kEQDSMaxCwnd;
-
     bool in_speculating_ = true;
-
     /********************************************************************/
     /*********************** Receiver-side states ***********************/
     /********************************************************************/
@@ -126,16 +122,12 @@ struct EQDSCC {
     /***************** Shared between engine and pacer ******************/
     std::atomic<PullQuanta> highest_pull_target_;
 
-
-    /**************************** Pacer only*****************************/
+    /*************************** Pacer only *****************************/
     PullQuanta latest_pull_;
-
     struct active_item active_item;
     struct idle_item idle_item;
-    
     /************************* No modification **************************/
     uint32_t fid_;
-
     struct PacerCreditQPWrapper *pc_qpw_;
 
     inline uint32_t credit() { return credit_pull_ + credit_spec_; }
@@ -302,7 +294,7 @@ public:
 
     // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 4, kSendersPerPull = 2,
     // kPacingIntervalUs ~= 2.65 us.
-    static constexpr uint64_t kPacingIntervalUs = 0.99 /* slower than line rate */ * 8 * (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 * kSendersPerPull / (kLinkBandwidth * 8);
+    static constexpr uint64_t kPacingIntervalUs = 0.99 /* slower than line rate */ * (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 * kSendersPerPull / kLinkBandwidth;
 
     EQDSChannel channel_;
 
