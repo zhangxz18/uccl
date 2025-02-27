@@ -1540,6 +1540,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is invalid for this barrier. Dropping.";
+        subflow->pcb.stats_barrier_drop++;
         return;
     }
 
@@ -1558,6 +1559,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
             retr_chunk_pool_->free_buff(chunk_addr);
             subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
+            subflow->pcb.stats_retr_chunk_drop++;
         }
         subflow->pcb.stats_barrier_drop++;
         return;
@@ -1573,6 +1575,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
             retr_chunk_pool_->free_buff(chunk_addr);
             subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
+            subflow->pcb.stats_retr_chunk_drop++;
         }
         subflow->pcb.stats_barrier_drop++;
         return;
@@ -1592,6 +1595,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
             retr_chunk_pool_->free_buff(chunk_addr);
             subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
             VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
+            subflow->pcb.stats_retr_chunk_drop++;
         }
         subflow->pcb.stats_barrier_drop++;
         return;
@@ -1691,6 +1695,7 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is invalid for this retransmission chunk. Dropping.";
         retr_chunk_pool_->free_buff(chunk_addr);
+        subflow->pcb.stats_retr_chunk_drop++;
         return;
     }
 
@@ -1846,6 +1851,7 @@ void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is invalid for this chunk. Dropping.";
+        subflow->pcb.stats_chunk_drop++;
         return;
     }
 
@@ -1856,7 +1862,7 @@ void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
     if ((UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))) {
         VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
-                    subflow->pcb.stats_chunk_drop++;
+        subflow->pcb.stats_chunk_drop++;
         return;
     }
 
@@ -1951,6 +1957,7 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is invalid for this chunk. Dropping.";
+        subflow->pcb.stats_chunk_drop++;
         return;
     }
 
@@ -1961,7 +1968,7 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
     if ((UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))) {
         VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
-                    subflow->pcb.stats_chunk_drop++;
+        subflow->pcb.stats_chunk_drop++;
         return;
     }
 
@@ -2223,24 +2230,24 @@ std::string RDMAContext::to_string()
     uint32_t stats_chunk_drop = 0;
     uint32_t stats_barrier_drop = 0;
     uint32_t stats_retr_chunk_drop = 0;
+    uint32_t stats_retr_chunk_pending = 0;
     uint32_t stats_ooo = 0;
     uint32_t stats_real_ooo = 0;
     uint32_t stats_maxooo = 0;
 
-    // Only count 16 flows.
-    for (int fid = 0; fid < 16; fid++) {
+    for (int fid = 0; fid < flow_cnt_; fid++) {
         {
+            // Sender flows
             auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
             if (flow) {
                 auto *subflow = flow->sub_flows_[engine_offset_];
-                stats_rto_rexmits += subflow->pcb.stats_rto_rexmits;
-                stats_fast_rexmits += subflow->pcb.stats_fast_rexmits;
                 stats_accept_retr += subflow->pcb.stats_accept_retr;
                 stats_accept_barrier += subflow->pcb.stats_accept_barrier;
         
                 stats_chunk_drop += subflow->pcb.stats_chunk_drop;
                 stats_barrier_drop += subflow->pcb.stats_barrier_drop;
                 stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
+                stats_retr_chunk_pending = subflow->pcb.pending_retr_chunks.size();
                 stats_ooo += subflow->pcb.stats_ooo;
                 stats_real_ooo += subflow->pcb.stats_real_ooo;
                 stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
@@ -2248,21 +2255,12 @@ std::string RDMAContext::to_string()
             }
         }
         {
+            // Receiver flows
             auto *flow = reinterpret_cast<UcclFlow *>(sender_flow_tbl_[fid]);
             if (flow) {
                 auto *subflow = flow->sub_flows_[engine_offset_];
                 stats_rto_rexmits += subflow->pcb.stats_rto_rexmits;
                 stats_fast_rexmits += subflow->pcb.stats_fast_rexmits;
-                stats_accept_retr += subflow->pcb.stats_accept_retr;
-                stats_accept_barrier += subflow->pcb.stats_accept_barrier;
-        
-                stats_chunk_drop += subflow->pcb.stats_chunk_drop;
-                stats_barrier_drop += subflow->pcb.stats_barrier_drop;
-                stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
-                stats_ooo += subflow->pcb.stats_ooo;
-                stats_real_ooo += subflow->pcb.stats_real_ooo;
-                stats_maxooo = std::max(stats_maxooo, subflow->pcb.stats_maxooo);
-                subflow->pcb.stats_maxooo = 0; // Inaccurate is fine.
             }
         }
     }
@@ -2274,6 +2272,7 @@ std::string RDMAContext::to_string()
         + "/Chunk drop:" + std::to_string(stats_chunk_drop)
         + "/Barrier drop:" + std::to_string(stats_barrier_drop)
         + "/Retr drop:" + std::to_string(stats_retr_chunk_drop)
+        + "/Retr pending:" + std::to_string(stats_retr_chunk_pending)
         + "/OOO: " + std::to_string(stats_ooo)
         + "/ROOO: " + std::to_string(stats_real_ooo)
         + "/MAXOOO: " + std::to_string(stats_maxooo);

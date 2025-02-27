@@ -2,6 +2,7 @@
 #include "transport_config.h"
 #include "util_list.h"
 #include "util_rdma.h"
+#include <glog/logging.h>
 #include <infiniband/verbs.h>
 
 namespace uccl {

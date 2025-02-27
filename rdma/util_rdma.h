@@ -606,6 +606,8 @@ class RDMAContext {
 
         uint32_t engine_offset_;
 
+        uint32_t flow_cnt_ = 0;
+
         void *sender_flow_tbl_[MAX_FLOW] = {};
         void *receiver_flow_tbl_[MAX_FLOW] = {};
 
