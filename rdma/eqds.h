@@ -292,8 +292,8 @@ public:
     // How many senders to grant credit per iteration.
     static constexpr uint32_t kSendersPerPull = 4;
 
-    // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 4, kSendersPerPull = 2,
-    // kPacingIntervalUs ~= 2.65 us.
+    // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 4, kSendersPerPull = 4,
+    // kPacingIntervalUs ~= 5.3 us.
     static constexpr uint64_t kPacingIntervalUs = 0.99 /* slower than line rate */ * (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 * kSendersPerPull / kLinkBandwidth;
 
     EQDSChannel channel_;
