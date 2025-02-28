@@ -215,7 +215,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
         cudaMalloc(&pkt_data_buf_, PktDataBuffPool::kNumPktData *
                                        PktDataBuffPool::kPktDataSize);
     DCHECK(cuda_ret == cudaSuccess) << "cudaMalloc failed";
-    auto pkt_data_mr_ =
+    auto *pkt_data_mr_ =
         ibv_reg_mr(pd_, pkt_data_buf_,
                    PktDataBuffPool::kNumPktData * PktDataBuffPool::kPktDataSize,
                    IBV_ACCESS_LOCAL_WRITE);
@@ -246,11 +246,17 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
     ctrl_cq_ = ibv_create_cq(context_, kMaxCqeTotal, NULL, NULL, 0);
     DCHECK(ctrl_cq_) << "Failed to allocate ctrl CQ";
 
+#ifdef USE_SRD_FOR_CTRL
+    create_qp_func = &EFASocket::create_srd_qp;
+#endif
     for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
         ctrl_qp_list_[i] = (this->*create_qp_func)(
             ctrl_cq_, ctrl_cq_, kMaxSendRecvWrForCtrl, kMaxSendRecvWrForCtrl);
         post_recv_wrs_for_ctrl(kMaxSendRecvWrForCtrl, i);
     }
+
+    ret = cudaSetDevice(0);
+    CHECK(ret == cudaSuccess) << "cudaSetDevice failed ";
 }
 
 // Create and configure a UD QP

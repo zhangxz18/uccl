@@ -87,32 +87,24 @@ int main(int argc, char* argv[]) {
         DCHECK(FLAGS_serverip != "");
         ConnID conn_id, conn_id2;
         ConnID conn_id_vec[kNumEngines];
-        int remote_devs[kNumEngines];
+        int remote_vdevs[kNumEngines];
 
-        conn_id = ep.uccl_connect(get_dev_idx_by_engine_idx(0),
-                                  get_dev_idx_by_engine_idx(0), FLAGS_serverip);
+        conn_id = ep.uccl_connect(0, 0, FLAGS_serverip);
         if (test_type == kMc) {
-            conn_id2 =
-                ep.uccl_connect(get_dev_idx_by_engine_idx(0),
-                                get_dev_idx_by_engine_idx(0), FLAGS_serverip);
+            conn_id2 = ep.uccl_connect(0, 0, FLAGS_serverip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++)
-                conn_id_vec[i] = ep.uccl_connect(get_dev_idx_by_engine_idx(i),
-                                                 get_dev_idx_by_engine_idx(i),
-                                                 FLAGS_serverip);
+                conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
-                    conn_id_vec[i] = ep.uccl_connect(
-                        get_dev_idx_by_engine_idx(i),
-                        get_dev_idx_by_engine_idx(i), FLAGS_serverip);
+                    conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip);
                 else
                     conn_id_vec[i] =
-                        ep.uccl_accept(get_dev_idx_by_engine_idx(i),
-                                       &remote_devs[i], remote_ip);
+                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip);
             }
         }
 
@@ -394,30 +386,24 @@ int main(int argc, char* argv[]) {
         std::string remote_ip;
         ConnID conn_id, conn_id2;
         ConnID conn_id_vec[kNumEngines];
-        int remote_devs[kNumEngines];
+        int remote_vdevs[kNumEngines];
 
-        conn_id = ep.uccl_accept(get_dev_idx_by_engine_idx(0), &remote_devs[0],
-                                 remote_ip);
+        conn_id = ep.uccl_accept(0, &remote_vdevs[0], remote_ip);
         if (test_type == kMc) {
-            conn_id2 = ep.uccl_accept(get_dev_idx_by_engine_idx(0),
-                                      &remote_devs[0], remote_ip);
+            conn_id2 = ep.uccl_accept(0, &remote_vdevs[0], remote_ip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++)
-                conn_id_vec[i] = ep.uccl_accept(get_dev_idx_by_engine_idx(i),
-                                                &remote_devs[i], remote_ip);
+                conn_id_vec[i] = ep.uccl_accept(i, &remote_vdevs[i], remote_ip);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
                     conn_id_vec[i] =
-                        ep.uccl_accept(get_dev_idx_by_engine_idx(i),
-                                       &remote_devs[i], remote_ip);
+                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip);
                 else
-                    conn_id_vec[i] = ep.uccl_connect(
-                        get_dev_idx_by_engine_idx(i),
-                        get_dev_idx_by_engine_idx(i), FLAGS_clientip);
+                    conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_clientip);
             }
         }
 

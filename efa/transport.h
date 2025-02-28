@@ -135,8 +135,8 @@ class Channel {
         FlowID flow_id;
         uint32_t remote_ip;
         uint32_t remote_engine_idx;
-        ConnMeta* local_meta;
-        ConnMeta* remote_meta;
+        ConnMeta *local_meta;
+        ConnMeta *remote_meta;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -545,6 +545,9 @@ class UcclFlow {
         DCHECK(src_qp < kMaxSrcQP && dst_qp < kMaxDstQP);
         return src_qp * kMaxDstQP + dst_qp;
     }
+    inline uint32_t data_path_id_to_ctrl_path_id(uint32_t data_path_id) {
+        return data_path_id % kMaxPathCtrl;
+    }
     inline std::tuple<uint16_t, uint16_t> path_id_to_src_dst_qp_for_ctrl(
         uint32_t path_id) {
         return {path_id / kMaxDstQPCtrl, path_id % kMaxDstQPCtrl};
@@ -719,7 +722,6 @@ class Endpoint {
     constexpr static uint16_t kBootstrapPort = 30000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
-    int num_queues_;
     Channel *channel_vec_[kNumEngines];
     std::vector<std::unique_ptr<UcclEngine>> engine_vec_;
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
@@ -741,9 +743,10 @@ class Endpoint {
     ~Endpoint();
 
     // Connecting to a remote address; thread-safe
-    ConnID uccl_connect(int local_dev, int remote_dev, std::string remote_ip);
+    ConnID uccl_connect(int local_vdev, int remote_vdev, std::string remote_ip);
     // Accepting a connection from a remote address; thread-safe
-    ConnID uccl_accept(int local_dev, int *remote_dev, std::string &remote_ip);
+    ConnID uccl_accept(int local_vdev, int *remote_vdev,
+                       std::string &remote_ip);
 
     // Sending the data by leveraging multiple port combinations.
     bool uccl_send(ConnID conn_id, const void *data, const int len,
@@ -776,7 +779,7 @@ class Endpoint {
    private:
     void install_flow_on_engine(FlowID flow_id, const std::string &remote_ip,
                                 uint32_t local_engine_idx, int bootstrap_fd);
-    inline int find_least_loaded_engine_idx_and_update(int dev_idx);
+    inline int find_least_loaded_engine_idx_and_update(int vdev_idx);
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
     std::mutex stats_mu_;
@@ -828,11 +831,14 @@ static inline void net_barrier(int bootstrap_fd) {
 }
 
 static inline uint32_t get_gpu_idx_by_engine_idx(uint32_t engine_idx) {
-    return engine_idx / kNumGPUsPerDev;
+    return engine_idx / kNumEnginesPerVdev;
 }
 
 static inline uint32_t get_dev_idx_by_engine_idx(uint32_t engine_idx) {
-    return engine_idx / kNumEnginesPerDev;
+    return engine_idx / (kNumEnginesPerVdev * 2);
 }
+
+static inline int get_pdev(int vdev) { return vdev / 2; }
+static inline int get_vdev(int pdev) { return pdev * 2; }
 
 }  // namespace uccl

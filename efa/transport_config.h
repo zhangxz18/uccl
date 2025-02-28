@@ -7,6 +7,7 @@
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
 // #define USE_SRD
+// #define USE_SRD_FOR_CTRL
 #define EMULATE_RC_ZC
 // #define RTT_STATS
 
@@ -56,16 +57,16 @@ static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 static const uint16_t BASE_PORT = 10000;
-static const uint64_t NUM_FRAMES = 65536;  // # of frames.
+static const uint64_t NUM_FRAMES = 65536 * 2;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 32;
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
+static const uint32_t MAX_FLOW_ID = 1000000;
 
 // libibverbs configuration.
-static const uint32_t kNumEnginesPerDev = 1;  // # of engines per EFA device.
-static const uint32_t kNumGPUsPerDev = 1;  // # of GPUs per EFA device.
-static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
+static const uint32_t kNumEnginesPerVdev = 1;  // # of engines per vEFA/GPU.
+static const uint32_t kNumEngines = (NUM_DEVICES * 2) * kNumEnginesPerVdev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;
@@ -83,10 +84,10 @@ static const uint32_t kMaxDstQPCtrl = 1;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
-static const uint32_t kMaxDstQP = 20;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxDstQPCtrl = 20;  // # of paths/QPs for control.
-static const uint32_t kMaxSrcQP = 20;
-static const uint32_t kMaxSrcQPCtrl = 20;
+static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxSrcQP = 16;
+static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQPCtrl = 16;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
@@ -95,7 +96,6 @@ static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
 static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
 static_assert(kMaxSrcQP + kMaxSrcQPCtrl <= EFA_MAX_QPS);
-static_assert(kMaxPath == kMaxPathCtrl);  // To make path_id calculation simple.
 
 // CC parameters.
 static const uint32_t kMaxUnackedPktsPP = 2u;
