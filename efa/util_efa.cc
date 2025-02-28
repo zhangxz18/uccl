@@ -207,7 +207,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
     pkt_hdr_pool_ = new PktHdrBuffPool(pkt_hdr_mr_);
 
     auto ret = cudaSetDevice(gpu_idx);
-    CHECK(ret == cudaSuccess) << "cudaSetDevice failed";
+    CHECK(ret == cudaSuccess) << "cudaSetDevice failed ";
 
     // Allocate memory for packet data.
     void *pkt_data_buf_ = nullptr;

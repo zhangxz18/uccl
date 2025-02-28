@@ -93,8 +93,8 @@ int main(int argc, char* argv[]) {
                                   get_dev_idx_by_engine_idx(0), FLAGS_serverip);
         if (test_type == kMc) {
             conn_id2 =
-                ep.uccl_connect(get_dev_idx_by_engine_idx(1),
-                                get_dev_idx_by_engine_idx(1), FLAGS_serverip);
+                ep.uccl_connect(get_dev_idx_by_engine_idx(0),
+                                get_dev_idx_by_engine_idx(0), FLAGS_serverip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++)
@@ -213,7 +213,7 @@ int main(int argc, char* argv[]) {
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len * 2;
-                    i += 2;
+                    i += 1;
                     break;
                 }
                 case kMt: {
@@ -238,7 +238,7 @@ int main(int argc, char* argv[]) {
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len * 2;
-                    i += 2;
+                    i += 1;
                     break;
                 }
                 case kMc: {
@@ -256,7 +256,7 @@ int main(int argc, char* argv[]) {
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len * 2;
-                    i += 2;
+                    i += 1;
                     break;
                 }
                 case kMq: {
@@ -399,8 +399,8 @@ int main(int argc, char* argv[]) {
         conn_id = ep.uccl_accept(get_dev_idx_by_engine_idx(0), &remote_devs[0],
                                  remote_ip);
         if (test_type == kMc) {
-            conn_id2 = ep.uccl_accept(get_dev_idx_by_engine_idx(1),
-                                      &remote_devs[1], remote_ip);
+            conn_id2 = ep.uccl_accept(get_dev_idx_by_engine_idx(0),
+                                      &remote_devs[0], remote_ip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumEngines; i++)
@@ -495,7 +495,7 @@ int main(int argc, char* argv[]) {
                                            send_len, &mh2[conn_id.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
-                    i += 2;
+                    i += 1;
                     break;
                 }
                 case kMt: {
@@ -515,7 +515,7 @@ int main(int argc, char* argv[]) {
                         });
                     t1.join();
                     t2.join();
-                    i += 2;
+                    i += 1;
                     break;
                 }
                 case kMc: {
@@ -528,7 +528,7 @@ int main(int argc, char* argv[]) {
                         &mh2[conn_id2.engine_idx]);
                     ep.uccl_poll(poll_ctx1);
                     ep.uccl_poll(poll_ctx2);
-                    i += 2;
+                    i += 1;
                     break;
                 }
                 case kMq: {

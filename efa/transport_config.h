@@ -7,7 +7,7 @@
 #define PATH_SELECTION
 #define REXMIT_SET_PATH
 // #define USE_SRD
-// #define EMULATE_RC_ZC
+#define EMULATE_RC_ZC
 // #define RTT_STATS
 
 enum class CCType {
@@ -23,8 +23,8 @@ static constexpr CCType kCCType = CCType::kTimely;
 
 /// Interface configuration.
 #ifdef P4D
-// static const uint8_t NUM_DEVICES = 1;
-static const uint8_t NUM_DEVICES = 4;
+static const uint8_t NUM_DEVICES = 1;
+// static const uint8_t NUM_DEVICES = 4;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
@@ -63,7 +63,8 @@ static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 
 // libibverbs configuration.
-static const uint32_t kNumEnginesPerDev = 2;  // # of engines per EFA device.
+static const uint32_t kNumEnginesPerDev = 1;  // # of engines per EFA device.
+static const uint32_t kNumGPUsPerDev = 1;  // # of GPUs per EFA device.
 static const uint32_t kNumEngines = NUM_DEVICES * kNumEnginesPerDev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;

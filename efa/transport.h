@@ -133,9 +133,10 @@ class Channel {
         };
         Op opcode;
         FlowID flow_id;
-        int socket_fd;
         uint32_t remote_ip;
         uint32_t remote_engine_idx;
+        ConnMeta* local_meta;
+        ConnMeta* remote_meta;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -702,6 +703,7 @@ class UcclEngine {
     std::atomic<bool> shutdown_{false};
 
     friend class RXTracking;
+    friend class Endpoint;
 };
 
 /**
@@ -826,7 +828,7 @@ static inline void net_barrier(int bootstrap_fd) {
 }
 
 static inline uint32_t get_gpu_idx_by_engine_idx(uint32_t engine_idx) {
-    return engine_idx / (kNumEnginesPerDev / 2);
+    return engine_idx / kNumGPUsPerDev;
 }
 
 static inline uint32_t get_dev_idx_by_engine_idx(uint32_t engine_idx) {

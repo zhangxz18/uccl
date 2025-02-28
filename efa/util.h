@@ -27,6 +27,7 @@
 #include <sstream>
 #include <vector>
 
+#include "cuda_runtime.h"
 #include "util_jring.h"
 
 namespace uccl {
@@ -628,5 +629,23 @@ inline uint64_t get_monotonic_time_ns() {
 }
 
 typedef std::chrono::time_point<std::chrono::high_resolution_clock> TimePoint;
+
+inline void checkMemoryLocation(void* ptr) {
+    cudaPointerAttributes attributes;
+    cudaError_t err = cudaPointerGetAttributes(&attributes, ptr);
+
+    if (err == cudaSuccess) {
+        if (attributes.type == cudaMemoryTypeDevice) {
+            LOG(INFO) << "Memory belongs to GPU " << attributes.device
+                      << std::endl;
+        } else if (attributes.type == cudaMemoryTypeHost) {
+            LOG(INFO) << "Memory is allocated on the Host (CPU)." << std::endl;
+        } else {
+            LOG(INFO) << "Unknown memory type." << std::endl;
+        }
+    } else {
+        std::cerr << "Error: " << cudaGetErrorString(err) << std::endl;
+    }
+}
 
 }  // namespace uccl
