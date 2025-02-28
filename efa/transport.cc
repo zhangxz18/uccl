@@ -1005,8 +1005,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->msg_flags = msgbuf->get_msg_flags();
     ucclh->frame_len = be16_t(frame_len);
     ucclh->seqno = be32_t(seqno);
-    ucclh->flow_id =
-        be64_t(flow_id_ >= MAX_FLOW_ID ? flow_id_ - MAX_FLOW_ID : flow_id_);
+    ucclh->flow_id = be64_t(flow_id_peer_);
 
     ucclh->timestamp1 =
         (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe)
@@ -1040,8 +1039,7 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     ucclh->frame_len = be16_t(kControlPayloadBytes);
     ucclh->seqno = be32_t(seqno);
     ucclh->ackno = be32_t(ackno);
-    ucclh->flow_id =
-        be64_t(flow_id_ >= MAX_FLOW_ID ? flow_id_ - MAX_FLOW_ID : flow_id_);
+    ucclh->flow_id = be64_t(flow_id_peer_);
     ucclh->timestamp1 = ts1;
     ucclh->timestamp2 = ts2;
 
@@ -1227,16 +1225,22 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
 
 std::string UcclEngine::status_to_string() {
     std::string s;
+    int cnt = 0;
     for (auto [flow_id, flow] : active_flows_map_) {
         s += Format("\n\t\tEngine %d Flow %lu: %s (%u) <-> %s (%u)",
                     local_engine_idx_, flow_id, flow->local_ip_str_.c_str(),
                     flow->local_engine_idx_, flow->remote_ip_str_.c_str(),
                     flow->remote_engine_idx_);
         s += flow->to_string();
+        cnt++;
+        if (cnt == 1) s += "\n\t\t\t[EFA] " + socket_->to_string();
+        if (cnt == 2) break;
     }
+    if (cnt < active_flows_map_.size())
+        s +=
+            Format("\n\t\t\t... %d more flows", active_flows_map_.size() - cnt);
     if (s.empty())
         s += Format("\n\t\tEngine %d No active flows", local_engine_idx_);
-    s += "\n\t\t\t[EFA] " + socket_->to_string();
     return s;
 }
 

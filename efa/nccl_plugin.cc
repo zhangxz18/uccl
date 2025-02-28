@@ -108,7 +108,7 @@ ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
 
 ncclResult_t pluginDevices(int *ndev) {
     // To ease NIC-GPU mapping on p4d, we virtualize each NIC into two.
-    *ndev = get_vdev(NUM_DEVICES);
+    *ndev = NUM_V_DEVICES;
     return ncclSuccess;
 }
 

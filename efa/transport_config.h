@@ -22,10 +22,11 @@ static constexpr CCType kCCType = CCType::kTimely;
 #define P4D
 // #define G6E
 
+static const uint8_t NUM_V_DEVICES = 1;
+
 /// Interface configuration.
 #ifdef P4D
-static const uint8_t NUM_DEVICES = 1;
-// static const uint8_t NUM_DEVICES = 4;
+static const uint8_t NUM_DEVICES = (NUM_V_DEVICES + 1) / 2;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
@@ -33,7 +34,7 @@ static const std::string ENA_DEVICE_NAME_LIST[] = {"ens32", "ens65", "ens130",
                                                    "ens163"};
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #elif defined(G6E)
-static const uint8_t NUM_DEVICES = 4;
+static const uint8_t NUM_DEVICES = (NUM_V_DEVICES + 1) / 2;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {"rdmap155s0", "rdmap156s0",
                                                    "rdmap188s0", "rdmap189s0"};
@@ -57,7 +58,7 @@ static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 static const uint16_t BASE_PORT = 10000;
-static const uint64_t NUM_FRAMES = 65536 * 2;  // # of frames.
+static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 32;
 static const uint32_t QKEY = 0x12345;
@@ -65,8 +66,8 @@ static const uint32_t SQ_PSN = 0x12345;
 static const uint32_t MAX_FLOW_ID = 1000000;
 
 // libibverbs configuration.
-static const uint32_t kNumEnginesPerVdev = 1;  // # of engines per vEFA/GPU.
-static const uint32_t kNumEngines = (NUM_DEVICES * 2) * kNumEnginesPerVdev;
+static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
+static const uint32_t kNumEngines = NUM_V_DEVICES * kNumEnginesPerVdev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;

@@ -402,6 +402,10 @@ class UcclFlow {
           timely_g_(),
           tx_tracking_(socket, channel),
           rx_tracking_(socket, channel) {
+        // Precompute the peer flow ID.
+        flow_id_peer_ = (flow_id_ >= MAX_FLOW_ID ? flow_id_ - MAX_FLOW_ID
+                                                 : flow_id_ + MAX_FLOW_ID);
+
         timely_g_.init(&pcb_);
         if constexpr (kCCType == CCType::kTimelyPP) {
             timely_pp_ = new swift::TimelyCtl[kMaxPath];
@@ -519,6 +523,8 @@ class UcclFlow {
     Channel *channel_;
     // FlowID of this flow.
     FlowID flow_id_;
+    // The matched flow ID of the peer.
+    FlowID flow_id_peer_;
     // Accumulated data frames to be sent.
     std::vector<FrameDesc *> pending_tx_frames_;
     // Missing data frames to be sent.
