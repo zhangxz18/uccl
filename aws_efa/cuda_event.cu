@@ -5,6 +5,8 @@
 // An empty kernel that does nothing.
 __global__ void emptyKernel() {}
 
+// Average empty kernel launch time over 1000 iterations: 5.97097 microseconds
+
 int main() {
     const int iterations = 1000;
     float totalTimeMs = 0.0f;

@@ -3,6 +3,8 @@
 #include <chrono>
 #include <iostream>
 
+// Average cudaMemcpy time: 11813.7 ns
+
 int main() {
     const size_t size = 4096;  // 4KB copy
     const int iterations = 1000;
