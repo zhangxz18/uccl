@@ -36,7 +36,7 @@ void EQDS::handle_grant_credit()
                 auto *sink = item->eqds_cc;
                 list_del(pos);
     
-                if (grant_credit(sink)) {
+                if (grant_credit(sink, false)) {
                     // Grant done, add it to idle sender list.
                     DCHECK(list_empty(&sink->idle_item.idle_link));
                     list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
@@ -55,7 +55,7 @@ void EQDS::handle_grant_credit()
             auto *sink = item->eqds_cc;
             list_del(pos);
 
-            if (grant_credit(sink) && !sink->idle_credit_enough()) {
+            if (grant_credit(sink, true) && !sink->idle_credit_enough()) {
                 // Grant done but we can still grant more credit for this sender.
                 list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
             }
@@ -175,12 +175,19 @@ bool EQDS::send_pull_packet(EQDSCC *eqds_cc)
 }
 
 // Grant credit to the sender of this flow.
-bool EQDS::grant_credit(EQDSCC *eqds_cc) 
+bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) 
 {
-    eqds_cc->latest_pull_ += kCreditPerPull;
+    uint8_t increment;
+    
+    if (!idle)
+        increment= std::min(kCreditPerPull, eqds_cc->backlog());
+    else
+        increment = kCreditPerPull;
+    
+    eqds_cc->latest_pull_ += increment;
 
     if (!send_pull_packet(eqds_cc)) {
-        eqds_cc->latest_pull_ -= kCreditPerPull;
+        eqds_cc->latest_pull_ -= increment;
         VLOG(5) << "Failed to send pull packet.";
     }
 
