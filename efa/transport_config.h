@@ -8,7 +8,7 @@
 #define REXMIT_SET_PATH
 // #define USE_SRD
 // #define USE_SRD_FOR_CTRL
-#define EMULATE_RC_ZC
+// #define EMULATE_RC_ZC
 // #define RTT_STATS
 
 enum class CCType {
@@ -22,11 +22,12 @@ static constexpr CCType kCCType = CCType::kTimely;
 #define P4D
 // #define G6E
 
-static const uint8_t NUM_V_DEVICES = 1;
+static const uint8_t kNumVdevices = 1;         // # of vEFA/GPUs.
+static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 
 /// Interface configuration.
 #ifdef P4D
-static const uint8_t NUM_DEVICES = (NUM_V_DEVICES + 1) / 2;
+static const uint8_t NUM_DEVICES = (kNumVdevices + 1) / 2;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
@@ -34,7 +35,7 @@ static const std::string ENA_DEVICE_NAME_LIST[] = {"ens32", "ens65", "ens130",
                                                    "ens163"};
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #elif defined(G6E)
-static const uint8_t NUM_DEVICES = (NUM_V_DEVICES + 1) / 2;
+static const uint8_t NUM_DEVICES = (kNumVdevices + 1) / 2;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {"rdmap155s0", "rdmap156s0",
                                                    "rdmap188s0", "rdmap189s0"};
@@ -66,8 +67,7 @@ static const uint32_t SQ_PSN = 0x12345;
 static const uint32_t MAX_FLOW_ID = 1000000;
 
 // libibverbs configuration.
-static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
-static const uint32_t kNumEngines = NUM_V_DEVICES * kNumEnginesPerVdev;
+static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;

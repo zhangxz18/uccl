@@ -9,9 +9,9 @@ extern "C" {
 #endif
 
 // An A100 SM can have at most 32 thread blocks.
-static const uint32_t THREAD_BLOCKS = 32;
+static const uint32_t THREAD_BLOCKS = 4;
 // NCCL uses 512 for current gen, and 256 for previous gen.
-static const uint32_t THREADS_PER_BLOCK = 1024;
+static const uint32_t THREADS_PER_BLOCK = 512;
 // Supporting 128 * 9KB = 1.152MB net chunk size.
 static const uint32_t MAX_COPIES = 128;
 

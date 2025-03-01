@@ -844,6 +844,11 @@ static inline uint32_t get_dev_idx_by_engine_idx(uint32_t engine_idx) {
     return engine_idx / (kNumEnginesPerVdev * 2);
 }
 
+static inline uint32_t get_dev_idx_by_gpu_idx(uint32_t gpu_idx) {
+    // Fixed on P4D.
+    return gpu_idx / 2;
+}
+
 static inline int get_pdev(int vdev) { return vdev / 2; }
 static inline int get_vdev(int pdev) { return pdev * 2; }
 

@@ -262,12 +262,12 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 }
 
 void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
-    copy_param_t *copy_param_ = new copy_param_t();
-    cudaStream_t copy_stream_;
+    copy_param_t *copy_param = new copy_param_t();
+    cudaStream_t copy_stream;
 
     auto ret = cudaSetDevice(get_gpu_idx_by_engine_idx(engine_idx));
     CHECK(ret == cudaSuccess) << "cudaSetDevice failed";
-    ret = cudaStreamCreate(&copy_stream_);
+    ret = cudaStreamCreate(&copy_stream);
     CHECK(ret == cudaSuccess) << "Failed to create cuda stream";
 
     // Temporarily buffering Msg that are being copied by the cuda kernel.
@@ -276,29 +276,30 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
     auto *channel = engine->channel_;
 
     while (!engine->shutdown_) {
-        // TODO(yang): using multiple streams to fine-grained poll when each
-        // kernel finishes; however, this consumes more resources.
-        auto copy_done = pollScatteredMemcpy(copy_stream_);
-        if (copy_done) {
-            while (!ongoing_copy_queue.empty()) {
-                auto &rx_copy_done_work = ongoing_copy_queue.back();
-                auto poll_ctx = rx_copy_done_work.poll_ctx;
-                auto *app_buf_len_p = rx_copy_done_work.len_p;
+        if (!ongoing_copy_queue.empty()) {
+            // TODO(yang): using multiple streams to fine-grained poll when each
+            // kernel finishes; however, this consumes more resources.
+            if (pollScatteredMemcpy(copy_stream)) {
+                while (!ongoing_copy_queue.empty()) {
+                    auto &rx_copy_done_work = ongoing_copy_queue.back();
+                    auto poll_ctx = rx_copy_done_work.poll_ctx;
+                    auto *app_buf_len_p = rx_copy_done_work.len_p;
 
-                Channel::enqueue_sp(channel->rx_copy_done_q_,
-                                    &rx_copy_done_work);
+                    Channel::enqueue_sp(channel->rx_copy_done_q_,
+                                        &rx_copy_done_work);
 
-                // Wakeup app thread waiting on endpoint.
-                if (--(poll_ctx->num_unfinished) == 0) {
-                    poll_ctx->write_barrier();
-                    std::lock_guard<std::mutex> lock(poll_ctx->mu);
-                    poll_ctx->done = true;
-                    poll_ctx->cv.notify_one();
+                    // Wakeup app thread waiting on endpoint.
+                    if (--(poll_ctx->num_unfinished) == 0) {
+                        poll_ctx->write_barrier();
+                        std::lock_guard<std::mutex> lock(poll_ctx->mu);
+                        poll_ctx->done = true;
+                        poll_ctx->cv.notify_one();
+                    }
+                    VLOG(2) << "copy_thread_func: Received a complete message "
+                            << *app_buf_len_p << " bytes";
+
+                    ongoing_copy_queue.pop_back();
                 }
-                VLOG(2) << "copy_thread_func: Received a complete message "
-                        << *app_buf_len_p << " bytes";
-
-                ongoing_copy_queue.pop_back();
             }
         }
 
@@ -328,9 +329,9 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
                 VLOG(2) << "copy_thread_func: payload_len: " << payload_len
                         << " seqno: " << std::dec << ucclh->seqno.value();
 
-                copy_param_->dst[copy_idx] = (uint64_t)app_buf + cur_offset;
-                copy_param_->src[copy_idx] = ready_msg->get_pkt_data_addr();
-                copy_param_->len[copy_idx] = (uint32_t)payload_len;
+                copy_param->dst[copy_idx] = (uint64_t)app_buf + cur_offset;
+                copy_param->src[copy_idx] = ready_msg->get_pkt_data_addr();
+                copy_param->len[copy_idx] = (uint32_t)payload_len;
 
                 copy_idx++;
                 cur_offset += payload_len;
@@ -352,7 +353,7 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
         }
 
         if (copy_idx) {
-            launchScatteredMemcpyAsync(copy_idx, copy_param_, copy_stream_);
+            launchScatteredMemcpyAsync(copy_idx, copy_param, copy_stream);
         }
     }
 }
