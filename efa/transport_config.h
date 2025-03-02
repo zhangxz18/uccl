@@ -8,7 +8,7 @@
 #define REXMIT_SET_PATH
 // #define USE_SRD
 // #define USE_SRD_FOR_CTRL
-// #define EMULATE_RC_ZC
+#define EMULATE_RC_ZC
 // #define RTT_STATS
 
 enum class CCType {
@@ -20,10 +20,10 @@ enum class CCType {
 static constexpr CCType kCCType = CCType::kTimely;
 
 #define P4D
-// #define G6E
 
-static const uint8_t kNumVdevices = 1;         // # of vEFA/GPUs.
+static const uint8_t kNumVdevices = 2;         // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
+static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
 /// Interface configuration.
 #ifdef P4D
@@ -33,14 +33,6 @@ static const std::string EFA_DEVICE_NAME_LIST[] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
 static const std::string ENA_DEVICE_NAME_LIST[] = {"ens32", "ens65", "ens130",
                                                    "ens163"};
-static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
-#elif defined(G6E)
-static const uint8_t NUM_DEVICES = (kNumVdevices + 1) / 2;
-static const uint8_t EFA_GID_IDX = 0;
-static const std::string EFA_DEVICE_NAME_LIST[] = {"rdmap155s0", "rdmap156s0",
-                                                   "rdmap188s0", "rdmap189s0"};
-static const std::string ENA_DEVICE_NAME_LIST[] = {"enp135s0", "enp136s0",
-                                                   "enp170s0", "enp171s0"};
 static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
 static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.
@@ -54,6 +46,9 @@ static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
 static const uint32_t EFA_UD_ADDITION = 40;  // Auto-added by EFA during recv.
 #endif
 /// Interface configuration.
+static_assert(kNumEngines >= NUM_DEVICES * 2,
+              "kNumEngines must be at least twice of NUM_DEVICES, one for send "
+              "and one for receive to avoid deadlocks.");
 
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
@@ -67,7 +62,6 @@ static const uint32_t SQ_PSN = 0x12345;
 static const uint32_t MAX_FLOW_ID = 1000000;
 
 // libibverbs configuration.
-static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;
@@ -75,8 +69,8 @@ static const uint32_t kMaxCqeTotal = 16384;
 static const uint32_t kMaxPollBatch = 32;
 static const uint32_t kMaxRecvWrDeficit = 32;
 static const uint32_t kMaxChainedWr = 32;
-static const uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 4;
-static const uint32_t kMaxMultiRecv = 8;
+static const uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 16;
+static const uint32_t kMaxMultiRecv = 1;
 
 // Path configuration.
 #ifdef USE_SRD

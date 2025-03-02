@@ -42,7 +42,7 @@ efa_sge_mr: efa_sge_mr.cc
 efa_load_latency: efa_load_latency.cc
 	g++ -O3 -g efa_load_latency.cc -o efa_load_latency $(CXXFLAGS)
 
-CUDA_BIN = cuda_event cuda_memcpy cuda_memcpy_async cuda_persist_kernel cuda_memcpy_gpu
+CUDA_BIN = cuda_event cuda_memcpy cuda_memcpy_async cuda_persist_kernel cuda_memcpy_gpu cuda_concurrent
 cuda: $(CUDA_BIN)
 
 cuda_event: cuda_event.cu
@@ -59,6 +59,9 @@ cuda_persist_kernel: cuda_persist_kernel.cu
 
 cuda_memcpy_gpu: cuda_memcpy_gpu.cu
 	nvcc -O3 -g cuda_memcpy_gpu.cu -o cuda_memcpy_gpu $(CXXFLAGS) -std=c++11
+
+cuda_concurrent: cuda_concurrent.cu
+	nvcc -O3 -g cuda_concurrent.cu -o cuda_concurrent $(CXXFLAGS) -std=c++11
 
 clean:
 	rm $(FI_BIN) $(EFA_BIN) $(CUDA_BIN)

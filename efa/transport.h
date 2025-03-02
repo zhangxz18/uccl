@@ -104,7 +104,7 @@ class PollCtxPool : public BuffPool {
  * could be shared by multiple app threads if needed.
  */
 class Channel {
-    constexpr static uint32_t kChannelSize = 1024;
+    constexpr static uint32_t kChannelSize = kMaxUnconsumedRxMsgbufs;
 
    public:
     struct Msg {
@@ -299,8 +299,11 @@ class RXTracking {
                   "kReassemblyMaxSeqnoDistance must be a power of two");
 
     RXTracking(const RXTracking &) = delete;
-    RXTracking(EFASocket *socket, Channel *channel)
-        : socket_(socket), channel_(channel) {}
+    RXTracking(EFASocket *socket, Channel *channel,
+               std::unordered_map<FlowID, UcclFlow *> &active_flows_map)
+        : socket_(socket),
+          channel_(channel),
+          active_flows_map_(active_flows_map) {}
 
     friend class UcclFlow;
     friend class UcclEngine;
@@ -315,6 +318,7 @@ class RXTracking {
     ConsumeRet consume(swift::Pcb *pcb, FrameDesc *msgbuf);
 
    private:
+    std::unordered_map<FlowID, UcclFlow *> &active_flows_map_;
     void push_inorder_msgbuf_to_app(swift::Pcb *pcb);
 
    public:
@@ -359,6 +363,11 @@ class RXTracking {
     friend class Endpoint;
 };
 
+static inline uint64_t get_peer_flow_id(uint64_t flow_id) {
+    return (flow_id >= MAX_FLOW_ID ? flow_id - MAX_FLOW_ID
+                                   : flow_id + MAX_FLOW_ID);
+}
+
 /**
  * @class UcclFlow, a connection between a local and a remote endpoint.
  * @brief Class to abstract the components and functionality of a single flow.
@@ -387,7 +396,8 @@ class UcclFlow {
     UcclFlow(std::string local_ip_str, std::string remote_ip_str,
              ConnMeta *local_meta, ConnMeta *remote_meta,
              uint32_t local_engine_idx, uint32_t remote_engine_idx,
-             EFASocket *socket, Channel *channel, FlowID flow_id)
+             EFASocket *socket, Channel *channel, FlowID flow_id,
+             std::unordered_map<FlowID, UcclFlow *> &active_flows_map_)
         : remote_ip_str_(remote_ip_str),
           local_ip_str_(local_ip_str),
           local_meta_(local_meta),
@@ -401,10 +411,9 @@ class UcclFlow {
           cubic_g_(),
           timely_g_(),
           tx_tracking_(socket, channel),
-          rx_tracking_(socket, channel) {
+          rx_tracking_(socket, channel, active_flows_map_) {
         // Precompute the peer flow ID.
-        flow_id_peer_ = (flow_id_ >= MAX_FLOW_ID ? flow_id_ - MAX_FLOW_ID
-                                                 : flow_id_ + MAX_FLOW_ID);
+        peer_flow_id_ = get_peer_flow_id(flow_id_);
 
         timely_g_.init(&pcb_);
         if constexpr (kCCType == CCType::kTimelyPP) {
@@ -455,7 +464,7 @@ class UcclFlow {
      * @param msg Pointer to the first message buffer on a train of buffers,
      * aggregating to a partial or a full Message.
      */
-    void tx_messages(Channel::Msg &tx_deser_work);
+    void tx_prepare_messages(Channel::Msg &tx_deser_work);
 
     void process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
                               uint64_t ts4, uint32_t path_id);
@@ -503,7 +512,7 @@ class UcclFlow {
                             const UcclPktHdr::UcclFlags net_flags);
     FrameDesc *craft_ackpacket(uint32_t path_id, uint32_t seqno, uint32_t ackno,
                                const UcclPktHdr::UcclFlags net_flags,
-                               uint64_t ts1, uint64_t ts2);
+                               uint64_t ts1, uint64_t ts2, uint32_t rwnd);
 
     std::string local_ip_str_;
     std::string remote_ip_str_;
@@ -524,7 +533,7 @@ class UcclFlow {
     // FlowID of this flow.
     FlowID flow_id_;
     // The matched flow ID of the peer.
-    FlowID flow_id_peer_;
+    FlowID peer_flow_id_;
     // Accumulated data frames to be sent.
     std::vector<FrameDesc *> pending_tx_frames_;
     // Missing data frames to be sent.
@@ -542,6 +551,8 @@ class UcclFlow {
     // Each path has its own PCB for CC.
     swift::TimelyCtl *timely_pp_;
     swift::CubicCtl *cubic_pp_;
+
+    uint32_t last_received_rwnd_ = kMaxUnconsumedRxMsgbufs;
 
     inline std::tuple<uint16_t, uint16_t> path_id_to_src_dst_qp(
         uint32_t path_id) {
@@ -738,7 +749,7 @@ class Endpoint {
     std::array<int, kNumEngines> engine_load_vec_ = {0};
 
     PollCtxPool *ctx_pool_[kNumEngines];
-    int listen_fd_[NUM_DEVICES];
+    int listen_fd_[kNumVdevices];
 
     std::mutex fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
@@ -785,7 +796,8 @@ class Endpoint {
    private:
     void install_flow_on_engine(FlowID flow_id, const std::string &remote_ip,
                                 uint32_t local_engine_idx, int bootstrap_fd);
-    inline int find_least_loaded_engine_idx_and_update(int vdev_idx);
+    inline int find_least_loaded_engine_idx_and_update(int vdev_idx,
+                                                       FlowID flow_id);
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
     std::mutex stats_mu_;

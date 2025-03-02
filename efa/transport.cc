@@ -157,6 +157,8 @@ RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameDesc *msgbuf) {
     }
 
     num_unconsumed_msgbufs_++;
+    // if (num_unconsumed_msgbufs_ >= kMaxUnconsumedRxMsgbufs)
+    //     LOG(INFO) << "num_unconsumed_msgbufs_: " << num_unconsumed_msgbufs_;
 
     // Buffer the packet in the frame pool. It may be out-of-order.
     reass_q_.insert(it, {seqno, msgbuf});
@@ -195,6 +197,16 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         VLOG(3) << "num_unconsumed_msgbufs: " << num_unconsumed_msgbufs()
                 << " app_buf_queue_ size: " << app_buf_queue_.size();
         app_buf_queue_.push_back({*rx_work});
+    } else {
+        Channel::Msg rx_work2;
+        while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work2)) {
+            VLOG(3) << "Rx jring dequeue";
+            active_flows_map_[rx_work2.flow_id]->rx_supply_app_buf(rx_work2);
+        }
+        // LOG_EVERY_N(INFO, 1000000)
+        //     << "num_unconsumed_msgbufs: " << num_unconsumed_msgbufs()
+        //     << " ready_msg_queue_ size: " << ready_msg_queue_.size()
+        //     << " app_buf_queue_ size: " << app_buf_queue_.size();
     }
 
     while (!ready_msg_queue_.empty() && !app_buf_queue_.empty()) {
@@ -403,6 +415,7 @@ void UcclFlow::rx_messages() {
                                      ucclsackh->timestamp3, timestamp4,
                                      ucclh->path_id);
             case UcclPktHdr::UcclFlags::kAck:
+                last_received_rwnd_ = ucclsackh->rwnd.value();
                 // ACK packet, update the flow.
                 process_ack(ucclh);
                 // Free the received frame.
@@ -443,23 +456,20 @@ void UcclFlow::rx_messages() {
             auto [src_qp_idx, dst_qp_idx] =
                 path_id_to_src_dst_qp_for_ctrl(path_id);
 
+            auto rwnd =
+                kMaxUnconsumedRxMsgbufs - rx_tracking_.num_unconsumed_msgbufs();
             FrameDesc *ack_frame =
                 craft_ackpacket(path_id, pcb_.seqno(), pcb_.ackno(), net_flags,
-                                timestamp1, timestamp2);
+                                timestamp1, timestamp2, rwnd);
             ack_frame->set_dest_ah(remote_ah_);
             ack_frame->set_dest_qpn(remote_meta_->qpn_list_ctrl[dst_qp_idx]);
 
             socket_->post_send_wr(ack_frame, src_qp_idx);
         }
     }
-
-    deserialize_and_append_to_txtracking();
-
-    // Sending data frames that can be send per cwnd.
-    transmit_pending_packets();
 }
 
-void UcclFlow::tx_messages(Channel::Msg &tx_work) {
+void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     // This happens to NCCL plugin!!!
     if (tx_work.len == 0) {
         auto poll_ctx = tx_work.poll_ctx;
@@ -508,12 +518,6 @@ void UcclFlow::tx_messages(Channel::Msg &tx_work) {
     pending_tx_msgs_.push_back({tx_work, 0});
 
     VLOG(3) << "tx_messages size: " << tx_work.len << " bytes";
-
-    deserialize_and_append_to_txtracking();
-
-    // Append these tx frames to the flow's tx queue, and trigger
-    // intial tx. Future received ACKs will trigger more tx.
-    transmit_pending_packets();
 }
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
@@ -803,6 +807,8 @@ void UcclFlow::transmit_pending_packets() {
     auto src_qp_idx = get_src_qp_rr();
     hard_budget = std::min(hard_budget,
                            socket_->send_queue_free_space_per_qp(src_qp_idx));
+    if (last_received_rwnd_ == 0) last_received_rwnd_ = 1;
+    hard_budget = std::min(hard_budget, last_received_rwnd_);
 
     uint32_t permitted_packets = 0;
     if constexpr (kCCType == CCType::kTimely || kCCType == CCType::kTimelyPP) {
@@ -899,6 +905,8 @@ void UcclFlow::transmit_pending_packets() {
     // TX both data and ack frames.
     if (pending_tx_frames_.empty()) return;
     VLOG(3) << "tx packets " << pending_tx_frames_.size();
+    // Considering ack coalescing.
+    last_received_rwnd_ -= pending_tx_frames_.size();
 
     socket_->post_send_wrs(pending_tx_frames_, src_qp_idx);
     pending_tx_frames_.clear();
@@ -1006,7 +1014,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->msg_flags = msgbuf->get_msg_flags();
     ucclh->frame_len = be16_t(frame_len);
     ucclh->seqno = be32_t(seqno);
-    ucclh->flow_id = be64_t(flow_id_peer_);
+    ucclh->flow_id = be64_t(peer_flow_id_);
 
     ucclh->timestamp1 =
         (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe)
@@ -1020,7 +1028,8 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
 FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
                                      uint32_t ackno,
                                      const UcclPktHdr::UcclFlags net_flags,
-                                     uint64_t ts1, uint64_t ts2) {
+                                     uint64_t ts1, uint64_t ts2,
+                                     uint32_t rwnd) {
     const size_t kControlPayloadBytes = kUcclPktHdrLen + kUcclSackHdrLen;
     auto frame_desc = socket_->pop_frame_desc();
     auto pkt_hdr = socket_->pop_pkt_hdr();
@@ -1040,7 +1049,7 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     ucclh->frame_len = be16_t(kControlPayloadBytes);
     ucclh->seqno = be32_t(seqno);
     ucclh->ackno = be32_t(ackno);
-    ucclh->flow_id = be64_t(flow_id_peer_);
+    ucclh->flow_id = be64_t(peer_flow_id_);
     ucclh->timestamp1 = ts1;
     ucclh->timestamp2 = ts2;
 
@@ -1057,6 +1066,7 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
             ? rdtsc() + ns_to_cycles(socket_->send_queue_estimated_latency_ns(),
                                      freq_ghz)
             : 0;
+    ucclsackh->rwnd = be32_t(rwnd);
 
     return msgbuf;
 }
@@ -1076,7 +1086,7 @@ void UcclEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
-        if (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work)) {
+        while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work)) {
             VLOG(3) << "Rx jring dequeue";
             active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
         }
@@ -1084,7 +1094,6 @@ void UcclEngine::run() {
         auto frames = socket_->poll_recv_cq(RECV_BATCH_SIZE);
         auto [_frames, polled_send_acks] =
             socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
-
         frames.insert(frames.end(), _frames.begin(), _frames.end());
         if (frames.size()) process_rx_msg(frames);
 
@@ -1093,10 +1102,14 @@ void UcclEngine::run() {
             tx_work.poll_ctx->read_barrier();
 
             VLOG(3) << "Tx deser jring dequeue";
-            active_flows_map_[tx_work.flow_id]->tx_messages(tx_work);
+            active_flows_map_[tx_work.flow_id]->tx_prepare_messages(tx_work);
         }
 
         for (auto &[flow_id, flow] : active_flows_map_) {
+            // Driving the rx buffer matching to incoming packets.
+            flow->rx_tracking_.try_copy_msgbuf_to_appbuf(nullptr);
+
+            flow->deserialize_and_append_to_txtracking();
             flow->transmit_pending_packets();
         }
 
@@ -1205,15 +1218,16 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
 
     auto *flow = new UcclFlow(local_ip_str_, remote_ip_str, local_meta,
                               remote_meta, local_engine_idx_, remote_engine_idx,
-                              socket_, channel_, flow_id);
+                              socket_, channel_, flow_id, active_flows_map_);
     auto *dev = EFAFactory::GetEFADevice(socket_->dev_idx());
     flow->remote_ah_ = dev->create_ah(remote_meta->gid);
 
     std::tie(std::ignore, ret) = active_flows_map_.insert({flow_id, flow});
     DCHECK(ret);
 
+    std::string arrow = flow_id >= MAX_FLOW_ID ? "->" : "<-";
     LOG(INFO) << "[Engine] install FlowID " << flow_id << ": " << local_ip_str_
-              << Format("(%d)", local_engine_idx_) << " <-> " << remote_ip_str
+              << Format("(%d)", local_engine_idx_) << arrow << remote_ip_str
               << Format("(%d)", remote_engine_idx);
 
     // Wakeup app thread waiting on endpoint.
@@ -1227,21 +1241,25 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
 std::string UcclEngine::status_to_string() {
     std::string s;
     int cnt = 0;
+    s += Format("\n\tEngine %d active flows %lu:", local_engine_idx_,
+                active_flows_map_.size());
+    for (auto [flow_id, flow] : active_flows_map_) s += Format(" %lu", flow_id);
+    s += socket_->to_string();
+
     for (auto [flow_id, flow] : active_flows_map_) {
-        s += Format("\n\t\tEngine %d Flow %lu: %s (%u) <-> %s (%u)",
-                    local_engine_idx_, flow_id, flow->local_ip_str_.c_str(),
-                    flow->local_engine_idx_, flow->remote_ip_str_.c_str(),
+        std::string arrow = flow_id >= MAX_FLOW_ID ? "->" : "<-";
+        s += Format("\n\t\tFlow %lu: %s (%u) %s %s (%u)", flow_id,
+                    flow->local_ip_str_.c_str(), flow->local_engine_idx_,
+                    arrow.c_str(), flow->remote_ip_str_.c_str(),
                     flow->remote_engine_idx_);
         s += flow->to_string();
         cnt++;
-        if (cnt == 1) s += "\n\t\t\t[EFA] " + socket_->to_string();
-        if (cnt == 2) break;
+        // if (cnt == 2) break;
     }
     if (cnt < active_flows_map_.size())
-        s +=
-            Format("\n\t\t\t... %d more flows", active_flows_map_.size() - cnt);
+        s += Format("\n\t\t... %d more flows", active_flows_map_.size() - cnt);
     if (s.empty())
-        s += Format("\n\t\tEngine %d No active flows", local_engine_idx_);
+        s += Format("\n\tEngine %d No active flows", local_engine_idx_);
     return s;
 }
 
@@ -1252,13 +1270,14 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
     std::call_once(flag_once, []() { EFAFactory::Init(); });
 
     CHECK_LE(kNumEngines, NUM_CPUS / 4)
-        << "num_queues should be less than or equal to the number of CPUs / 4";
+        << "num_queues should be less than or equal to the number of CPUs "
+           "/ 4";
 
     LOG(INFO) << "Creating Channels";
 
     // Create multiple engines, each got its xsk and umem from the
-    // daemon. Each engine has its own thread and channel to let the endpoint
-    // communicate with.
+    // daemon. Each engine has its own thread and channel to let the
+    // endpoint communicate with.
     for (int i = 0; i < kNumEngines; i++) channel_vec_[i] = new Channel();
 
     LOG(INFO) << "Creating Engines";
@@ -1319,7 +1338,7 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
     }
 #endif
 
-    for (int i = 0; i < NUM_DEVICES; i++) {
+    for (int i = 0; i < kNumVdevices; i++) {
         // Create listening socket
         listen_fd_[i] = socket(AF_INET, SOCK_STREAM, 0);
         DCHECK(listen_fd_[i] >= 0) << "ERROR: opening socket";
@@ -1333,7 +1352,7 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         bzero((char *)&serv_addr, sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = INADDR_ANY;
-        // Note: EFA dev i listens on kBootstrapPort + i.
+        // Note: vEFA/GPU i listens on kBootstrapPort + i.
         serv_addr.sin_port = htons(kBootstrapPort + i);
         DCHECK(bind(listen_fd_[i], (struct sockaddr *)&serv_addr,
                     sizeof(serv_addr)) >= 0)
@@ -1351,7 +1370,7 @@ Endpoint::~Endpoint() {
     for (auto &copy_th : copy_th_vec_) copy_th->join();
     for (int i = 0; i < kNumEngines; i++) delete channel_vec_[i];
     for (int i = 0; i < kNumEngines; i++) delete ctx_pool_[i];
-    for (int i = 0; i < NUM_DEVICES; i++) close(listen_fd_[i]);
+    for (int i = 0; i < kNumVdevices; i++) close(listen_fd_[i]);
 
     {
         std::lock_guard<std::mutex> lock(fd_map_mu_);
@@ -1398,8 +1417,8 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = str_to_ip(remote_ip.c_str());
-    // Note: EFA dev i listens on kBootstrapPort + i.
-    serv_addr.sin_port = htons(kBootstrapPort + remote_pdev);
+    // Note: vEFA/GPU i listens on kBootstrapPort + i.
+    serv_addr.sin_port = htons(kBootstrapPort + remote_vdev);
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
@@ -1409,16 +1428,13 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
     }
 
     LOG(INFO) << "[Endpoint] connected to <" << remote_ip << ", " << remote_vdev
-              << ">:" << kBootstrapPort + remote_pdev << " bootstrap_fd "
+              << ">:" << kBootstrapPort + remote_vdev << " bootstrap_fd "
               << bootstrap_fd;
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
     int flag = 1;
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
-
-    auto local_engine_idx = find_least_loaded_engine_idx_and_update(local_vdev);
-    CHECK_GE(local_engine_idx, 0);
 
     FlowID flow_id;
     while (true) {
@@ -1444,6 +1460,9 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
             break;
         }
     }
+    auto local_engine_idx =
+        find_least_loaded_engine_idx_and_update(local_vdev, flow_id);
+    CHECK_GE(local_engine_idx, 0);
 
     install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
 
@@ -1461,7 +1480,7 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
     int bootstrap_fd;
     int ret;
     bool local_lock_first = false;
-    int listen_fd = listen_fd_[local_pdev];
+    int listen_fd = listen_fd_[local_vdev];
 
     // Accept connection and set nonblocking and nodelay
     bootstrap_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clilen);
@@ -1475,9 +1494,6 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
     int flag = 1;
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
-
-    auto local_engine_idx = find_least_loaded_engine_idx_and_update(local_vdev);
-    CHECK_GE(local_engine_idx, 0);
 
     // Generate unique flow ID for both client and server.
     FlowID flow_id;
@@ -1499,7 +1515,8 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
 
         LOG(INFO) << "[Endpoint] accept: propose FlowID: " << flow_id;
 
-        // Let client use flow_id + MAX_FLOW_ID and ask client if this is unique
+        // Let client use flow_id + MAX_FLOW_ID and ask client if this is
+        // unique
         FlowID cid = flow_id + MAX_FLOW_ID;
         int ret = send_message(bootstrap_fd, &cid, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
@@ -1519,6 +1536,10 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
             DCHECK(1 == fd_map_.erase(flow_id));
         }
     }
+
+    auto local_engine_idx =
+        find_least_loaded_engine_idx_and_update(local_vdev, flow_id);
+    CHECK_GE(local_engine_idx, 0);
 
     install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd);
 
@@ -1682,8 +1703,8 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     ConnMeta *local_meta = new ConnMeta();
     efa_socket->get_conn_metadata(local_meta);
 
-    // Only operating bootstrap_fd on a the creation thread, not on each engine
-    // thread, as it will create read/write hang.
+    // Only operating bootstrap_fd on a the creation thread, not on each
+    // engine thread, as it will create read/write hang.
     std::stringstream str;
     str << "[Engine] local_meta->qpn_list: ";
     for (int i = 0; i < kMaxSrcDstQP; i++) {
@@ -1725,16 +1746,26 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     net_barrier(bootstrap_fd);
 }
 
-inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx) {
+inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx,
+                                                             FlowID flow_id) {
     std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
+    int is_sender = (flow_id >= MAX_FLOW_ID);
 
     auto si = vdev_idx * kNumEnginesPerVdev;
     auto ei = (vdev_idx + 1) * kNumEnginesPerVdev;
 
-    auto minElementIter = std::min_element(engine_load_vec_.begin() + si,
-                                           engine_load_vec_.begin() + ei);
-    *minElementIter += 1;
-    return std::distance(engine_load_vec_.begin(), minElementIter);
+    auto min_engine_idx = si;
+    if (min_engine_idx % 2 == is_sender) min_engine_idx++;
+    for (int i = si; i < ei; i++) {
+        // Avoiding mapping a flow's send and recv to the same engine.
+        if (i % 2 == is_sender) continue;
+        if (engine_load_vec_[i] < engine_load_vec_[min_engine_idx]) {
+            min_engine_idx = i;
+        }
+    }
+
+    engine_load_vec_[min_engine_idx]++;
+    return min_engine_idx;
 }
 
 inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {
@@ -1760,13 +1791,14 @@ void Endpoint::stats_thread_fn() {
 
         int cnt = 0;
         std::string s;
-        s += "\n\t[Uccl Engine] ";
+        s += "\n[Uccl Engine] ";
         for (auto &engine : engine_vec_) {
             s += engine->status_to_string();
-            if (++cnt == 2) break;
+            cnt++;
+            // if (++cnt == 4) break;
         }
         if (cnt < engine_vec_.size())
-            s += Format("\n\t\t... %d more engines", engine_vec_.size() - cnt);
+            s += Format("\n\t... %d more engines", engine_vec_.size() - cnt);
         LOG(INFO) << s;
     }
 }

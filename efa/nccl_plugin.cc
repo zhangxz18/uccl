@@ -30,7 +30,8 @@ struct UcclRequest {
 };
 
 class UcclRequestBuffPool : public BuffPool {
-    static constexpr size_t num_elements = 4096;  // Send and receive.
+    static constexpr size_t num_elements =
+        kMaxUnconsumedRxMsgbufs;  // Send and receive.
     static constexpr size_t element_size = sizeof(UcclRequest);
 
    public:
@@ -358,6 +359,7 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     auto vdev = scomm->base.vdev;
     {
         if (scomm->base.uccl_req_pool->alloc_buff(&addr)) {
+            CHECK(false);
             *request = nullptr;
             return ncclSuccess;
         }
@@ -372,8 +374,8 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
 
     *request = req;
 
-    VLOG(3) << "pluginIsend on vdev: " << vdev << ", size: " << size
-            << ", flow " << conn_id.flow_id;
+    LOG(INFO) << "pluginIsend on vdev: " << vdev << ", size: " << size
+              << ", flow " << conn_id.flow_id;
 
     return ncclSuccess;
 }
@@ -389,6 +391,7 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
     auto vdev = rcomm->base.vdev;
     {
         if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
+            CHECK(false);
             *request = nullptr;
             return ncclSuccess;
         }
@@ -403,8 +406,11 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
     *request = req;
 
-    VLOG(3) << "pluginIrecv on vdev: " << vdev << ", size: " << sizes[0]
-            << ", flow " << conn_id.flow_id;
+    for (int i = 0; i < n; i++) {
+        LOG(INFO) << "pluginIrecv on vdev: " << vdev << ", size: " << sizes[i]
+                  << ", flow " << conn_id.flow_id << ", engine_idx "
+                  << conn_id.engine_idx;
+    }
 
     return ncclSuccess;
 }

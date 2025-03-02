@@ -37,6 +37,7 @@ struct __attribute__((packed)) UcclSackHdr {
                        swift::Pcb::kSackBitmapBucketSize];  // Bitmap of the
                                                             // SACKs received.
     be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
+    be32_t rwnd;        // Receiver window size in terms of packets.
 };
 static const size_t kUcclPktHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclPktDataMaxLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;

@@ -753,8 +753,8 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
 std::string EFASocket::to_string() {
     std::string s;
     s += Format(
-        "free pkt hdr: %u, free pkt data: %u, free frame desc: %u, unpolled tx "
-        "pkts: %u, fill queue entries: %u",
+        "\n\t\t[EFA] free pkt hdr: %u, free pkt data: %u, free frame desc: "
+        "%u, unpolled tx pkts: %u, fill queue entries: %u",
         pkt_hdr_pool_->avail_slots(), pkt_data_pool_->avail_slots(),
         frame_desc_pool_->avail_slots(), send_queue_wrs_, recv_queue_wrs_);
     if (socket_idx_ == 0) {
@@ -774,7 +774,7 @@ std::string EFASocket::to_string() {
         in_bytes_ = 0;
 
         s += Format(
-            "\n\t\t\t        total in: %lf Mpps, %lf Gbps; total out: %lf "
+            "\n\t\t      total in: %lf Mpps, %lf Gbps; total out: %lf "
             "Mpps, %lf Gbps",
             in_packets_rate, in_bytes_rate, out_packets_rate, out_bytes_rate);
     }

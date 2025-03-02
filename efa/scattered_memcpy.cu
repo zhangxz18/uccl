@@ -65,6 +65,11 @@ void launchScatteredMemcpyAsync(uint32_t num_copies, const copy_param_t* params,
     // Launch the kernel
     kernelScatteredMemcpy<<<THREAD_BLOCKS, THREADS_PER_BLOCK, 0, stream>>>(
         num_copies, *params);
+
+    // void* args[] = {(void*)&num_copies, (void*)params};
+    // cudaLaunchCooperativeKernel((void*)kernelScatteredMemcpy,
+    //                             dim3(THREAD_BLOCKS), dim3(THREADS_PER_BLOCK),
+    //                             args, 0, stream);
 }
 
 int pollScatteredMemcpy(cudaStream_t stream) {

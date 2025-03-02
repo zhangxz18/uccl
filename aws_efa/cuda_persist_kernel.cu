@@ -1,6 +1,7 @@
 #include <stdio.h>
+#include <unistd.h>
 
-#define ITERS 1000
+#define ITERS 4
 #define DSIZE 65536
 #define nTPB 256
 
@@ -14,6 +15,12 @@
             exit(1);                                                \
         }                                                           \
     } while (0)
+
+__device__ uint __smid(void) {
+    uint ret;
+    asm("mov.u32 %0, %smid;" : "=r"(ret));
+    return ret;
+}
 
 __device__ volatile int blkcnt1 = 0;
 __device__ volatile int blkcnt2 = 0;
@@ -30,7 +37,9 @@ __global__ void testkernel(int *buffer1, int *buffer2,
     // assumption of persistent block-limited kernel launch
     int idx = threadIdx.x + blockDim.x * blockIdx.x;
     int iter_count = 0;
-    while (iter_count < iterations) {  // persistent until iterations complete
+    // persistent until iterations complete
+    // while (iter_count < iterations) {
+    while (true) {  // persistent
         int *buf =
             (iter_count & 1) ? buffer2 : buffer1;  // ping pong between buffers
         volatile int *bufrdy =
@@ -39,7 +48,9 @@ __global__ void testkernel(int *buffer1, int *buffer2,
         int my_idx = idx;
         while (iter_count - itercnt > 1);  // don't overrun buffers on device
         while (*bufrdy == 2);              // wait for buffer to be consumed
-        while (my_idx < buffersize) {      // perform the "work"
+        printf("SM %d, block %d, thread %d\n", __smid(), blockIdx.x,
+               threadIdx.x);
+        while (my_idx < buffersize) {  // perform the "work"
             my_compute_function(buf, my_idx, iter_count);
             my_idx += gridDim.x * blockDim.x;  // grid-striding loop
         }
@@ -57,6 +68,12 @@ __global__ void testkernel(int *buffer1, int *buffer2,
     }
 }
 
+__global__ void emptykernel() {
+    // do nothing
+    printf("Emptykernel: SM %d, block %d, thread %d\n", __smid(), blockIdx.x,
+           threadIdx.x);
+}
+
 int validate(const int *data, const int dsize, const int val) {
     for (int i = 0; i < dsize; i++)
         if (data[i] != val) {
@@ -70,6 +87,19 @@ int validate(const int *data, const int dsize, const int val) {
 // https://stackoverflow.com/questions/33150040/doubling-buffering-in-cuda-so-the-cpu-can-operate-on-data-produced-by-a-persiste
 
 int main() {
+    int device;
+    cudaGetDevice(&device);
+
+    int concurrentKernels;
+    cudaDeviceGetAttribute(&concurrentKernels, cudaDevAttrConcurrentKernels,
+                           device);
+
+    if (concurrentKernels) {
+        printf("✅ GPU supports concurrent kernel execution!\n");
+    } else {
+        printf("❌ GPU does NOT support concurrent kernel execution.\n");
+    }
+
     int *h_buf1, *d_buf1, *h_buf2, *d_buf2;
     volatile int *m_bufrdy1, *m_bufrdy2;
     // buffer and "mailbox" setup
@@ -91,12 +121,22 @@ int main() {
     cudaMemset(d_buf2, 0xFF, DSIZE * sizeof(int));
     cudaCheckErrors("cudaMemset fail");
     // inefficient crutch for choosing number of blocks
-    int nblock = 0;
-    cudaDeviceGetAttribute(&nblock, cudaDevAttrMultiProcessorCount, 0);
-    cudaCheckErrors("get multiprocessor count fail");
+    // int nblock = 0;
+    // cudaDeviceGetAttribute(&nblock, cudaDevAttrMultiProcessorCount, 0);
+    // cudaCheckErrors("get multiprocessor count fail");
+    int nblock = 1;
     testkernel<<<nblock, nTPB, 0, streamk>>>(d_buf1, d_buf2, m_bufrdy1,
                                              m_bufrdy2, DSIZE, ITERS);
     cudaCheckErrors("kernel launch fail");
+
+    // cudaStream_t streame;
+    // cudaStreamCreate(&streame);
+    // cudaCheckErrors("cudaStreamCreate fail");
+    // emptykernel<<<nblock, nTPB, 0, streame>>>();
+    // cudaCheckErrors("kernel launch fail");
+    // cudaStreamSynchronize(streame);
+    // cudaCheckErrors("cudaStreamSync fail");
+
     volatile int *bufrdy;
     int *hbuf, *dbuf;
     for (int i = 0; i < ITERS; i++) {
