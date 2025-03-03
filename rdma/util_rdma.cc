@@ -514,6 +514,13 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
         ureq->send.inc_backlog = 1;
         subflow->backlog_bytes_ += size;
     }
+    
+    if (subflow->in_rtx) {
+        // We have to wait for the retransmission to finish.
+        // Drain the retransmission queue.
+        drain_rtx_queue(subflow);
+        return false;
+    }
 
     while (*sent_offset < size) {
 
@@ -1042,7 +1049,12 @@ void RDMAContext::check_srq(bool force)
     }
 }
 
-void RDMAContext::retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex)
+void RDMAContext::drain_rtx_queue(SubUcclFlow *subflow)
+{
+    fast_retransmit(subflow);
+}
+
+bool RDMAContext::try_retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex)
 {
     if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
         poll_retr_cq();
@@ -1050,8 +1062,24 @@ void RDMAContext::retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex)
         if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
             /// FIXME: We should tell caller that we cannot retransmit the chunk due to retransmission limit.
             VLOG(5) << "Too many inflight retransmission chunks: " << inflight_retr_chunks_;
-            return;
+            return false;
         }
+    }
+
+    if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
+        // We can't retransmit the chunk unless we have enough credits.
+        auto permitted_bytes = subflow->eqds_cc.credit();
+        if (permitted_bytes < wr_ex->sge.length || 
+            !subflow->eqds_cc.spend_credit(wr_ex->sge.length)) {
+            subflow->in_rtx = true;
+            VLOG(5) << "Cannot retransmit chunk due to insufficient credits";
+            return false;
+        }
+        // Re-compute pull target.
+        auto pull_target = subflow->eqds_cc.compute_pull_target(subflow->backlog_bytes_);
+        auto imm_data = IMMDataEQDS(ntohl(wr_ex->wr.imm_data));
+        imm_data.SetTarget(pull_target);
+        wr_ex->wr.imm_data = htonl(imm_data.GetImmData());
     }
 
     auto *lossy_qpw = &dp_qps_[wr_ex->qpidx];
@@ -1098,6 +1126,8 @@ void RDMAContext::retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex)
     VLOG(5) << "successfully retransmit chunk for QP#" << (lossy_qpw - dp_qps_) 
         << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr << ", chunk_size: " 
         << wr_ex->sge.length << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN() << " for flow: " << subflow->fid_;
+
+    return true;
 }
 
 void RDMAContext::rx_credit(uint64_t pkt_addr)
@@ -1117,11 +1147,17 @@ void RDMAContext::rx_credit(uint64_t pkt_addr)
 
     auto *subflow = flow->sub_flows_[engine_offset_];
 
+    subflow->eqds_cc.stop_speculating();
+    
     if (subflow->eqds_cc.handle_pull(pullno)) {
         //TODO: trigger transmission for this subflow immediately.
     }
 
-    subflow->eqds_cc.stop_speculating();
+    if (subflow->in_rtx) {
+        // We have pending retransmission chunks due to lack of credits.
+        // Try to drain the retransmission queue.
+        drain_rtx_queue(subflow);
+    }
 }
 
 void RDMAContext::rx_ack(uint64_t pkt_addr)
@@ -1180,8 +1216,13 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
                     auto chunk = subflow->txtracking.get_unacked_chunk_from_idx(index);
                     if (seqno == chunk.csn) {
                         auto wr_ex = chunk.wr_ex;
-                        retransmit_chunk(subflow, wr_ex);
-                        subflow->pcb.stats_fast_rexmits++;
+                        if (try_retransmit_chunk(subflow, wr_ex)) {
+                            subflow->pcb.stats_fast_rexmits++;
+                        } else {
+                            // We can't retransmit the chunk due to lack of credits.
+                            // Quit the loop.
+                            index = kSackBitmapSize;
+                        }
                     }
                     // Rearm timer for Retransmission.
                     rearm_timer_for_flow(subflow);
@@ -1194,6 +1235,9 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
 
     } else {
         VLOG(5) << "Received valid ACK " << ackno << " for flow" << fid << " by Ctrl QP";
+        
+        // After receiving a valid ACK, we can exit the pending retransmission state.
+        subflow->in_rtx = false;
 
         update_sackbitmap = true;
         auto num_acked_chunks = UINT_CSN(ackno) - subflow->pcb.snd_una;
@@ -1856,7 +1900,7 @@ void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
     auto ecsn = subflow->pcb.rcv_nxt;
     auto distance = UINT_CSN(csn) - ecsn;
 
-    if ((UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))) {
+    if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
         VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         subflow->pcb.stats_chunk_drop++;
@@ -1962,7 +2006,7 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
     auto ecsn = subflow->pcb.rcv_nxt;
     auto distance = UINT_CSN(csn) - ecsn;
 
-    if ((UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn))) {
+    if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
         VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
                     << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         subflow->pcb.stats_chunk_drop++;
@@ -2091,15 +2135,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
     }
 
     if (subflow->pcb.rto_rexmits_consectutive >= kRTOAbortThreshold) {
-        LOG_FIRST_N(ERROR, 1) << "RTO retransmission threshold reached. Abort RTO for flow" << subflow->fid_;
-        return;
-    }
-
-    /// TODO: We should throttle the volume of retransmission. 
-    /// Currently, we hard limit the number of inflight retransmission chunks.
-    if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
-        VLOG(5) << inflight_retr_chunks_ << " inflight retransmission chunks. Skip retransmission.";
-        return;
+        LOG(ERROR) << "RTO retransmission threshold reached." << subflow->fid_;
     }
 
     // Case#1: SACK bitmap at the sender side is empty. Retransmit the oldest unacked chunk.
@@ -2107,7 +2143,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
     if (!sack_bitmap_count) {
         auto chunk = subflow->txtracking.get_oldest_unacked_chunk();
         auto wr_ex = chunk.wr_ex;
-        retransmit_chunk(subflow, wr_ex);
+        try_retransmit_chunk(subflow, wr_ex);
         // Arm timer for Retransmission
         rearm_timer_for_flow(subflow);
         if (rto) {
@@ -2137,8 +2173,13 @@ void RDMAContext::__retransmit(void *context, bool rto)
             auto chunk = subflow->txtracking.get_unacked_chunk_from_idx(index);
             if (seqno == chunk.csn) {
                 auto wr_ex = chunk.wr_ex;
-                retransmit_chunk(subflow, wr_ex);
-                done = true;
+                if (try_retransmit_chunk(subflow, wr_ex)) {
+                    done = true;
+                } else {
+                    // We can't retransmit the chunk due to lack of credits.
+                    // Quit the loop.
+                    index = kSackBitmapSize;
+                }
             } else {
                 // This bit is stale and its corresponding chunk is already acked.
                 // Do nothing.

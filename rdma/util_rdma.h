@@ -544,6 +544,8 @@ public:
     // Scoreboard for RTT.
     double scoreboard_rtt_[kPortEntropy];
 
+    bool in_rtx = false;
+
     eqds::EQDSCC eqds_cc;
 
     inline void update_scoreboard_rtt(uint64_t newrtt_tsc, uint32_t qpidx) {
@@ -897,9 +899,19 @@ class RDMAContext {
 
         /**
          * @brief Retransmit a chunk for the given subUcclFlow.
+         * 
+         * @param subflow 
          * @param wr_ex 
+         * @return true Retransmission is successful.
+         * @return false Retransmission is failed due to maximum outstanding retransmission chunks or lack of credits (Receiver-driven CC).
          */
-        void retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex);
+        bool try_retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex);
+
+        /**
+         * @brief Try to drain the retransmission queue for the given subUcclFlow.
+         * @param subflow 
+         */
+        void drain_rtx_queue(SubUcclFlow *subflow);
 
         /**
          * @brief Receive a chunk from the flow.
