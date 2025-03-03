@@ -543,7 +543,9 @@ void EFASocket::post_recv_wrs(uint32_t budget, uint16_t qp_idx) {
         ret = pkt_hdr_pool_->alloc_buff(&pkt_hdr_buf);
         ret |= pkt_data_pool_->alloc_buff(&pkt_data_buf);
         ret |= frame_desc_pool_->alloc_buff(&frame_desc_buf);
-        DCHECK(ret == 0);
+        DCHECK(ret == 0) << pkt_hdr_pool_->avail_slots() << " "
+                         << pkt_data_pool_->avail_slots() << " "
+                         << frame_desc_pool_->avail_slots();
 
         auto *frame_desc = FrameDesc::Create(
             frame_desc_buf, pkt_hdr_buf, EFA_UD_ADDITION + kUcclPktHdrLen,

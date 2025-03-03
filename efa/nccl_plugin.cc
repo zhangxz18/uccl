@@ -357,12 +357,10 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
 
     uint64_t addr;
     auto vdev = scomm->base.vdev;
-    {
-        if (scomm->base.uccl_req_pool->alloc_buff(&addr)) {
-            CHECK(false);
-            *request = nullptr;
-            return ncclSuccess;
-        }
+    if (scomm->base.uccl_req_pool->alloc_buff(&addr)) {
+        CHECK(false);
+        *request = nullptr;
+        return ncclSuccess;
     }
 
     struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
@@ -374,9 +372,11 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
 
     *request = req;
 
-    LOG(INFO) << "pluginIsend on vdev: " << vdev << ", size: " << size
-              << ", flow " << conn_id.flow_id;
-
+#ifdef POLLCTX_DEBUG
+    LOG(INFO) << "pluginIsend on vdev: " << vdev << " size " << size
+              << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
+              << conn_id.flow_id << " req_id " << req->poll_ctx->req_id;
+#endif
     return ncclSuccess;
 }
 
@@ -389,12 +389,10 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
     uint64_t addr;
     auto vdev = rcomm->base.vdev;
-    {
-        if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
-            CHECK(false);
-            *request = nullptr;
-            return ncclSuccess;
-        }
+    if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
+        CHECK(false);
+        *request = nullptr;
+        return ncclSuccess;
     }
 
     struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
@@ -406,11 +404,12 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
     *request = req;
 
-    for (int i = 0; i < n; i++) {
-        LOG(INFO) << "pluginIrecv on vdev: " << vdev << ", size: " << sizes[i]
-                  << ", flow " << conn_id.flow_id << ", engine_idx "
-                  << conn_id.engine_idx;
-    }
+#ifdef POLLCTX_DEBUG
+    LOG(INFO) << "pluginIrecv on vdev: " << vdev << " size " << sizes[0]
+              << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
+              << conn_id.flow_id << " n " << n << " req_id "
+              << req->poll_ctx->req_id;
+#endif
 
     return ncclSuccess;
 }
@@ -427,19 +426,34 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         *done = 1;
         if (req->type == ReqTx) {
             size[0] = req->send_len;
-            VLOG(3) << "pluginTest ReqTx done";
+#ifdef POLLCTX_DEBUG
+            LOG(INFO) << "pluginTest ReqTx done: " << " engine_id "
+                      << req->poll_ctx->engine_idx << " flow_id "
+                      << req->poll_ctx->flow_id << " req_id "
+                      << req->poll_ctx->req_id;
+#endif
         } else if (req->type == ReqRx) {
             for (int i = 0; i < req->n; i++) size[i] = req->recv_len[i];
-            VLOG(3) << "pluginTest ReqRx done";
+#ifdef POLLCTX_DEBUG
+            LOG(INFO) << "pluginTest ReqRx done: " << " engine_id "
+                      << req->poll_ctx->engine_idx << " flow_id "
+                      << req->poll_ctx->flow_id << " req_id "
+                      << req->poll_ctx->req_id;
+#endif
         } else if (req->type == ReqFlush) {
             // Do nothing.
         }
-        {
-            auto uccl_req_pool =
-                reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
-            uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
-        }
+        auto uccl_req_pool =
+            reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
+        uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
     } else {
+#ifdef POLLCTX_DEBUG
+        LOG_EVERY_N(INFO, 1000000)
+            << "pluginTest poll NOT done: "
+            << (req->type == ReqTx ? "ReqTx" : "ReqRx") << " engine_id "
+            << req->poll_ctx->engine_idx << " flow_id "
+            << req->poll_ctx->flow_id << " req_id " << req->poll_ctx->req_id;
+#endif
         *done = 0;
     }
 

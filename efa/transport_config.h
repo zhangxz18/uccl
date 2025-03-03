@@ -10,6 +10,7 @@
 // #define USE_SRD_FOR_CTRL
 #define EMULATE_RC_ZC
 // #define RTT_STATS
+// #define POLLCTX_DEBUG
 
 enum class CCType {
     kTimely,
@@ -22,7 +23,7 @@ static constexpr CCType kCCType = CCType::kTimely;
 #define P4D
 
 static const uint8_t kNumVdevices = 2;         // # of vEFA/GPUs.
-static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
+static const uint32_t kNumEnginesPerVdev = 1;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
 /// Interface configuration.
@@ -70,7 +71,7 @@ static const uint32_t kMaxPollBatch = 32;
 static const uint32_t kMaxRecvWrDeficit = 32;
 static const uint32_t kMaxChainedWr = 32;
 static const uint32_t kMaxUnconsumedRxMsgbufs = NUM_FRAMES / 16;
-static const uint32_t kMaxMultiRecv = 1;
+static const uint32_t kMaxMultiRecv = 8;
 
 // Path configuration.
 #ifdef USE_SRD
@@ -79,6 +80,7 @@ static const uint32_t kMaxDstQPCtrl = 1;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
+// Setting to 20 gives highest bimq perf (191 vs. 186G), but bad for NCCL.
 static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxSrcQP = 16;
 static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.

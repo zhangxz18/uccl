@@ -62,6 +62,10 @@ struct alignas(64) PollCtx {
     std::atomic<uint16_t> num_unfinished;  // Number of unfinished requests.
     uint64_t timestamp;                    // Timestamp for request issuing.
     uint32_t engine_idx;                   // Engine index for request issuing.
+#ifdef POLLCTX_DEBUG
+    FlowID flow_id;   // Flow ID for request issuing.
+    uint64_t req_id;  // Tx ID for request issuing.
+#endif
     PollCtx() : fence(false), done(false), num_unfinished(0), timestamp(0) {};
     ~PollCtx() { clear(); }
 
@@ -88,7 +92,7 @@ struct alignas(64) PollCtx {
 class PollCtxPool : public BuffPool {
    public:
     static constexpr uint32_t kPollCtxSize = sizeof(PollCtx);
-    static constexpr uint32_t kNumPollCtx = NUM_FRAMES / 4;
+    static constexpr uint32_t kNumPollCtx = NUM_FRAMES;
     static_assert((kNumPollCtx & (kNumPollCtx - 1)) == 0,
                   "kNumPollCtx must be power of 2");
 
@@ -196,8 +200,6 @@ class UcclEngine;
 class Endpoint;
 
 class TXTracking {
-    std::deque<PollCtx *> poll_ctxs_;
-
    public:
     TXTracking() = delete;
     TXTracking(EFASocket *socket, Channel *channel)
@@ -215,7 +217,7 @@ class TXTracking {
 
     void receive_acks(uint32_t num_acked_pkts);
     void append(FrameDesc *msgbuf_head, FrameDesc *msgbuf_tail,
-                uint32_t num_frames, PollCtx *poll_ctx);
+                uint32_t num_frames);
     std::optional<FrameDesc *> get_and_update_oldest_unsent();
 
     inline const uint32_t num_unacked_msgbufs() const {
@@ -748,8 +750,12 @@ class Endpoint {
     std::mutex engine_load_vec_mu_;
     std::array<int, kNumEngines> engine_load_vec_ = {0};
 
-    PollCtxPool *ctx_pool_[kNumEngines];
     int listen_fd_[kNumVdevices];
+
+    // We must use a thread-safe pool but not per-engine poll, as different
+    // threads would issue send/recv even for the same engine.
+    SharedPool<PollCtx *, true> *ctx_pool_;
+    uint8_t *ctx_pool_buf_;
 
     std::mutex fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.

@@ -832,13 +832,16 @@ __global__ void prepareInput2(
   }
 }
 
+#define THREAD_BLOCKS 32
+#define THREADS_PER_BLOCK 512
+
 template<typename ReduceOp>
 void prepareInput1(
     void *elts, intptr_t elt_n, int elt_ty, ReduceOp op, int rank_n, int rank_me,
     uint64_t seed, intptr_t elt_ix0, cudaStream_t stream
   ) {
-  int block_n = std::min<intptr_t>(32, (elt_n + 4*512-1)/(4*512));
-  #define CASE_TY(T) prepareInput2<<<block_n, 512, 0, stream>>>((T*)elts, elt_n, op, rank_n, rank_me, seed, elt_ix0); break;
+  int block_n = std::min<intptr_t>(THREAD_BLOCKS, (elt_n + 4*512-1)/(4*512));
+  #define CASE_TY(T) prepareInput2<<<block_n, THREADS_PER_BLOCK, 0, stream>>>((T*)elts, elt_n, op, rank_n, rank_me, seed, elt_ix0); break;
   switch(elt_ty) {
   case ncclInt8: CASE_TY(int8_t)
   case ncclUint8: CASE_TY(uint8_t)
@@ -913,8 +916,8 @@ void prepareExpected1(
     void *elts, intptr_t elt_n, int elt_ty, ReduceOp op, int rank_n,
     uint64_t seed, intptr_t elt_ix0, cudaStream_t stream
   ) {
-  int block_n = std::min<intptr_t>(32, (elt_n + 4*512-1)/(4*512));
-  #define CASE_TY(T) prepareExpected2<<<block_n, 512, 0, stream>>>((T*)elts, elt_n, op, rank_n, seed, elt_ix0); break;
+  int block_n = std::min<intptr_t>(THREAD_BLOCKS, (elt_n + 4*512-1)/(4*512));
+  #define CASE_TY(T) prepareExpected2<<<block_n, THREADS_PER_BLOCK, 0, stream>>>((T*)elts, elt_n, op, rank_n, seed, elt_ix0); break;
   switch(elt_ty) {
   case ncclInt8: CASE_TY(int8_t)
   case ncclUint8: CASE_TY(uint8_t)
@@ -1087,10 +1090,10 @@ void verifyInline1(
   ) {
   #define CASE_OP(op) \
     if(rank_n == 1) \
-    verifyInline2<T, Uint><<<block_n, 512, 0, stream>>> \
+    verifyInline2<T, Uint><<<block_n, THREADS_PER_BLOCK, 0, stream>>> \
       ((T const*)results, elt_n, ReduceNil(), rank_n, seed, elt_ix0, tolerance, bad_elt_n); \
     else \
-    verifyInline2<T, Uint><<<block_n, 512, 0, stream>>> \
+    verifyInline2<T, Uint><<<block_n, THREADS_PER_BLOCK, 0, stream>>> \
       ((T const*)results, elt_n, op, rank_n, seed, elt_ix0, tolerance, bad_elt_n); \
     break;
   switch(red_op) {
@@ -1125,12 +1128,12 @@ void ncclVerifiableVerify(
     tolerance = calcSumFloatTolerance(rank_n, elt_ty);
   #endif
 
-  int block_n = std::min<intptr_t>(32, (elt_n + 4*512-1)/(4*512));
+  int block_n = std::min<intptr_t>(THREAD_BLOCKS, (elt_n + 4*512-1)/(4*512));
 
   *bad_elt_n = 0;
   #define CASE_TY(T, Uint) { \
       if(expected != nullptr) { \
-        verifyPrepared<<<block_n, 512, 0, stream>>>((Uint const*)results, (Uint const*)expected, elt_n, tolerance, bad_elt_n); \
+        verifyPrepared<<<block_n, THREADS_PER_BLOCK, 0, stream>>>((Uint const*)results, (Uint const*)expected, elt_n, tolerance, bad_elt_n); \
       } else { \
         verifyInline1<T, Uint>((T const*)results, elt_n, red_op, rank_n, seed, elt_ix0, tolerance, bad_elt_n, stream, block_n); \
       } \

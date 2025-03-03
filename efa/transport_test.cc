@@ -292,9 +292,9 @@ int main(int argc, char* argv[]) {
                     auto inflights = poll_ctxs.size();
                     for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
-                        poll_ctxs.pop_front();
                         auto async_start = poll_ctx->timestamp;
                         auto engine_idx = poll_ctx->engine_idx;
+                        poll_ctxs.pop_front();
                         if (ep.uccl_poll_once(poll_ctx)) {
                             rtts.push_back(
                                 to_usec(rdtsc() - async_start, freq_ghz));
@@ -538,8 +538,8 @@ int main(int argc, char* argv[]) {
                     auto inflights = poll_ctxs.size();
                     for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
-                        poll_ctxs.pop_front();
                         auto engine_idx = poll_ctx->engine_idx;
+                        poll_ctxs.pop_front();
                         if (ep.uccl_poll_once(poll_ctx)) {
                             inflight_msgs[engine_idx]--;
                             i++;

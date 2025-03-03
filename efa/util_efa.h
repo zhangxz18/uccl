@@ -164,11 +164,12 @@ class FrameDesc {
     // Flags to denote the message buffer state.
     static const uint8_t UCCL_MSGBUF_FLAGS_SYN = (1 << 0);
     static const uint8_t UCCL_MSGBUF_FLAGS_FIN = (1 << 1);
-    static const uint8_t UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE = (1 << 2);
     uint8_t msg_flags_;
 
     // Pointing to the next message buffer in the chain.
     FrameDesc *next_;
+    // Used for tx to wakeup the app thread when finishing a message.
+    void *poll_ctx_;
 
     FrameDesc(uint64_t pkt_hdr_addr, uint32_t pkt_hdr_len,
               uint64_t pkt_data_addr, uint32_t pkt_data_len,
@@ -183,6 +184,7 @@ class FrameDesc {
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
         next_ = nullptr;
+        poll_ctx_ = nullptr;
         cpe_time_tsc_ = 0;
     }
 
@@ -249,15 +251,8 @@ class FrameDesc {
     void mark_first() { add_msg_flags(UCCL_MSGBUF_FLAGS_SYN); }
     void mark_last() { add_msg_flags(UCCL_MSGBUF_FLAGS_FIN); }
 
-    void mark_txpulltime_free() {
-        add_msg_flags(UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE);
-    }
-    void mark_not_txpulltime_free() {
-        msg_flags_ &= ~UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE;
-    }
-    bool is_txpulltime_free() {
-        return (msg_flags_ & UCCL_MSGBUF_FLAGS_TXPULLTIME_FREE) != 0;
-    }
+    void *get_poll_ctx() const { return poll_ctx_; }
+    void set_poll_ctx(void *poll_ctx) { poll_ctx_ = poll_ctx; }
 
     void clear_fields() {
         pkt_hdr_addr_ = 0;
@@ -270,6 +265,7 @@ class FrameDesc {
         dest_qpn_ = UINT16_MAX;
         dest_ah_ = nullptr;
         next_ = nullptr;
+        poll_ctx_ = nullptr;
         cpe_time_tsc_ = 0;
     }
 

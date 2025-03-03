@@ -27,16 +27,20 @@ void TXTracking::receive_acks(uint32_t num_acked_pkts) {
         }
 
         if (msgbuf->is_last()) {
-            VLOG(3) << "Transmitted a complete message";
             // Tx a full message; wakeup app thread waiting on endpoint.
-            DCHECK(!poll_ctxs_.empty());
-            auto poll_ctx = poll_ctxs_.front();
-            poll_ctxs_.pop_front();
+            auto poll_ctx = (PollCtx *)msgbuf->get_poll_ctx();
+            DCHECK(poll_ctx);
             if (--(poll_ctx->num_unfinished) == 0) {
                 std::lock_guard<std::mutex> lock(poll_ctx->mu);
                 poll_ctx->done = true;
                 poll_ctx->cv.notify_one();
             }
+
+#ifdef POLLCTX_DEBUG
+            LOG(INFO) << "Transmitted a complete message: engine_id "
+                      << poll_ctx->engine_idx << " flow_id "
+                      << poll_ctx->flow_id << " req_id " << poll_ctx->req_id;
+#endif
         }
         // Free transmitted frames that are acked
         socket_->push_pkt_hdr(msgbuf->get_pkt_hdr_addr());
@@ -50,20 +54,12 @@ void TXTracking::receive_acks(uint32_t num_acked_pkts) {
 }
 
 void TXTracking::append(FrameDesc *msgbuf_head, FrameDesc *msgbuf_tail,
-                        uint32_t num_frames, PollCtx *poll_ctx) {
+                        uint32_t num_frames) {
     VLOG(3) << "Appending " << num_frames << " frames :"
             << " num_unsent_msgbufs_ " << num_unsent_msgbufs_
             << " last_msgbuf_ " << last_msgbuf_ << " oldest_unsent_msgbuf "
             << oldest_unsent_msgbuf_ << " oldest_unacked_msgbuf_ "
             << oldest_unacked_msgbuf_;
-
-    if (poll_ctx) poll_ctxs_.push_back(poll_ctx);
-
-    if (num_frames == 0) {
-        DCHECK(msgbuf_head == nullptr);
-        DCHECK(msgbuf_tail == nullptr);
-        return;
-    }
 
     // Append the message at the end of the chain of buffers, if any.
     if (last_msgbuf_ == nullptr) {
@@ -198,11 +194,11 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
                 << " app_buf_queue_ size: " << app_buf_queue_.size();
         app_buf_queue_.push_back({*rx_work});
     } else {
-        Channel::Msg rx_work2;
-        while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work2)) {
-            VLOG(3) << "Rx jring dequeue";
-            active_flows_map_[rx_work2.flow_id]->rx_supply_app_buf(rx_work2);
-        }
+        // Channel::Msg rx_work2;
+        // while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work2)) {
+        //     VLOG(3) << "Rx jring dequeue";
+        //     active_flows_map_[rx_work2.flow_id]->rx_supply_app_buf(rx_work2);
+        // }
         // LOG_EVERY_N(INFO, 1000000)
         //     << "num_unconsumed_msgbufs: " << num_unconsumed_msgbufs()
         //     << " ready_msg_queue_ size: " << ready_msg_queue_.size()
@@ -252,7 +248,12 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
             app_buf_queue_.pop_front();
             deser_msgs_head_ = nullptr;
             deser_msgs_tail_ = nullptr;
-            VLOG(2) << "try_copy_msgbuf_to_appbuf: Received a complete message";
+
+#ifdef POLLCTX_DEBUG
+            LOG(INFO) << "Received a complete message engine_id"
+                      << poll_ctx->engine_idx << " rx flow_id "
+                      << poll_ctx->flow_id << " req_id " << poll_ctx->req_id;
+#endif
         }
     }
 
@@ -445,8 +446,8 @@ void UcclFlow::rx_messages() {
 
     // Send one ack for a bunch of received packets.
     if (num_data_frames_recvd) {
-        // Avoiding client sending too much packet which would empty msgbuf.
-        if (rx_tracking_.num_unconsumed_msgbufs() <= kMaxUnconsumedRxMsgbufs) {
+        // To avoid receiver-side buffer empty.
+        if (rx_tracking_.num_unconsumed_msgbufs() < kMaxUnconsumedRxMsgbufs) {
             auto net_flags = received_rtt_probe
                                  ? UcclPktHdr::UcclFlags::kAckRttProbe
                                  : UcclPktHdr::UcclFlags::kAck;
@@ -456,6 +457,7 @@ void UcclFlow::rx_messages() {
             auto [src_qp_idx, dst_qp_idx] =
                 path_id_to_src_dst_qp_for_ctrl(path_id);
 
+            // Avoiding client sending too much packet which would empty msgbuf.
             auto rwnd =
                 kMaxUnconsumedRxMsgbufs - rx_tracking_.num_unconsumed_msgbufs();
             FrameDesc *ack_frame =
@@ -497,6 +499,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
         auto *msgbuf = FrameDesc::Create(frame_desc, pkt_hdr, kUcclPktHdrLen,
                                          (uint64_t)app_buf_cursor, payload_len,
                                          app_mr->lkey, 0);
+        msgbuf->set_poll_ctx(tx_work.poll_ctx);
 
         // auto pkt_payload_addr = msgbuf->get_pkt_addr() + kUcclPktHdrLen;
         // memcpy(pkt_payload_addr, app_buf_cursor, payload_len);
@@ -512,12 +515,14 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
             deser_msgs_tail = msgbuf;
         }
     }
+    deser_msgs_head->mark_first();
+    deser_msgs_tail->mark_last();
     deser_msgs_tail->set_next(nullptr);
-    tx_work.deser_msgs = deser_msgs_head;
 
+    tx_work.deser_msgs = deser_msgs_head;
     pending_tx_msgs_.push_back({tx_work, 0});
 
-    VLOG(3) << "tx_messages size: " << tx_work.len << " bytes";
+    VLOG(3) << "tx_prepare_messages size: " << tx_work.len << " bytes";
 }
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
@@ -654,7 +659,6 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
 #endif
                         prepare_datapacket(msgbuf, path_id, seqno,
                                            UcclPktHdr::UcclFlags::kData);
-                        msgbuf->mark_not_txpulltime_free();
                         // All frame will use src_qp_idx.
                         msgbuf->set_src_qp_idx(UINT16_MAX);
                         msgbuf->set_dest_ah(remote_ah_);
@@ -747,7 +751,6 @@ void UcclFlow::fast_retransmit() {
         const auto *ucclh =
             reinterpret_cast<const UcclPktHdr *>(msgbuf->get_pkt_hdr_addr());
         DCHECK_EQ(seqno, ucclh->seqno.value());
-        msgbuf->mark_not_txpulltime_free();
 
         auto [src_qp_idx, dst_qp_idx] = path_id_to_src_dst_qp(path_id);
         msgbuf->set_src_qp_idx(UINT16_MAX);
@@ -768,7 +771,6 @@ void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
     set_path_id(seqno, path_id);
 #endif
     prepare_datapacket(msgbuf, path_id, seqno, UcclPktHdr::UcclFlags::kData);
-    msgbuf->mark_not_txpulltime_free();
 
     auto [src_qp_idx, dst_qp_idx] = path_id_to_src_dst_qp(path_id);
     msgbuf->set_src_qp_idx(UINT16_MAX);
@@ -807,7 +809,7 @@ void UcclFlow::transmit_pending_packets() {
     auto src_qp_idx = get_src_qp_rr();
     hard_budget = std::min(hard_budget,
                            socket_->send_queue_free_space_per_qp(src_qp_idx));
-    if (last_received_rwnd_ == 0) last_received_rwnd_ = 1;
+    // if (last_received_rwnd_ == 0) last_received_rwnd_ = 1;
     hard_budget = std::min(hard_budget, last_received_rwnd_);
 
     uint32_t permitted_packets = 0;
@@ -893,7 +895,6 @@ void UcclFlow::transmit_pending_packets() {
         auto net_flags = (i == 0) ? UcclPktHdr::UcclFlags::kDataRttProbe
                                   : UcclPktHdr::UcclFlags::kData;
         prepare_datapacket(msgbuf, path_id, seqno, net_flags);
-        msgbuf->mark_not_txpulltime_free();
         msgbuf->set_src_qp_idx(UINT16_MAX);
         msgbuf->set_dest_ah(remote_ah_);
         msgbuf->set_dest_qpn(remote_meta_->qpn_list[dst_qp_idx]);
@@ -933,8 +934,9 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
     auto now_tsc = rdtsc();
     while (cur_msgbuf != nullptr && num_tx_frames < deser_budget) {
         // The flow will free these Tx frames when receiving ACKs.
-        cur_msgbuf->mark_not_txpulltime_free();
-        if (remaining_bytes == tx_work.len) cur_msgbuf->mark_first();
+        if (remaining_bytes == tx_work.len) {
+            DCHECK(cur_msgbuf->is_first());
+        }
 
         auto payload_len = cur_msgbuf->get_pkt_data_len();
 
@@ -956,37 +958,29 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
 
         remaining_bytes -= payload_len;
         if (remaining_bytes == 0) {
-            DCHECK_EQ(cur_msgbuf->next(), nullptr);
-            cur_msgbuf->mark_last();
+            DCHECK(cur_msgbuf->next() == nullptr && cur_msgbuf->is_last());
         }
 
         tx_msgbuf_tail = cur_msgbuf;
         cur_msgbuf = cur_msgbuf->next();
         num_tx_frames++;
     }
+    // This because deser_bugdget is > 0.
+    DCHECK(num_tx_frames > 0);
     tx_msgbuf_tail->set_next(nullptr);
 
-    // LOG_EVERY_N(INFO, 10000)
-    //     << "deser unsent_msgbufs " << tx_tracking_.num_unsent_msgbufs()
-    //     << " deser_budget " << deser_budget << " pending_tx_msgs "
-    //     << pending_tx_msgs_.size() << " successfully added to timingwheel "
-    //     << num_tx_frames << " tx_tracking poll_ctxs "
-    //     << tx_tracking_.poll_ctxs_.size();
-
     if (remaining_bytes == 0) {
+        DCHECK(cur_msgbuf == nullptr);
         // This message has been fully deserialized and added to tx tracking.
         pending_tx_msgs_.pop_front();
     } else {
         // Resuming the deserialization of this message in the next iteration.
+        DCHECK(cur_msgbuf != nullptr);
         tx_work.deser_msgs = cur_msgbuf;
         cur_offset = tx_work.len - remaining_bytes;
     }
 
-    tx_tracking_.append(
-        tx_msgbuf_head, tx_msgbuf_tail, num_tx_frames,
-        (tx_msgbuf_head && tx_msgbuf_head->is_first() && num_tx_frames)
-            ? tx_work.poll_ctx
-            : nullptr);
+    tx_tracking_.append(tx_msgbuf_head, tx_msgbuf_tail, num_tx_frames);
 
     // Recursively call this function to append more messages to the tx.
     if (tx_tracking_.num_unsent_msgbufs() < kMaxPktsInTimingWheel &&
@@ -1036,9 +1030,6 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     auto msgbuf = FrameDesc::Create(frame_desc, pkt_hdr, kControlPayloadBytes,
                                     0, 0, 0, 0);
 
-    // Let EFASocket::pull_completion_queue() free control frames.
-    msgbuf->mark_txpulltime_free();
-
     uint8_t *pkt_addr = (uint8_t *)pkt_hdr;
     auto *ucclh = (UcclPktHdr *)(pkt_addr);
     ucclh->magic = be16_t(UcclPktHdr::kMagic);
@@ -1087,7 +1078,6 @@ void UcclEngine::run() {
         }
 
         while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work)) {
-            VLOG(3) << "Rx jring dequeue";
             active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
         }
 
@@ -1097,11 +1087,10 @@ void UcclEngine::run() {
         frames.insert(frames.end(), _frames.begin(), _frames.end());
         if (frames.size()) process_rx_msg(frames);
 
-        if (Channel::dequeue_sc(channel_->tx_task_q_, &tx_work)) {
+        while (Channel::dequeue_sc(channel_->tx_task_q_, &tx_work)) {
             // Make data written by the app thread visible to the engine.
             tx_work.poll_ctx->read_barrier();
 
-            VLOG(3) << "Tx deser jring dequeue";
             active_flows_map_[tx_work.flow_id]->tx_prepare_messages(tx_work);
         }
 
@@ -1320,8 +1309,10 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         engines.push_back(engine_vec_.back().get());
     }
 
-    for (int i = 0; i < kNumEngines; i++) {
-        ctx_pool_[i] = new PollCtxPool();
+    ctx_pool_ = new SharedPool<PollCtx *, true>(NUM_FRAMES * 4);
+    ctx_pool_buf_ = new uint8_t[NUM_FRAMES * 4 * sizeof(PollCtx)];
+    for (int i = 0; i < NUM_FRAMES * 4; i++) {
+        ctx_pool_->push(new (ctx_pool_buf_ + i * sizeof(PollCtx)) PollCtx());
     }
 
 #ifndef EMULATE_RC_ZC
@@ -1369,8 +1360,9 @@ Endpoint::~Endpoint() {
     for (auto &engine_th : engine_th_vec_) engine_th->join();
     for (auto &copy_th : copy_th_vec_) copy_th->join();
     for (int i = 0; i < kNumEngines; i++) delete channel_vec_[i];
-    for (int i = 0; i < kNumEngines; i++) delete ctx_pool_[i];
     for (int i = 0; i < kNumVdevices; i++) close(listen_fd_[i]);
+    delete ctx_pool_;
+    delete[] ctx_pool_buf_;
 
     {
         std::lock_guard<std::mutex> lock(fd_map_mu_);
@@ -1436,17 +1428,19 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
     setsockopt(bootstrap_fd, IPPROTO_TCP, TCP_NODELAY, (void *)&flag,
                sizeof(int));
 
-    FlowID flow_id;
+    FlowID flow_id, peer_flow_id;
     while (true) {
         int ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
         LOG(INFO) << "[Endpoint] connect: receive proposed FlowID: " << flow_id;
+        peer_flow_id = get_peer_flow_id(flow_id);
 
         // Check if the flow ID is unique, and return it to the server.
         bool unique;
         {
             std::lock_guard<std::mutex> lock(fd_map_mu_);
-            unique = (fd_map_.find(flow_id) == fd_map_.end());
+            unique = (fd_map_.find(flow_id) == fd_map_.end() &&
+                      fd_map_.find(peer_flow_id) == fd_map_.end());
             if (unique) fd_map_[flow_id] = bootstrap_fd;
         }
 
@@ -1496,15 +1490,17 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
                sizeof(int));
 
     // Generate unique flow ID for both client and server.
-    FlowID flow_id;
+    FlowID flow_id, peer_flow_id;
     while (true) {
         // generate flow_id sequentially for better debugging
         static std::atomic<uint64_t> fff = 0;
         flow_id = fff++;
+        peer_flow_id = get_peer_flow_id(flow_id);
         bool unique;
         {
             std::lock_guard<std::mutex> lock(fd_map_mu_);
-            unique = (fd_map_.find(flow_id) == fd_map_.end());
+            unique = (fd_map_.find(flow_id) == fd_map_.end() &&
+                      fd_map_.find(peer_flow_id) == fd_map_.end());
             if (unique) {
                 // Speculatively insert the flow ID.
                 fd_map_[flow_id] = bootstrap_fd;
@@ -1566,13 +1562,19 @@ bool Endpoint::uccl_recv_multi(ConnID conn_id, void **data, int *len_p,
     return busypoll ? uccl_poll(poll_ctx) : uccl_wait(poll_ctx);
 }
 
+#ifdef POLLCTX_DEBUG
+static std::atomic<uint64_t> req_id = 0;
+#endif
+
 PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
                                    const int len, Mhandle *mhandle) {
-    uint64_t poll_ctx_;
-    DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
-    auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
-    poll_ctx->engine_idx = conn_id.engine_idx;
+    PollCtx *poll_ctx = ctx_pool_->pop();
     poll_ctx->num_unfinished = 1;
+    poll_ctx->engine_idx = conn_id.engine_idx;
+#ifdef POLLCTX_DEBUG
+    poll_ctx->flow_id = conn_id.flow_id;
+    poll_ctx->req_id = req_id++;
+#endif
 
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kTx,
@@ -1591,11 +1593,13 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
 
 PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
                                    Mhandle *mhandle) {
-    uint64_t poll_ctx_;
-    DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
-    auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
-    poll_ctx->engine_idx = conn_id.engine_idx;
+    PollCtx *poll_ctx = ctx_pool_->pop();
     poll_ctx->num_unfinished = 1;
+    poll_ctx->engine_idx = conn_id.engine_idx;
+#ifdef POLLCTX_DEBUG
+    poll_ctx->flow_id = conn_id.flow_id;
+    poll_ctx->req_id = req_id++;
+#endif
 
     Channel::Msg msg = {
         .opcode = Channel::Msg::Op::kRx,
@@ -1613,11 +1617,13 @@ PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
 
 PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
                                          int *len_p, Mhandle **mhandle, int n) {
-    uint64_t poll_ctx_;
-    DCHECK(ctx_pool_[conn_id.engine_idx]->alloc_buff(&poll_ctx_) == 0);
-    auto *poll_ctx = reinterpret_cast<PollCtx *>(poll_ctx_);
-    poll_ctx->engine_idx = conn_id.engine_idx;
+    PollCtx *poll_ctx = ctx_pool_->pop();
     poll_ctx->num_unfinished = n;
+    poll_ctx->engine_idx = conn_id.engine_idx;
+#ifdef POLLCTX_DEBUG
+    poll_ctx->flow_id = conn_id.flow_id;
+    poll_ctx->req_id = req_id++;
+#endif
 
     Channel::Msg msg[kMaxMultiRecv];
     for (int i = 0; i < n; i++) {
@@ -1749,18 +1755,20 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
 inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx,
                                                              FlowID flow_id) {
     std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
-    int is_sender = (flow_id >= MAX_FLOW_ID);
 
     auto si = vdev_idx * kNumEnginesPerVdev;
     auto ei = (vdev_idx + 1) * kNumEnginesPerVdev;
-
     auto min_engine_idx = si;
-    if (min_engine_idx % 2 == is_sender) min_engine_idx++;
-    for (int i = si; i < ei; i++) {
-        // Avoiding mapping a flow's send and recv to the same engine.
-        if (i % 2 == is_sender) continue;
-        if (engine_load_vec_[i] < engine_load_vec_[min_engine_idx]) {
-            min_engine_idx = i;
+
+    if (kNumEnginesPerVdev != 1) {
+        int is_sender = (flow_id >= MAX_FLOW_ID);
+        if (min_engine_idx % 2 == is_sender) min_engine_idx++;
+        for (int i = si; i < ei; i++) {
+            // Avoiding mapping a flow's send and recv to the same engine.
+            if (i % 2 == is_sender) continue;
+            if (engine_load_vec_[i] < engine_load_vec_[min_engine_idx]) {
+                min_engine_idx = i;
+            }
         }
     }
 
@@ -1772,8 +1780,7 @@ inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {
     // Make the data written by the engine thread visible to the app thread.
     ctx->read_barrier();
     ctx->clear();
-    auto engine_idx = ctx->engine_idx;
-    ctx_pool_[engine_idx]->free_buff(reinterpret_cast<uint64_t>(ctx));
+    ctx_pool_->push(ctx);
 }
 
 void Endpoint::stats_thread_fn() {
