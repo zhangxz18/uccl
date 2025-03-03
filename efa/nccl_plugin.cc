@@ -437,28 +437,6 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
 ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
                           void **mhandles, void **request) {
-    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
-    auto conn_id = rcomm->base.conn_id;
-    struct Mhandle **mhs = (struct Mhandle **)mhandles;
-    // checkMemoryLocation(data[0]);
-
-    uint64_t addr;
-    auto vdev = rcomm->base.vdev;
-    if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
-        CHECK(false);
-        *request = nullptr;
-        return ncclSuccess;
-    }
-
-    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
-    req->type = ReqFlush;
-    req->n = n;
-    req->poll_ctx = ep->uccl_flush_async(conn_id, data, req->recv_len, mhs, n);
-    req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
-    req->dup = false;
-
-    *request = req;
-
     return ncclSuccess;
 }
 

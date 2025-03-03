@@ -478,6 +478,9 @@ void UcclFlow::rx_messages() {
             socket_->post_send_wr(ack_frame, src_qp_idx);
         }
     }
+
+    deserialize_and_append_to_txtracking();
+    transmit_pending_packets();
 }
 
 void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
@@ -498,6 +501,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     auto *app_buf_cursor = tx_work.data;
     auto remaining_bytes = tx_work.len;
     auto *app_mr = tx_work.mhandle->mr;
+    auto *poll_ctx = tx_work.poll_ctx;
     while (remaining_bytes > 0) {
         auto payload_len = std::min(remaining_bytes, (int)kUcclPktDataMaxLen);
         auto frame_desc = socket_->pop_frame_desc();
@@ -508,7 +512,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
         auto *msgbuf = FrameDesc::Create(frame_desc, pkt_hdr, kUcclPktHdrLen,
                                          (uint64_t)app_buf_cursor, payload_len,
                                          app_mr->lkey, 0);
-        msgbuf->set_poll_ctx(tx_work.poll_ctx);
+        msgbuf->set_poll_ctx(poll_ctx);
 
         // auto pkt_payload_addr = msgbuf->get_pkt_addr() + kUcclPktHdrLen;
         // memcpy(pkt_payload_addr, app_buf_cursor, payload_len);
@@ -532,6 +536,9 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     pending_tx_msgs_.push_back({tx_work, 0});
 
     VLOG(3) << "tx_prepare_messages size: " << tx_work.len << " bytes";
+
+    deserialize_and_append_to_txtracking();
+    transmit_pending_packets();
 }
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
@@ -1086,7 +1093,7 @@ void UcclEngine::run() {
             last_periodic_tsc_ = now_tsc;
         }
 
-        while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work)) {
+        if (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work)) {
             active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
         }
 
@@ -1096,7 +1103,7 @@ void UcclEngine::run() {
         frames.insert(frames.end(), _frames.begin(), _frames.end());
         if (frames.size()) process_rx_msg(frames);
 
-        while (Channel::dequeue_sc(channel_->tx_task_q_, &tx_work)) {
+        if (Channel::dequeue_sc(channel_->tx_task_q_, &tx_work)) {
             // Make data written by the app thread visible to the engine.
             tx_work.poll_ctx->read_barrier();
 
@@ -1106,7 +1113,6 @@ void UcclEngine::run() {
         for (auto &[flow_id, flow] : active_flows_map_) {
             // Driving the rx buffer matching to incoming packets.
             flow->rx_tracking_.try_copy_msgbuf_to_appbuf(nullptr);
-
             flow->deserialize_and_append_to_txtracking();
             flow->transmit_pending_packets();
         }
@@ -1649,20 +1655,6 @@ PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
     }
     Channel::enqueue_mp_multi(channel_vec_[conn_id.engine_idx]->rx_task_q_,
                               (void *)msg, n);
-    return poll_ctx;
-}
-
-PollCtx *Endpoint::uccl_flush_async(ConnID conn_id, void **data, int *len_p,
-                                    Mhandle **mhandle, int n) {
-    PollCtx *poll_ctx = ctx_pool_->pop();
-    poll_ctx->num_unfinished = n;
-    poll_ctx->engine_idx = conn_id.engine_idx;
-#ifdef POLLCTX_DEBUG
-    poll_ctx->flow_id = conn_id.flow_id;
-    poll_ctx->req_id = req_id++;
-#endif
-    // UD does not require flush.
-    poll_ctx->done = true;
     return poll_ctx;
 }
 

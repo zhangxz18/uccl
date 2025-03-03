@@ -790,9 +790,6 @@ class Endpoint {
     PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,
                                    Mhandle **mhandle, int n);
 
-    PollCtx *uccl_flush_async(ConnID conn_id, void **data, int *len_p,
-                              Mhandle **mhandle, int n);
-
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);
     bool uccl_poll_once(PollCtx *ctx);
