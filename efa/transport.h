@@ -361,6 +361,7 @@ class RXTracking {
     std::deque<app_buf_t> app_buf_queue_;
     FrameDesc *deser_msgs_head_ = nullptr;
     FrameDesc *deser_msgs_tail_ = nullptr;
+    size_t deser_msg_len_ = 0;
 
     friend class Endpoint;
 };
@@ -788,6 +789,9 @@ class Endpoint {
                              Mhandle *mhandle);
     PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,
                                    Mhandle **mhandle, int n);
+
+    PollCtx *uccl_flush_async(ConnID conn_id, void **data, int *len_p,
+                              Mhandle **mhandle, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);

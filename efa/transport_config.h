@@ -22,8 +22,8 @@ static constexpr CCType kCCType = CCType::kTimely;
 
 #define P4D
 
-static const uint8_t kNumVdevices = 2;         // # of vEFA/GPUs.
-static const uint32_t kNumEnginesPerVdev = 1;  // # of engines per vEFA/GPU.
+static const uint8_t kNumVdevices = 1;         // # of vEFA/GPUs.
+static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
 /// Interface configuration.

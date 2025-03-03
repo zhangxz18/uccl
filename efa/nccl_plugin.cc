@@ -25,6 +25,7 @@ struct UcclRequest {
     int recv_len[kMaxMultiRecv] = {0};
     PollCtx *poll_ctx = nullptr;
     void *req_pool = nullptr;
+    bool dup;
 
     void clear() { memset(this, 0, sizeof(UcclRequest)); }
 };
@@ -315,7 +316,7 @@ ncclResult_t pluginRegMr(void *collComm, void *data, size_t size, int type,
     checkMemoryLocation(data);
 
     LOG(INFO) << "pluginRegMr, " << size << ", " << base->conn_id.flow_id
-              << " vdev_idx " << vdev_idx;
+              << " vdev_idx " << vdev_idx << " data ptr " << std::hex << data;
     ret = ep->uccl_regmr(dev_idx, data, size, type, (struct Mhandle **)mhandle);
     reg_cnt++;
 
@@ -332,7 +333,7 @@ ncclResult_t pluginRegMrDmaBuf(void *collComm, void *data, size_t size,
     checkMemoryLocation(data);
 
     LOG(INFO) << "pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id
-              << " vdev_idx " << vdev_idx;
+              << " vdev_idx " << vdev_idx << " data ptr " << std::hex << data;
     ret = ep->uccl_regmr_dmabuf(dev_idx, data, size, type, offset, fd,
                                 (struct Mhandle **)mhandle);
     reg_cnt++;
@@ -369,16 +370,21 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     req->send_len = size;
     req->poll_ctx = ep->uccl_send_async(conn_id, data, req->send_len, mh);
     req->req_pool = (void *)scomm->base.uccl_req_pool.get();
+    req->dup = false;
 
     *request = req;
 
 #ifdef POLLCTX_DEBUG
     LOG(INFO) << "pluginIsend on vdev: " << vdev << " size " << size
               << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
-              << conn_id.flow_id << " req_id " << req->poll_ctx->req_id;
+              << conn_id.flow_id << " req_id " << req->poll_ctx->req_id
+              << " data ptr " << std::hex << data;
 #endif
     return ncclSuccess;
 }
+
+thread_local void *last_recv_data = nullptr;
+thread_local int last_recv_size = 0;
 
 ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
                          int *tags, void **mhandles, void **request) {
@@ -401,6 +407,21 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
     req->poll_ctx =
         ep->uccl_recv_multi_async(conn_id, data, req->recv_len, mhs, n);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
+    req->dup = false;
+
+    // if (last_recv_data == data) {
+    //     // This is a duplicate request; it is done when the previous one is
+    //     // done.
+    //     LOG(WARNING) << "Duplicate request on vdev: " << vdev << " size "
+    //                  << sizes[0] << " engine_id " <<
+    //                  req->poll_ctx->engine_idx
+    //                  << " flow_id " << conn_id.flow_id << " n " << n
+    //                  << " req_id " << req->poll_ctx->req_id << " data ptr "
+    //                  << std::hex << data;
+    //     req->poll_ctx->done = true;
+    //     req->dup = true;
+    // }
+    last_recv_data = (void *)data;
 
     *request = req;
 
@@ -408,7 +429,7 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
     LOG(INFO) << "pluginIrecv on vdev: " << vdev << " size " << sizes[0]
               << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
               << conn_id.flow_id << " n " << n << " req_id "
-              << req->poll_ctx->req_id;
+              << req->poll_ctx->req_id << " data ptr " << std::hex << data;
 #endif
 
     return ncclSuccess;
@@ -416,6 +437,28 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
 ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
                           void **mhandles, void **request) {
+    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
+    auto conn_id = rcomm->base.conn_id;
+    struct Mhandle **mhs = (struct Mhandle **)mhandles;
+    // checkMemoryLocation(data[0]);
+
+    uint64_t addr;
+    auto vdev = rcomm->base.vdev;
+    if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
+        CHECK(false);
+        *request = nullptr;
+        return ncclSuccess;
+    }
+
+    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
+    req->type = ReqFlush;
+    req->n = n;
+    req->poll_ctx = ep->uccl_flush_async(conn_id, data, req->recv_len, mhs, n);
+    req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
+    req->dup = false;
+
+    *request = req;
+
     return ncclSuccess;
 }
 
@@ -427,18 +470,20 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         if (req->type == ReqTx) {
             size[0] = req->send_len;
 #ifdef POLLCTX_DEBUG
-            LOG(INFO) << "pluginTest ReqTx done: " << " engine_id "
+            LOG(INFO) << "pluginTest ReqTx done: engine_id "
                       << req->poll_ctx->engine_idx << " flow_id "
                       << req->poll_ctx->flow_id << " req_id "
-                      << req->poll_ctx->req_id;
+                      << req->poll_ctx->req_id << " size " << size[0];
 #endif
         } else if (req->type == ReqRx) {
             for (int i = 0; i < req->n; i++) size[i] = req->recv_len[i];
+            // if (req->dup) size[0] = last_recv_size;
+            // last_recv_size = size[0];
 #ifdef POLLCTX_DEBUG
-            LOG(INFO) << "pluginTest ReqRx done: " << " engine_id "
+            LOG(INFO) << "pluginTest ReqRx done: engine_id "
                       << req->poll_ctx->engine_idx << " flow_id "
                       << req->poll_ctx->flow_id << " req_id "
-                      << req->poll_ctx->req_id;
+                      << req->poll_ctx->req_id << " size " << size[0];
 #endif
         } else if (req->type == ReqFlush) {
             // Do nothing.

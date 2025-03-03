@@ -210,6 +210,13 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         ready_msg_queue_.pop_front();
         DCHECK(ready_msg) << ready_msg->print_chain();
 
+#ifdef EMULATE_RC_ZC
+        const auto *ucclh = reinterpret_cast<const UcclPktHdr *>(
+            ready_msg->get_pkt_hdr_addr() + EFA_UD_ADDITION);
+        auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
+        deser_msg_len_ += payload_len;
+#endif
+
         if (deser_msgs_head_ == nullptr) {
             deser_msgs_head_ = ready_msg;
             deser_msgs_tail_ = ready_msg;
@@ -230,9 +237,10 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 
             // Copy the complete message to the app buffer.
 #ifdef EMULATE_RC_ZC
+            *rx_copy_work.len_p = deser_msg_len_;
             Channel::enqueue_sp(channel_->rx_copy_done_q_, &rx_copy_work);
 
-            auto poll_ctx = rx_copy_work.poll_ctx;
+            auto *poll_ctx = rx_copy_work.poll_ctx;
             // Wakeup app thread waiting on endpoint.
             if (--(poll_ctx->num_unfinished) == 0) {
                 poll_ctx->write_barrier();
@@ -248,9 +256,10 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
             app_buf_queue_.pop_front();
             deser_msgs_head_ = nullptr;
             deser_msgs_tail_ = nullptr;
+            deser_msg_len_ = 0;
 
 #ifdef POLLCTX_DEBUG
-            LOG(INFO) << "Received a complete message engine_id"
+            LOG(INFO) << "Received a complete message engine_id "
                       << poll_ctx->engine_idx << " rx flow_id "
                       << poll_ctx->flow_id << " req_id " << poll_ctx->req_id;
 #endif
@@ -1643,6 +1652,20 @@ PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
     return poll_ctx;
 }
 
+PollCtx *Endpoint::uccl_flush_async(ConnID conn_id, void **data, int *len_p,
+                                    Mhandle **mhandle, int n) {
+    PollCtx *poll_ctx = ctx_pool_->pop();
+    poll_ctx->num_unfinished = n;
+    poll_ctx->engine_idx = conn_id.engine_idx;
+#ifdef POLLCTX_DEBUG
+    poll_ctx->flow_id = conn_id.flow_id;
+    poll_ctx->req_id = req_id++;
+#endif
+    // UD does not require flush.
+    poll_ctx->done = true;
+    return poll_ctx;
+}
+
 bool Endpoint::uccl_wait(PollCtx *ctx) {
     {
         std::unique_lock<std::mutex> lock(ctx->mu);
@@ -1758,8 +1781,8 @@ inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx,
 
     auto si = vdev_idx * kNumEnginesPerVdev;
     auto ei = (vdev_idx + 1) * kNumEnginesPerVdev;
-    auto min_engine_idx = si;
 
+    auto min_engine_idx = si;
     if (kNumEnginesPerVdev != 1) {
         int is_sender = (flow_id >= MAX_FLOW_ID);
         if (min_engine_idx % 2 == is_sender) min_engine_idx++;
@@ -1771,9 +1794,13 @@ inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx,
             }
         }
     }
-
     engine_load_vec_[min_engine_idx]++;
     return min_engine_idx;
+
+    // auto minElementIter = std::min_element(engine_load_vec_.begin() + si,
+    //                                        engine_load_vec_.begin() + ei);
+    // *minElementIter += 1;
+    // return std::distance(engine_load_vec_.begin(), minElementIter);
 }
 
 inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {

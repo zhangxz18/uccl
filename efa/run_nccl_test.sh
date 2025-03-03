@@ -35,6 +35,7 @@ if [ "$TEST" = "srd" ]; then
         -x NCCL_MIN_NCHANNELS=2 \
         -x NCCL_P2P_NET_CHUNKSIZE=524288 \
         -x NCCL_BUFFSIZE=8388608 \
+        -x NCCL_ALGO=Ring \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
         -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -t 1
 
@@ -85,6 +86,7 @@ elif [ "$TEST" = "ud" ]; then
 
         # gdb -ex run --args \
 
+        # -x NCCL_ALGO=Ring \
         # -x NCCL_IB_CUDA_SUPPORT=1 \
         # -x NCCL_SOCKET_NTHREADS=4 \
         # -x NCCL_NSOCKS_PERTHREAD=2 \
