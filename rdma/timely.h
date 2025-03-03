@@ -215,6 +215,12 @@ class Timely {
         }
     }
 
+    uint32_t get_wnd() const {
+        // Rate is in bytes/sec, RTT is in usec.
+        // window = rate * RTT
+        return static_cast<uint32_t>(rate_ * prev_rtt_ / 1e6);
+    }
+
     /// Get RTT percentile if latency stats are enabled, and reset latency stats
     double get_rtt_perc(double perc) const {
         if (!kLatencyStats || latency_.count() == 0) return -1.0;

@@ -9,6 +9,42 @@ namespace uccl {
 
 namespace eqds {
 
+PullQuanta EQDSCC::compute_pull_target(void *context, uint32_t chunk_size) {
+    SubUcclFlow *subflow = reinterpret_cast<SubUcclFlow *>(context);
+    
+    uint32_t pull_target_bytes = subflow->backlog_bytes_;
+
+    if constexpr (kSenderCCA != SENDER_CCA_NONE) {
+        if (pull_target_bytes > subflow->pcb.timely.get_wnd() + chunk_size) {
+            pull_target_bytes = subflow->pcb.timely.get_wnd() + chunk_size;
+        }
+    }
+
+    if (pull_target_bytes > kEQDSMaxCwnd)
+        pull_target_bytes = kEQDSMaxCwnd;
+
+    if (pull_target_bytes > credit_pull_ + credit_spec_)
+        pull_target_bytes -= (credit_pull_ + credit_spec_);
+    else
+        pull_target_bytes = 0;
+
+    pull_target_bytes += unquantize(pull_);
+
+    PullQuanta old_pull_target_bytes = unquantize(last_sent_pull_target_);
+
+    if (!in_speculating_ && credit_spec_ > 0 && pull_target_bytes - old_pull_target_bytes < PULL_QUANTUM/2) {
+        if (credit_spec_ > PULL_QUANTUM)
+            credit_spec_ -= PULL_QUANTUM;
+        else
+            credit_spec_ = 0;
+        pull_target_bytes += PULL_QUANTUM;
+    }
+
+    last_sent_pull_target_ = quantize_ceil(pull_target_bytes);
+
+    return last_sent_pull_target_;
+}
+
 // Make progress on the pacer.
 void EQDS::run_pacer(void) 
 {
@@ -200,6 +236,7 @@ void EQDS::update_cc_state(void)
 {
 
 }
+
 }
 
 };

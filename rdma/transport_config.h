@@ -73,7 +73,7 @@ enum ReceiverCCA {
     // EQDS [NSDI'22]
     RECEIVER_CCA_EQDS,
 };
-static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_NONE;
+static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
 static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_EQDS;
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;

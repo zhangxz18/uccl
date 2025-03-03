@@ -523,6 +523,12 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
     }
 
     while (*sent_offset < size) {
+        
+        if constexpr (kSenderCCA != SENDER_CCA_NONE) {
+            if (subflow->outstanding_bytes_ >= subflow->pcb.timely.get_wnd()) {
+                return false;
+            }
+        }
 
         chunk_size = std::min(kChunkSize, eqds->credit());
         
@@ -532,7 +538,7 @@ bool RDMAContext::receiverCC_tx_messages(struct ucclRequest *ureq)
 
         subflow->backlog_bytes_ -= chunk_size;
 
-        auto pull_target = eqds->compute_pull_target(subflow->backlog_bytes_);
+        auto pull_target = eqds->compute_pull_target(subflow, chunk_size);
 
         DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
         struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
@@ -1076,7 +1082,7 @@ bool RDMAContext::try_retransmit_chunk(SubUcclFlow *subflow, struct wr_ex *wr_ex
             return false;
         }
         // Re-compute pull target.
-        auto pull_target = subflow->eqds_cc.compute_pull_target(subflow->backlog_bytes_);
+        auto pull_target = subflow->eqds_cc.compute_pull_target(subflow, wr_ex->sge.length);
         auto imm_data = IMMDataEQDS(ntohl(wr_ex->wr.imm_data));
         imm_data.SetTarget(pull_target);
         wr_ex->wr.imm_data = htonl(imm_data.GetImmData());
@@ -2135,7 +2141,7 @@ void RDMAContext::__retransmit(void *context, bool rto)
     }
 
     if (subflow->pcb.rto_rexmits_consectutive >= kRTOAbortThreshold) {
-        LOG(ERROR) << "RTO retransmission threshold reached." << subflow->fid_;
+        LOG_FIRST_N(ERROR, 1) << "RTO retransmission threshold reached." << subflow->fid_;
     }
 
     // Case#1: SACK bitmap at the sender side is empty. Retransmit the oldest unacked chunk.
