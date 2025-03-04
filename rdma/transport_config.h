@@ -75,6 +75,7 @@ enum ReceiverCCA {
 };
 static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
 static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_EQDS;
+static_assert(kSenderCCA != SENDER_CCA_NONE || kReceiverCCA != RECEIVER_CCA_NONE, "At least one of the sender and receiver must have a congestion control algorithm.");
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 

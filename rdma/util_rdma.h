@@ -823,17 +823,6 @@ class RDMAContext {
 
         // Select a QP index in a power-of-two manner.
         inline uint32_t select_qpidx_pot(uint32_t msize, void *subflow_context);
-        
-        // Return true if this message is transmitted completely.
-        inline bool tx_messages(struct ucclRequest *ureq) {
-            if constexpr (kReceiverCCA == RECEIVER_CCA_NONE)
-                return senderCC_tx_messages(ureq);
-            else
-                return receiverCC_tx_messages(ureq);
-        }
-        bool senderCC_tx_messages(struct ucclRequest *ureq);
-        
-        bool receiverCC_tx_messages(struct ucclRequest *ureq);
 
         int supply_rx_buff(struct ucclRequest *ureq);
 
@@ -918,28 +907,7 @@ class RDMAContext {
          * @param ack_list If this QP needs ACK, add it to the list.
          * @return true If the chunk is received successfully.
          */
-        inline void rx_chunk(struct list_head *ack_list) {
-            if constexpr (kReceiverCCA == RECEIVER_CCA_NONE)
-                senderCC_rx_chunk(ack_list);
-            else
-                receiverCC_rx_chunk(ack_list);
-        }
-        void senderCC_rx_chunk(struct list_head *ack_list);
-        void receiverCC_rx_chunk(struct list_head *ack_list);
-
-        /**
-         * @brief Receive a retransmitted chunk from the flow.
-         * @param ack_list If this QP needs ACK, add it to the list.
-         * @return true If the chunk is received successfully.
-         */
-        void rx_retr_chunk(struct list_head *ack_list);
-
-        /**
-         * @brief Receive a barrier from the flow.
-         * @param ack_list If this QP needs ACK, add it to the list.
-         * @return true If the barrier is received successfully.
-         */
-        void rx_barrier(struct list_head *ack_list);
+        void rx_data(struct list_head *ack_list);
 
         /**
          * @brief Rceive an ACK from the Ctrl QP.
@@ -947,7 +915,33 @@ class RDMAContext {
          */
         void rx_ack(uint64_t pkt_addr);
 
+        /**
+        * @brief Receive a retransmitted chunk from the flow.
+        * @param ack_list If this QP needs ACK, add it to the list.
+        * @return true If the chunk is received successfully.
+        */
+        void rx_rtx_data(struct list_head *ack_list);
+
+        /**
+        * @brief Receive a barrier from the flow.
+        * @param ack_list If this QP needs ACK, add it to the list.
+        * @return true If the barrier is received successfully.
+        */
+        void rx_barrier(struct list_head *ack_list);
+ 
         void rx_credit(uint64_t pkt_addr);
+
+        virtual bool TxMessage(struct ucclRequest *ureq) = 0;
+
+        virtual bool EventOnTxRTXData(SubUcclFlow *subflow, struct wr_ex *wr_ex) = 0;
+        
+        virtual void EventOnRxRTXData(SubUcclFlow *subflow, IMMData *imm_data) = 0;
+
+        virtual void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) = 0;
+
+        virtual void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) = 0;
+
+        virtual void EventOnRxCredit(SubUcclFlow *subflow, eqds::PullQuanta pullno) = 0;
 
         /**
          * @brief Craft an ACK for a subUcclFlow using the given WR index.
@@ -980,9 +974,9 @@ class RDMAContext {
          * @brief Retransmit chunks for the given subUcclFlow.
          * @param rto 
          */
-        void __retransmit(void *context, bool rto);
-        inline void fast_retransmit(void *context) { __retransmit(context, false); }
-        inline void rto_retransmit(void *context) { __retransmit(context, true); }
+        void __retransmit_for_flow(void *context, bool rto);
+        inline void fast_retransmit_for_flow(void *context) { __retransmit_for_flow(context, false); }
+        inline void rto_retransmit_for_flow(void *context) { __retransmit_for_flow(context, true); }
 
         std::string to_string();
 
@@ -991,6 +985,78 @@ class RDMAContext {
         ~RDMAContext(void);
         
         friend class RDMAFactory;
+};
+
+class EQDSRDMAContext: public RDMAContext {
+public:
+
+    using RDMAContext::RDMAContext;
+
+    bool TxMessage(struct ucclRequest *ureq) override;
+
+    void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {
+        auto *imm = reinterpret_cast<IMMDataEQDS *>(imm_data);
+        if (subflow->eqds_cc.handle_pull_target(imm->GetTarget())) {
+            eqds_->request_pull(&subflow->eqds_cc);
+        }
+    }
+
+    bool EventOnTxRTXData(SubUcclFlow *subflow, struct wr_ex *wr_ex) override {
+        // We can't retransmit the chunk unless we have enough credits.
+        auto permitted_bytes = subflow->eqds_cc.credit();
+        if (permitted_bytes < wr_ex->sge.length || 
+            !subflow->eqds_cc.spend_credit(wr_ex->sge.length)) {
+            subflow->in_rtx = true;
+            VLOG(5) << "Cannot retransmit chunk due to insufficient credits";
+            return false;
+        }
+        // Re-compute pull target.
+        auto pull_target = subflow->eqds_cc.compute_pull_target(subflow, wr_ex->sge.length);
+        auto imm_data = IMMDataEQDS(ntohl(wr_ex->wr.imm_data));
+        imm_data.SetTarget(pull_target);
+        wr_ex->wr.imm_data = htonl(imm_data.GetImmData());
+        return true;
+    }
+    
+    void EventOnRxRTXData(SubUcclFlow *subflow, IMMData *imm_data) override {
+        EventOnRxData(subflow, imm_data);
+    }
+
+    void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {
+        subflow->eqds_cc.stop_speculating();
+    }
+
+    void EventOnRxCredit(SubUcclFlow *subflow, eqds::PullQuanta pullno) override {
+        subflow->eqds_cc.stop_speculating();
+    
+        if (subflow->eqds_cc.handle_pull(pullno)) {
+            //TODO: trigger transmission for this subflow immediately.
+        }
+    
+        if (subflow->in_rtx) {
+            // We have pending retransmission chunks due to lack of credits.
+            // Try to drain the retransmission queue.
+            drain_rtx_queue(subflow);
+        }
+    }
+};
+
+class TimelyRDMAContext: public RDMAContext {
+    public:
+    
+    using RDMAContext::RDMAContext;
+    
+    bool TxMessage(struct ucclRequest *ureq) override;
+
+    void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {}
+
+    bool EventOnTxRTXData(SubUcclFlow *subflow, struct wr_ex *wr_ex) override { return true; }
+    
+    void EventOnRxRTXData(SubUcclFlow *subflow, IMMData *imm_data) override {}
+
+    void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {}
+
+    void EventOnRxCredit(SubUcclFlow *subflow, eqds::PullQuanta pullno) override {}
 };
 
 struct FactoryDevice {
