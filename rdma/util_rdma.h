@@ -971,6 +971,8 @@ class RDMAContext {
 
         virtual void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) = 0;
 
+        virtual void EventOnRxNACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) = 0;
+
         virtual void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) = 0;
 
         virtual void EventOnRxCredit(SubUcclFlow *subflow, eqds::PullQuanta pullno) = 0;
@@ -1078,7 +1080,13 @@ public:
     }
 
     void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {
+        // After receiving a valid ACK, we can exit the pending retransmission state.
+        subflow->in_rtx = false;
         subflow->eqds_cc.stop_speculating();
+    }
+
+    void EventOnRxNACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {
+        
     }
 
     void EventOnRxCredit(SubUcclFlow *subflow, eqds::PullQuanta pullno) override {
@@ -1126,6 +1134,8 @@ class TimelyRDMAContext: public RDMAContext {
     void EventOnRxRTXData(SubUcclFlow *subflow, IMMData *imm_data) override {}
 
     void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {}
+
+    void EventOnRxNACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {}
 
     void EventOnRxCredit(SubUcclFlow *subflow, eqds::PullQuanta pullno) override {}
 };

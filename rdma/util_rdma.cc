@@ -1157,6 +1157,9 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             << subflow->pcb.snd_nxt.to_uint32() << " for flow" << fid << " by Ctrl QP";
     } else if (UINT_CSN::uintcsn_seqno_eq(ackno, subflow->pcb.snd_una)) {
         VLOG(5) << "Received duplicate ACK " << ackno << " for flow" << fid << " by Ctrl QP";
+
+        EventOnRxNACK(subflow, ucclsackh);
+
         update_sackbitmap = true;
         
         subflow->pcb.duplicate_acks++;
@@ -1208,9 +1211,8 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
 
     } else {
         VLOG(5) << "Received valid ACK " << ackno << " for flow" << fid << " by Ctrl QP";
-        
-        // After receiving a valid ACK, we can exit the pending retransmission state.
-        subflow->in_rtx = false;
+
+        EventOnRxACK(subflow, ucclsackh);
 
         update_sackbitmap = true;
         auto num_acked_chunks = UINT_CSN(ackno) - subflow->pcb.snd_una;
@@ -1252,8 +1254,6 @@ void RDMAContext::rx_ack(uint64_t pkt_addr)
             subflow->pcb.tx_sack_bitmap[i] = ucclsackh->sack_bitmap[i].value();
         subflow->pcb.tx_sack_bitmap_count = ucclsackh->sack_bitmap_count.value();
         subflow->pcb.base_csn = ackno;
-
-        EventOnRxACK(subflow, ucclsackh);
     }
 }
 
