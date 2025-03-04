@@ -15,6 +15,7 @@ using namespace uccl;
 const size_t kTestIters = 1024000000000UL;
 const std::chrono::duration kReportIntervalSec = std::chrono::seconds(2);
 const size_t kReportIters = 5000;
+const uint32_t kNumConns = 4;
 
 size_t kTestMsgSize = 1024000;
 size_t kMaxInflight = 8;
@@ -85,13 +86,16 @@ int main(int argc, char* argv[]) {
     if (is_client) {
         auto ep = Endpoint();
         DCHECK(FLAGS_serverip != "");
+        const int kMaxArraySize = std::max(kNumConns, kNumVdevices);
         ConnID conn_id, conn_id2;
-        ConnID conn_id_vec[kNumVdevices];
-        int remote_vdevs[kNumVdevices];
+        ConnID conn_id_vec[kMaxArraySize];
+        int remote_vdevs[kMaxArraySize];
 
         conn_id = ep.uccl_connect(0, 0, FLAGS_serverip);
         if (test_type == kMc) {
-            conn_id2 = ep.uccl_connect(0, 0, FLAGS_serverip);
+            conn_id_vec[0] = conn_id;
+            for (int i = 1; i < kNumConns; i++)
+                conn_id_vec[i] = ep.uccl_connect(0, 0, FLAGS_serverip);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++)
@@ -229,15 +233,18 @@ int main(int argc, char* argv[]) {
                     break;
                 }
                 case kMc: {
-                    PollCtx *poll_ctx1, *poll_ctx2;
                     TscTimer timer;
                     timer.start();
-                    poll_ctx1 =
-                        ep.uccl_send_async(conn_id, data[0], send_len, &mh[0]);
-                    poll_ctx2 = ep.uccl_send_async(conn_id2, data2[0], send_len,
-                                                   &mh2[0]);
-                    ep.uccl_poll(poll_ctx1);
-                    ep.uccl_poll(poll_ctx2);
+                    for (int j = 0; j < kNumConns; j++) {
+                        auto* poll_ctx = ep.uccl_send_async(
+                            conn_id_vec[j], data[0], send_len, &mh[0]);
+                        poll_ctxs.push_back(poll_ctx);
+                    }
+                    while (!poll_ctxs.empty()) {
+                        auto* poll_ctx = poll_ctxs.front();
+                        ep.uccl_poll(poll_ctx);
+                        poll_ctxs.pop_front();
+                    }
                     timer.stop();
                     rtts.push_back(timer.avg_usec(freq_ghz));
                     sent_bytes += send_len * 2;
@@ -370,25 +377,31 @@ int main(int argc, char* argv[]) {
         }
     } else {
         auto ep = Endpoint();
-        std::string remote_ip;
+        const int kMaxArraySize = std::max(kNumConns, kNumVdevices);
         ConnID conn_id, conn_id2;
-        ConnID conn_id_vec[kNumVdevices];
-        int remote_vdevs[kNumVdevices];
+        ConnID conn_id_vec[kMaxArraySize];
+        std::string remote_ip[kMaxArraySize];
+        int remote_vdevs[kMaxArraySize];
 
-        conn_id = ep.uccl_accept(0, &remote_vdevs[0], remote_ip);
+        conn_id = ep.uccl_accept(0, &remote_vdevs[0], remote_ip[0]);
         if (test_type == kMc) {
-            conn_id2 = ep.uccl_accept(0, &remote_vdevs[0], remote_ip);
+            conn_id_vec[0] = conn_id;
+            for (int i = 1; i < kNumConns; i++) {
+                conn_id_vec[i] =
+                    ep.uccl_accept(0, &remote_vdevs[i], remote_ip[i]);
+            }
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
-            for (int i = 1; i < kNumVdevices; i++)
-                conn_id_vec[i] = ep.uccl_accept(i, &remote_vdevs[i], remote_ip);
+            for (int i = 1; i < kNumVdevices; i++) {
+                conn_id_vec[i] =
+                    ep.uccl_accept(i, &remote_vdevs[i], remote_ip[i]);
+            }
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++) {
-                std::string remote_ip;
                 if (i % 2 == 0)
                     conn_id_vec[i] =
-                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip);
+                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip[i]);
                 else
                     conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_clientip);
             }
@@ -487,13 +500,16 @@ int main(int argc, char* argv[]) {
                     break;
                 }
                 case kMc: {
-                    PollCtx *poll_ctx1, *poll_ctx2;
-                    poll_ctx1 =
-                        ep.uccl_recv_async(conn_id, data[0], &recv_len, &mh[0]);
-                    poll_ctx2 = ep.uccl_recv_async(conn_id2, data2[0],
-                                                   &recv_len, &mh2[0]);
-                    ep.uccl_poll(poll_ctx1);
-                    ep.uccl_poll(poll_ctx2);
+                    for (int j = 0; j < kNumConns; j++) {
+                        auto* poll_ctx = ep.uccl_recv_async(
+                            conn_id_vec[j], data[0], &recv_len, &mh[0]);
+                        poll_ctxs.push_back(poll_ctx);
+                    }
+                    while (!poll_ctxs.empty()) {
+                        auto* poll_ctx = poll_ctxs.front();
+                        ep.uccl_poll(poll_ctx);
+                        poll_ctxs.pop_front();
+                    }
                     i += 1;
                     break;
                 }

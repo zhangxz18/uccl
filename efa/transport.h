@@ -108,7 +108,7 @@ class PollCtxPool : public BuffPool {
  * could be shared by multiple app threads if needed.
  */
 class Channel {
-    constexpr static uint32_t kChannelSize = kMaxUnconsumedRxMsgbufs;
+    constexpr static uint32_t kChannelSize = 8192;
 
    public:
     struct Msg {
@@ -141,6 +141,7 @@ class Channel {
         uint32_t remote_engine_idx;
         ConnMeta *local_meta;
         ConnMeta *remote_meta;
+        bool is_sender;
         // Wakeup handler
         PollCtx *poll_ctx;
     };
@@ -366,11 +367,6 @@ class RXTracking {
     friend class Endpoint;
 };
 
-static inline uint64_t get_peer_flow_id(uint64_t flow_id) {
-    return (flow_id >= MAX_FLOW_ID ? flow_id - MAX_FLOW_ID
-                                   : flow_id + MAX_FLOW_ID);
-}
-
 /**
  * @class UcclFlow, a connection between a local and a remote endpoint.
  * @brief Class to abstract the components and functionality of a single flow.
@@ -400,7 +396,8 @@ class UcclFlow {
              ConnMeta *local_meta, ConnMeta *remote_meta,
              uint32_t local_engine_idx, uint32_t remote_engine_idx,
              EFASocket *socket, Channel *channel, FlowID flow_id,
-             std::unordered_map<FlowID, UcclFlow *> &active_flows_map_)
+             std::unordered_map<FlowID, UcclFlow *> &active_flows_map_,
+             bool is_sender)
         : remote_ip_str_(remote_ip_str),
           local_ip_str_(local_ip_str),
           local_meta_(local_meta),
@@ -414,10 +411,9 @@ class UcclFlow {
           cubic_g_(),
           timely_g_(),
           tx_tracking_(socket, channel),
-          rx_tracking_(socket, channel, active_flows_map_) {
-        // Precompute the peer flow ID.
-        peer_flow_id_ = get_peer_flow_id(flow_id_);
-
+          rx_tracking_(socket, channel, active_flows_map_),
+          is_sender_(is_sender) {
+        // Initing per-flow CC states.
         timely_g_.init(&pcb_);
         if constexpr (kCCType == CCType::kTimelyPP) {
             timely_pp_ = new swift::TimelyCtl[kMaxPath];
@@ -535,14 +531,14 @@ class UcclFlow {
     Channel *channel_;
     // FlowID of this flow.
     FlowID flow_id_;
-    // The matched flow ID of the peer.
-    FlowID peer_flow_id_;
     // Accumulated data frames to be sent.
     std::vector<FrameDesc *> pending_tx_frames_;
     // Missing data frames to be sent.
     std::vector<FrameDesc *> missing_frames_;
     // Frames that are pending rx processing in a batch.
     std::deque<FrameDesc *> pending_rx_msgbufs_;
+    // Whether this is a sender or receiver flow in NCCL.
+    bool is_sender_;
 
     TXTracking tx_tracking_;
     RXTracking rx_tracking_;
@@ -750,6 +746,8 @@ class Endpoint {
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
     std::array<int, kNumEngines> engine_load_vec_ = {0};
+    std::array<int, kNumEngines> engine_tx_load_vec_ = {0};
+    std::array<int, kNumEngines> engine_rx_load_vec_ = {0};
 
     int listen_fd_[kNumVdevices];
 
@@ -767,10 +765,11 @@ class Endpoint {
     ~Endpoint();
 
     // Connecting to a remote address; thread-safe
-    ConnID uccl_connect(int local_vdev, int remote_vdev, std::string remote_ip);
+    ConnID uccl_connect(int local_vdev, int remote_vdev, std::string remote_ip,
+                        uint32_t channel_idx = 0);
     // Accepting a connection from a remote address; thread-safe
-    ConnID uccl_accept(int local_vdev, int *remote_vdev,
-                       std::string &remote_ip);
+    ConnID uccl_accept(int local_vdev, int *remote_vdev, std::string &remote_ip,
+                       uint32_t channel_idx = 0);
 
     // Sending the data by leveraging multiple port combinations.
     bool uccl_send(ConnID conn_id, const void *data, const int len,
@@ -789,6 +788,8 @@ class Endpoint {
                              Mhandle *mhandle);
     PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,
                                    Mhandle **mhandle, int n);
+    PollCtx *uccl_flush_async(ConnID conn_id, void **data, int *len_p,
+                              Mhandle **mhandle, int n);
 
     bool uccl_wait(PollCtx *ctx);
     bool uccl_poll(PollCtx *ctx);
@@ -802,9 +803,12 @@ class Endpoint {
 
    private:
     void install_flow_on_engine(FlowID flow_id, const std::string &remote_ip,
-                                uint32_t local_engine_idx, int bootstrap_fd);
+                                uint32_t local_engine_idx, int bootstrap_fd,
+                                bool is_sender);
     inline int find_least_loaded_engine_idx_and_update(int vdev_idx,
-                                                       FlowID flow_id);
+                                                       FlowID flow_id,
+                                                       bool is_sender,
+                                                       uint32_t channel_idx);
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
     std::mutex stats_mu_;

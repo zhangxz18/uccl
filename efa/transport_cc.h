@@ -86,7 +86,7 @@ struct Pcb {
     };
     static constexpr uint32_t kMaxTicks = kRtoExpireThresInTicks + 1;
     std::deque<wheel_ent_t> wheels_[kMaxTicks];
-    int rto_tick_ = 0;
+    uint64_t rto_tick_ = 0;
 
     void advance_rto_tick() { rto_tick_ = (rto_tick_ + 1) % kMaxTicks; }
     void add_to_rto_wheel(void *msgbuf, uint32_t seqno) {

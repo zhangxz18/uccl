@@ -22,8 +22,8 @@ static constexpr CCType kCCType = CCType::kTimely;
 
 #define P4D
 
-static const uint8_t kNumVdevices = 1;         // # of vEFA/GPUs.
-static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
+static const uint32_t kNumVdevices = 2;        // # of vEFA/GPUs.
+static const uint32_t kNumEnginesPerVdev = 1;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
 /// Interface configuration.
@@ -60,7 +60,6 @@ static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 32;
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
-static const uint32_t MAX_FLOW_ID = 1000000;
 
 // libibverbs configuration.
 static const uint32_t kMaxSendWr = 1024;

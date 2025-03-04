@@ -63,7 +63,6 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_P2P_DISABLE=1 \
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
-        -x UCCL_ENGINE_QUIET=1 \
         -x GLOG_logtostderr=1 \
         -x CUDA_VISIBLE_DEVICES="0,1" \
         -x NCCL_MAX_NCHANNELS=2 \
@@ -71,6 +70,7 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_NET_GDR_LEVEL=SYS \
         -x NCCL_P2P_NET_CHUNKSIZE=524288 \
         -x NCCL_BUFFSIZE=8388608 \
+        -x UCCL_ENGINE_QUIET=0 \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
         -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -c 0 -t 1 \
         2>&1 | while read -r line; do

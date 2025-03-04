@@ -201,6 +201,9 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
     return ncclSuccess;
 }
 
+// TODO: Make it self-discovering.
+static const uint32_t kNumChannels = 2;
+
 // NCCL will use its bootstrap infrastructure to provide the handle to the
 // sender side, then call connect on the sender side on a given device index
 // dev, providing the handle. connect should not block either, and instead set
@@ -217,14 +220,18 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
         (struct UcclSendComm *)calloc(1, sizeof(struct UcclSendComm));
 
     if (handle->state == kConnInit) {
+        static uint32_t channel_cnt = 0;
+        auto channel_idx = channel_cnt % kNumChannels;
+        channel_cnt++;
+
         LOG(INFO) << "pluginConnect on vdev: " << vdev << " remote_ip_str "
-                  << remote_ip_str;
+                  << remote_ip_str << " channel_idx " << channel_idx;
         handle->state = kConnConnecting;
         // Delegate connection to another thread.
-        std::thread t = std::thread([vdev, handle, remote_ip_str] {
+        std::thread t = std::thread([vdev, handle, remote_ip_str, channel_idx] {
             LOG(INFO) << "before uccl_connect";
-            handle->connect_buffer.base.conn_id =
-                ep->uccl_connect(vdev, handle->remote_vdev, remote_ip_str);
+            handle->connect_buffer.base.conn_id = ep->uccl_connect(
+                vdev, handle->remote_vdev, remote_ip_str, channel_idx);
             LOG(INFO) << "after uccl_connect";
             handle->connect_buffer.base.vdev = vdev;
             handle->state = kConnConnected;
@@ -264,15 +271,20 @@ ncclResult_t pluginAccept(void *listenComm, void **recvComm,
         (struct UcclRecvComm *)calloc(1, sizeof(struct UcclRecvComm));
 
     if (lcomm->state == kConnInit) {
-        LOG(INFO) << "pluginAccept on vdev: " << lcomm->vdev;
+        static uint32_t channel_cnt = 0;
+        auto channel_idx = channel_cnt % kNumChannels;
+        channel_cnt++;
+
+        LOG(INFO) << "pluginAccept on vdev: " << lcomm->vdev << " channel_idx "
+                  << channel_idx;
         lcomm->state = kConnConnecting;
         // Delegate connection to another thread.
-        std::thread t = std::thread([lcomm] {
+        std::thread t = std::thread([lcomm, channel_idx] {
             std::string remote_ip_str;
             int remote_vdev;
             LOG(INFO) << "before uccl_accept";
-            lcomm->accept_buffer.base.conn_id =
-                ep->uccl_accept(lcomm->vdev, &remote_vdev, remote_ip_str);
+            lcomm->accept_buffer.base.conn_id = ep->uccl_accept(
+                lcomm->vdev, &remote_vdev, remote_ip_str, channel_idx);
             LOG(INFO) << "after uccl_accept";
             lcomm->accept_buffer.base.vdev = lcomm->vdev;
             lcomm->accept_buffer.remote_ip_str = remote_ip_str;
@@ -351,6 +363,8 @@ ncclResult_t pluginDeregMr(void *collComm, void *mhandle) {
 
 ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
                          void *mhandle, void **request) {
+    CHECK(size > 0);
+
     struct UcclSendComm *scomm = (struct UcclSendComm *)sendComm;
     auto conn_id = scomm->base.conn_id;
     struct Mhandle *mh = (struct Mhandle *)mhandle;
@@ -437,6 +451,28 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
 ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
                           void **mhandles, void **request) {
+    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
+    auto conn_id = rcomm->base.conn_id;
+    struct Mhandle **mhs = (struct Mhandle **)mhandles;
+    // checkMemoryLocation(data[0]);
+
+    uint64_t addr;
+    auto vdev = rcomm->base.vdev;
+    if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
+        CHECK(false);
+        *request = nullptr;
+        return ncclSuccess;
+    }
+
+    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
+    req->type = ReqFlush;
+    req->n = n;
+    req->poll_ctx = ep->uccl_flush_async(conn_id, data, req->recv_len, mhs, n);
+    req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
+    req->dup = false;
+
+    *request = req;
+
     return ncclSuccess;
 }
 
@@ -468,6 +504,7 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         }
         auto uccl_req_pool =
             reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
+        req->clear();
         uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
     } else {
 #ifdef POLLCTX_DEBUG
