@@ -822,7 +822,7 @@ class RDMAContext {
         }
 
         // Select a QP index in a power-of-two manner.
-        inline uint32_t select_qpidx_pot(uint32_t msize, void *subflow_context);
+        uint32_t select_qpidx_pot(uint32_t msize, void *subflow_context);
 
         int supply_rx_buff(struct ucclRequest *ureq);
 
@@ -931,7 +931,23 @@ class RDMAContext {
  
         void rx_credit(uint64_t pkt_addr);
 
-        virtual bool TxMessage(struct ucclRequest *ureq) = 0;
+        bool receiverCC_tx_message(struct ucclRequest *ureq); 
+        
+        bool senderCC_tx_message(struct ucclRequest *ureq); 
+
+        bool tx_message(struct ucclRequest *ureq) {
+            if constexpr (kReceiverCCA != RECEIVER_CCA_NONE) {
+                return receiverCC_tx_message(ureq);
+            } else {
+                return senderCC_tx_message(ureq);
+            }
+        }
+
+        virtual uint32_t EventOnSelectPath(SubUcclFlow *subflow, uint32_t chunk_size) = 0;
+
+        virtual uint32_t EventOnChunkSize(SubUcclFlow *subflow, uint32_t remaining_bytes) = 0;
+
+        virtual bool EventOnQueueData(SubUcclFlow *subflow, struct wr_ex *wr_ex, uint32_t full_chunk_size, uint64_t now) = 0;
 
         virtual bool EventOnTxRTXData(SubUcclFlow *subflow, struct wr_ex *wr_ex) = 0;
         
@@ -992,7 +1008,26 @@ public:
 
     using RDMAContext::RDMAContext;
 
-    bool TxMessage(struct ucclRequest *ureq) override;
+    uint32_t EventOnSelectPath(SubUcclFlow *subflow, uint32_t chunk_size) override {
+        return select_qpidx_pot(chunk_size, subflow);
+    }
+
+    uint32_t EventOnChunkSize(SubUcclFlow *subflow, uint32_t remaining_bytes) override {
+        uint32_t chunk_size;
+        
+        if constexpr (kSenderCCA != SENDER_CCA_NONE) {
+            if (subflow->outstanding_bytes_ >= subflow->pcb.timely.get_wnd()) return 0;
+        }
+
+        chunk_size = std::min(kChunkSize, subflow->eqds_cc.credit());
+        chunk_size = std::min(chunk_size, remaining_bytes);
+        if (!subflow->eqds_cc.spend_credit(chunk_size))
+            chunk_size = 0;
+        
+        return chunk_size;
+    }
+
+    bool EventOnQueueData(SubUcclFlow *subflow, struct wr_ex *wr_ex, uint32_t full_chunk_size, uint64_t now) override {return false;}
 
     void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {
         auto *imm = reinterpret_cast<IMMDataEQDS *>(imm_data);
@@ -1045,8 +1080,24 @@ class TimelyRDMAContext: public RDMAContext {
     public:
     
     using RDMAContext::RDMAContext;
-    
-    bool TxMessage(struct ucclRequest *ureq) override;
+
+    uint32_t EventOnSelectPath(SubUcclFlow *subflow, uint32_t chunk_size) override {
+        return select_qpidx_pot(chunk_size, subflow);
+    }
+
+    uint32_t EventOnChunkSize(SubUcclFlow *subflow, uint32_t remaining_bytes) override {
+        if (*eob_ >= kMaxOutstandingBytesEngine || 
+            subflow->outstanding_bytes_ >= kMaxOutstandingBytesPerFlow) {
+            return 0;
+        }
+        return std::min(remaining_bytes, kChunkSize);
+    }
+
+    bool EventOnQueueData(SubUcclFlow *subflow, struct wr_ex *wr_ex, uint32_t full_chunk_size, uint64_t now) override {
+        return wheel_.queue_on_timing_wheel(subflow->pcb.timely.rate_, 
+            &subflow->pcb.timely.prev_desired_tx_tsc_, now, 
+            wr_ex, full_chunk_size, subflow->in_wheel_cnt_ == 0);
+    }
 
     void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {}
 

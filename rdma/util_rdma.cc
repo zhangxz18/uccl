@@ -499,7 +499,7 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq)
     return 0;
 }
 
-bool EQDSRDMAContext::TxMessage(struct ucclRequest *ureq)
+bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq)
 {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
     auto *subflow = flow->sub_flows_[engine_offset_];
@@ -530,18 +530,10 @@ bool EQDSRDMAContext::TxMessage(struct ucclRequest *ureq)
     }
 
     while (*sent_offset < size) {
-        
-        if constexpr (kSenderCCA != SENDER_CCA_NONE) {
-            if (subflow->outstanding_bytes_ >= subflow->pcb.timely.get_wnd()) {
-                return false;
-            }
-        }
 
-        chunk_size = std::min(kChunkSize, eqds->credit());
-        
-        chunk_size = std::min(chunk_size, size - *sent_offset);
+        chunk_size = EventOnChunkSize(subflow, size - *sent_offset);
 
-        if (!chunk_size || !eqds->spend_credit(chunk_size)) return false;
+        if (chunk_size == 0) return false;
 
         subflow->backlog_bytes_ -= chunk_size;
 
@@ -574,7 +566,7 @@ bool EQDSRDMAContext::TxMessage(struct ucclRequest *ureq)
         wr->imm_data = htonl(imm_data.GetImmData());
 
         // Select QP.
-        auto qpidx = select_qpidx_pot(chunk_size, subflow);
+        auto qpidx = EventOnSelectPath(subflow, chunk_size);
         auto qpw = &dp_qps_[qpidx];
         
         wr->send_flags = 0;
@@ -602,7 +594,7 @@ bool EQDSRDMAContext::TxMessage(struct ucclRequest *ureq)
     return true;
 }
 
-bool TimelyRDMAContext::TxMessage(struct ucclRequest *ureq)
+bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq)
 {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
     auto *subflow = flow->sub_flows_[engine_offset_];
@@ -621,17 +613,9 @@ bool TimelyRDMAContext::TxMessage(struct ucclRequest *ureq)
 
     while (*sent_offset < size) {
 
-        if (*eob_ >= kMaxOutstandingBytesEngine) {
-            // Push the message to the pending transmit queue.
-            return false;
-        }
-
-        if (subflow->outstanding_bytes_ >= kMaxOutstandingBytesPerFlow) {
-            // Push the message to the pending transmit queue.
-            return false;
-        }
-
-        chunk_size = std::min(size - *sent_offset, kChunkSize);
+        chunk_size = EventOnChunkSize(subflow, size - *sent_offset);
+        
+        if (chunk_size == 0) return false;
 
         if constexpr (kTestNoTimingWheel) {
             DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
@@ -725,9 +709,7 @@ bool TimelyRDMAContext::TxMessage(struct ucclRequest *ureq)
             }
 
             // Enforce global cwnd.
-            queued = wheel->queue_on_timing_wheel(subflow->pcb.timely.rate_, 
-                &subflow->pcb.timely.prev_desired_tx_tsc_, now, 
-                wr_ex, chunk_size + hdr_overhead, subflow->in_wheel_cnt_ == 0);
+            queued = EventOnQueueData(subflow, wr_ex, chunk_size + hdr_overhead, now);
 
             if (queued) {
                 // Queue the SGE on the timing wheel.
@@ -2076,7 +2058,7 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto)
     }
 }
 
-inline uint32_t RDMAContext::select_qpidx_pot(uint32_t msize, void *subflow_context) {
+uint32_t RDMAContext::select_qpidx_pot(uint32_t msize, void *subflow_context) {
     if (can_use_last_choice(msize))
         return last_qp_choice_;
 

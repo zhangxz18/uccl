@@ -277,7 +277,7 @@ void UcclRDMAEngine::handle_tx_work(void)
         auto rdma_ctx = it.first;
         auto ureq = it.second;
         
-        if (!rdma_ctx->TxMessage(ureq)) {
+        if (!rdma_ctx->tx_message(ureq)) {
             // Push the message to the pending transmit queue.
             pending_tx_works_.push_back(std::make_pair(rdma_ctx, ureq));
         }
@@ -296,7 +296,7 @@ void UcclRDMAEngine::handle_tx_work(void)
         DCHECK(it != rdma_ctx_map_.end());
         auto rdma_ctx = it->second;
 
-        if (!rdma_ctx->TxMessage(tx_work.ureq)) {
+        if (!rdma_ctx->tx_message(tx_work.ureq)) {
             // Push the message to the pending transmit queue.
             pending_tx_works_.push_back(std::make_pair(rdma_ctx, tx_work.ureq));
         }
