@@ -44,6 +44,16 @@ namespace uccl {
         }                                                                      \
     } while (0)
 
+/// Convert a default bytes/second rate to Gbit/s
+inline double rate_to_gbps(double r) {
+    return (r / (1000 * 1000 * 1000)) * 8;
+}
+
+/// Convert a Gbit/s rate to the default bytes/second
+inline double gbps_to_rate(double r) {
+    return (r / 8) * (1000 * 1000 * 1000);
+}
+
 inline int receive_message(int sockfd, void *buffer, size_t n_bytes) {
     int bytes_read = 0;
     int r;

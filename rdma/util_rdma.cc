@@ -887,7 +887,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
     //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz));
 
     // Update global cwnd.
-    subflow->pcb.timely.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
+    subflow->pcb.timely_cc.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
 
     return fabric_delay_tsc;
 }
@@ -1339,7 +1339,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
             subflow->pcb.tx_sack_bitmap[i] = ucclsackh->sack_bitmap[i].value();
         subflow->pcb.tx_sack_bitmap_count =
             ucclsackh->sack_bitmap_count.value();
-        subflow->pcb.base_csn = ackno;
+        subflow->pcb.tx_sack_bitmap_base = ackno;
     }
 }
 
@@ -1670,12 +1670,12 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
         // Original chunk is already received. This barrier is invalid.
         // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = subflow->pcb.pending_retr_chunks.find(
+        auto pending_retr_chunk = subflow->pending_retr_chunks.find(
             distance.to_uint32() + subflow->pcb.shift_count);
-        if (pending_retr_chunk != subflow->pcb.pending_retr_chunks.end()) {
+        if (pending_retr_chunk != subflow->pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             retr_chunk_pool_->free_buff(chunk_addr);
-            subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            subflow->pending_retr_chunks.erase(pending_retr_chunk);
             VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
             subflow->pcb.stats_retr_chunk_drop++;
         }
@@ -1687,12 +1687,12 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
         VLOG(5) << "Barrier too far ahead. Dropping as we can't handle SACK. "
                 << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = subflow->pcb.pending_retr_chunks.find(
+        auto pending_retr_chunk = subflow->pending_retr_chunks.find(
             distance.to_uint32() + subflow->pcb.shift_count);
-        if (pending_retr_chunk != subflow->pcb.pending_retr_chunks.end()) {
+        if (pending_retr_chunk != subflow->pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             retr_chunk_pool_->free_buff(chunk_addr);
-            subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            subflow->pending_retr_chunks.erase(pending_retr_chunk);
             VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
             subflow->pcb.stats_retr_chunk_drop++;
         }
@@ -1709,12 +1709,12 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     if ((*sack_bitmap & (1ULL << cursor))) {
         // Original chunk is already received. This barrier is invalid.
         // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = subflow->pcb.pending_retr_chunks.find(
+        auto pending_retr_chunk = subflow->pending_retr_chunks.find(
             distance.to_uint32() + subflow->pcb.shift_count);
-        if (pending_retr_chunk != subflow->pcb.pending_retr_chunks.end()) {
+        if (pending_retr_chunk != subflow->pending_retr_chunks.end()) {
             auto chunk_addr = pending_retr_chunk->second.chunk_addr;
             retr_chunk_pool_->free_buff(chunk_addr);
-            subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+            subflow->pending_retr_chunks.erase(pending_retr_chunk);
             VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
             subflow->pcb.stats_retr_chunk_drop++;
         }
@@ -1735,9 +1735,9 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     subflow->pcb.barrier_bitmap_bit_set(distance.to_uint32());
 
     // Handle pending retransmission chunk waiting for this barrier (if exists).
-    auto pending_retr_chunk = subflow->pcb.pending_retr_chunks.find(
+    auto pending_retr_chunk = subflow->pending_retr_chunks.find(
         distance.to_uint32() + subflow->pcb.shift_count);
-    if (pending_retr_chunk == subflow->pcb.pending_retr_chunks.end()) {
+    if (pending_retr_chunk == subflow->pending_retr_chunks.end()) {
         // No pending retransmission chunk.
         VLOG(5)
             << "Barrier arrived without pending retransmission chunk for QP#"
@@ -1788,7 +1788,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
 
     retr_chunk_pool_->free_buff(chunk_addr);
 
-    subflow->pcb.pending_retr_chunks.erase(pending_retr_chunk);
+    subflow->pending_retr_chunks.erase(pending_retr_chunk);
 }
 
 void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
@@ -1870,7 +1870,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
     if ((*barrier_btimap & (1ULL << cursor)) == 0) {
         // The corresponding barrier has not arrived yet.
         // Store this retransmission chunk.
-        subflow->pcb.pending_retr_chunks[distance.to_uint32() +
+        subflow->pending_retr_chunks[distance.to_uint32() +
                                          subflow->pcb.shift_count] = {
             hdr->remote_addr, chunk_addr, (uint32_t)chunk_len,
             imm_data.GetImmData()};
@@ -2148,7 +2148,7 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto) {
 
     // Case#2: Retransmit the unacked chunks according to the SACK bitmap.
     bool done = false;
-    auto base_csn = UINT_CSN(subflow->pcb.base_csn);
+    auto tx_sack_bitmap_base = UINT_CSN(subflow->pcb.tx_sack_bitmap_base);
 
     uint32_t index = 0;
     while (sack_bitmap_count && index < kSackBitmapSize &&
@@ -2160,7 +2160,7 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto) {
 
         if ((sack_bitmap & (1ULL << cursor)) == 0) {
             // We found a hole.
-            auto seqno = base_csn + index;
+            auto seqno = tx_sack_bitmap_base + index;
             DCHECK(index < subflow->txtracking.track_size());
             auto chunk = subflow->txtracking.get_unacked_chunk_from_idx(index);
             if (seqno == chunk.csn) {
@@ -2177,7 +2177,7 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto) {
                 // acked. Do nothing.
                 VLOG(5) << "Stale SACK bit for seqno: " << seqno.to_uint32()
                         << ", chunk.csn: " << chunk.csn
-                        << ", base_csn: " << base_csn.to_uint32();
+                        << ", tx_sack_bitmap_base: " << tx_sack_bitmap_base.to_uint32();
             }
         } else {
             sack_bitmap_count--;
@@ -2222,7 +2222,7 @@ void RDMAContext::arm_timer_for_flow(void *context) {
         } else {
             rto_->arm_timer(
                 {this, subflow},
-                std::max(kRTORTT * subflow->pcb.timely.get_avg_rtt(),
+                std::max(kRTORTT * subflow->pcb.timely_cc.get_avg_rtt(),
                          kMinRTOUsec));
         }
         subflow->rto_armed = true;
@@ -2239,7 +2239,7 @@ void RDMAContext::rearm_timer_for_flow(void *context) {
         } else {
             rto_->rearm_timer(
                 {this, subflow},
-                std::max(kRTORTT * subflow->pcb.timely.get_avg_rtt(),
+                std::max(kRTORTT * subflow->pcb.timely_cc.get_avg_rtt(),
                          kMinRTOUsec));
         }
     } else {
@@ -2290,7 +2290,7 @@ std::string RDMAContext::to_string() {
                 stats_barrier_drop += subflow->pcb.stats_barrier_drop;
                 stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
                 stats_retr_chunk_pending =
-                    subflow->pcb.pending_retr_chunks.size();
+                    subflow->pending_retr_chunks.size();
                 stats_ooo += subflow->pcb.stats_ooo;
                 stats_real_ooo += subflow->pcb.stats_real_ooo;
                 stats_maxooo =

@@ -15,8 +15,8 @@ PullQuanta EQDSCC::compute_pull_target(void *context, uint32_t chunk_size) {
     uint32_t pull_target_bytes = subflow->backlog_bytes_;
 
     if constexpr (kSenderCCA != SENDER_CCA_NONE) {
-        if (pull_target_bytes > subflow->pcb.timely.get_wnd() + chunk_size) {
-            pull_target_bytes = subflow->pcb.timely.get_wnd() + chunk_size;
+        if (pull_target_bytes > subflow->pcb.timely_cc.get_wnd() + chunk_size) {
+            pull_target_bytes = subflow->pcb.timely_cc.get_wnd() + chunk_size;
         }
     }
 

@@ -67,7 +67,7 @@ static constexpr double kWheelSlotWidthUs = .5; ///< Duration per wheel slot
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 static constexpr size_t kSessionCredits = MAX_TIMING_WHEEL_PKTS;
 static constexpr double kWheelHorizonUs =
-    1000000 * (kSessionCredits * kChunkSize) / Timely::kMinRate;
+    1000000 * (kSessionCredits * kChunkSize) / timely::TimelyCC::kMinRate;
 
 // This ensures that packets for an sslot undergoing retransmission are rarely
 // in the wheel. This is recommended but not required.
@@ -152,7 +152,7 @@ class TimingWheel {
                                       size_t ref_tsc, void *wr,
                                       size_t chunk_size, bool allow_bypass) {
         if constexpr (kTestConstantRate)
-            target_rate = Timely::gbps_to_rate(kLinkBandwidth);
+            target_rate = gbps_to_rate(kLinkBandwidth);
 
         if (chunk_size < kBypassTimingWheelThres && allow_bypass)
             return false;

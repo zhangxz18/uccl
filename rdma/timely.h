@@ -28,6 +28,7 @@ static constexpr double kBeta = 0.008;
 static constexpr double kPPEwmaAlpha = 0.125;
 
 namespace uccl {
+namespace timely{
 
 struct timely_record_t {
     double rtt_;
@@ -46,7 +47,7 @@ struct timely_record_t {
 };
 
 /// Implementation of the Timely congestion control protocol from SIGCOMM 15
-class Timely {
+class TimelyCC {
   public:
     // Debugging
     static constexpr bool kVerbose = false;
@@ -87,8 +88,8 @@ class Timely {
     size_t create_tsc_;
     std::vector<timely_record_t> record_vec_;
 
-    Timely() {}
-    Timely(double freq_ghz, double link_bandwidth)
+    TimelyCC() {}
+    TimelyCC(double freq_ghz, double link_bandwidth)
         : last_update_tsc_(rdtsc()), min_rtt_tsc_(kMinRTT * freq_ghz * 1000),
           t_low_tsc_(kTLow * freq_ghz * 1000), freq_ghz_(freq_ghz),
           link_bandwidth_(link_bandwidth), create_tsc_(rdtsc()) {
@@ -234,16 +235,7 @@ class Timely {
     double get_avg_rtt() const { return prev_rtt_; }
     double get_avg_rtt_diff() const { return avg_rtt_diff_; }
     double get_rate_gbps() const { return rate_to_gbps(rate_); }
-
-    /// Convert a default bytes/second rate to Gbit/s
-    static double rate_to_gbps(double r) {
-        return (r / (1000 * 1000 * 1000)) * 8;
-    }
-
-    /// Convert a Gbit/s rate to the default bytes/second
-    static double gbps_to_rate(double r) {
-        return (r / 8) * (1000 * 1000 * 1000);
-    }
 };
 
+} // namepace timely
 } // namespace uccl

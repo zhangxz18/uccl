@@ -489,6 +489,13 @@ struct ack_item {
     struct list_head ack_link;
 };
 
+struct pending_retr_chunk {
+    uint64_t remote_addr;
+    uint64_t chunk_addr;
+    uint32_t chunk_len;
+    uint32_t imm_data;
+};
+
 class SubUcclFlow {
   public:
     SubUcclFlow() {}
@@ -516,7 +523,10 @@ class SubUcclFlow {
 
     // Protocol Control Block.
     PCB pcb;
-
+    
+    // Chunks received but not yet received the corresponding barrier.
+    std::unordered_map<uint64_t, struct pending_retr_chunk> pending_retr_chunks;
+    
     // Whether RTO is armed for the flow.
     bool rto_armed = false;
     
@@ -1050,7 +1060,7 @@ class EQDSRDMAContext : public RDMAContext {
         uint32_t chunk_size;
 
         if constexpr (kSenderCCA != SENDER_CCA_NONE) {
-            if (subflow->outstanding_bytes_ >= subflow->pcb.timely.get_wnd())
+            if (subflow->outstanding_bytes_ >= subflow->pcb.timely_cc.get_wnd())
                 return 0;
         }
 
@@ -1142,8 +1152,8 @@ class TimelyRDMAContext : public RDMAContext {
     bool EventOnQueueData(SubUcclFlow *subflow, struct wr_ex *wr_ex,
                           uint32_t full_chunk_size, uint64_t now) override {
         return wheel_.queue_on_timing_wheel(
-            subflow->pcb.timely.rate_,
-            &subflow->pcb.timely.prev_desired_tx_tsc_, now, wr_ex,
+            subflow->pcb.timely_cc.rate_,
+            &subflow->pcb.timely_cc.prev_desired_tx_tsc_, now, wr_ex,
             full_chunk_size, subflow->in_wheel_cnt_ == 0);
     }
 
