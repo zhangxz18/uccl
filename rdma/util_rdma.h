@@ -13,7 +13,7 @@
 #include <glog/logging.h>
 
 #include "eqds.h"
-#include "transport_cc.h"
+#include "pcb.h"
 #include "transport_config.h"
 
 #include "util.h"
@@ -501,9 +501,11 @@ class SubUcclFlow {
 
     ~SubUcclFlow() = default;
 
+    // FlowID.
     uint32_t fid_;
 
-    uint16_t ack_path_;
+    // Next path used in the ACK.
+    uint16_t next_ack_path_;
 
     uint32_t outstanding_bytes_ = 0;
 
@@ -512,27 +514,26 @@ class SubUcclFlow {
     // # of chunks in the timing wheel.
     uint32_t in_wheel_cnt_;
 
-    // States for tracking sent chunks.
-    TXTracking txtracking;
-    // States for tracking received chunks.
-    RXTracking rxtracking;
-
-    // Sender congestion control state.
-    swift::Pcb pcb;
+    // Protocol Control Block.
+    PCB pcb;
 
     // Whether RTO is armed for the flow.
     bool rto_armed = false;
+    
+    // Whether this flow has pending retransmission chunks for no credits.
+    bool in_rtx = false;
 
     // We use list_empty(&flow->ack.ack_link) to check if it has pending ACK to
     // send.
     struct ack_item ack;
 
-    // Scoreboard for RTT.
+    // States for tracking sent chunks.
+    TXTracking txtracking;
+    // States for tracking received chunks.
+    RXTracking rxtracking;
+
+    // RTT scoreboard for each path.
     double scoreboard_rtt_[kPortEntropy];
-
-    bool in_rtx = false;
-
-    eqds::EQDSCC eqds_cc;
 
     inline void update_scoreboard_rtt(uint64_t newrtt_tsc, uint32_t qpidx) {
         scoreboard_rtt_[qpidx] = (1 - kPPEwmaAlpha) * scoreboard_rtt_[qpidx] +
@@ -562,7 +563,7 @@ struct __attribute__((packed)) UcclSackHdr {
     be16_t sack_bitmap_count; // Length of the SACK bitmap [0-256].
     be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
     be64_t sack_bitmap[kSackBitmapSize /
-                       swift::Pcb::kSackBitmapBucketSize]; // Bitmap of the
+                       PCB::kSackBitmapBucketSize]; // Bitmap of the
                                                            // SACKs received.
 };
 
@@ -1053,9 +1054,9 @@ class EQDSRDMAContext : public RDMAContext {
                 return 0;
         }
 
-        chunk_size = std::min(kChunkSize, subflow->eqds_cc.credit());
+        chunk_size = std::min(kChunkSize, subflow->pcb.eqds_cc.credit());
         chunk_size = std::min(chunk_size, remaining_bytes);
-        if (!subflow->eqds_cc.spend_credit(chunk_size))
+        if (!subflow->pcb.eqds_cc.spend_credit(chunk_size))
             chunk_size = 0;
 
         return chunk_size;
@@ -1068,23 +1069,23 @@ class EQDSRDMAContext : public RDMAContext {
 
     void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {
         auto *imm = reinterpret_cast<IMMDataEQDS *>(imm_data);
-        if (subflow->eqds_cc.handle_pull_target(imm->GetTarget())) {
-            eqds_->request_pull(&subflow->eqds_cc);
+        if (subflow->pcb.eqds_cc.handle_pull_target(imm->GetTarget())) {
+            eqds_->request_pull(&subflow->pcb.eqds_cc);
         }
     }
 
     bool EventOnTxRTXData(SubUcclFlow *subflow, struct wr_ex *wr_ex) override {
         // We can't retransmit the chunk unless we have enough credits.
-        auto permitted_bytes = subflow->eqds_cc.credit();
+        auto permitted_bytes = subflow->pcb.eqds_cc.credit();
         if (permitted_bytes < wr_ex->sge.length ||
-            !subflow->eqds_cc.spend_credit(wr_ex->sge.length)) {
+            !subflow->pcb.eqds_cc.spend_credit(wr_ex->sge.length)) {
             subflow->in_rtx = true;
             VLOG(5) << "Cannot retransmit chunk due to insufficient credits";
             return false;
         }
         // Re-compute pull target.
         auto pull_target =
-            subflow->eqds_cc.compute_pull_target(subflow, wr_ex->sge.length);
+            subflow->pcb.eqds_cc.compute_pull_target(subflow, wr_ex->sge.length);
         auto imm_data = IMMDataEQDS(ntohl(wr_ex->wr.imm_data));
         imm_data.SetTarget(pull_target);
         wr_ex->wr.imm_data = htonl(imm_data.GetImmData());
@@ -1099,16 +1100,16 @@ class EQDSRDMAContext : public RDMAContext {
         // After receiving a valid ACK, we can exit the pending retransmission
         // state.
         subflow->in_rtx = false;
-        subflow->eqds_cc.stop_speculating();
+        subflow->pcb.eqds_cc.stop_speculating();
     }
 
     void EventOnRxNACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {}
 
     void EventOnRxCredit(SubUcclFlow *subflow,
                          eqds::PullQuanta pullno) override {
-        subflow->eqds_cc.stop_speculating();
+        subflow->pcb.eqds_cc.stop_speculating();
 
-        if (subflow->eqds_cc.handle_pull(pullno)) {
+        if (subflow->pcb.eqds_cc.handle_pull(pullno)) {
             // TODO: trigger transmission for this subflow immediately.
         }
 

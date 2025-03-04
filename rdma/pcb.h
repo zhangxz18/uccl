@@ -8,12 +8,12 @@
 #include <string>
 #include <unordered_map>
 
+#include "eqds.h"
 #include "timely.h"
 #include "timing_wheel.h"
 #include "util.h"
 
 namespace uccl {
-namespace swift {
 
 struct pending_retr_chunk {
     uint64_t remote_addr;
@@ -23,17 +23,19 @@ struct pending_retr_chunk {
 };
 
 /**
- * @brief Swift Congestion Control (SWCC) protocol control block.
+ * @brief Protocol Control Block.
  */
-struct Pcb {
+struct PCB {
     static constexpr std::size_t kInitialCwnd = 256;
     static constexpr std::size_t kSackBitmapBucketSize = sizeof(uint64_t) * 8;
     static constexpr std::size_t kRtoMaxRexmitConsectutiveAllowed = 32;
     static constexpr int kRtoExpireThresInTicks = 3; // in slow timer ticks.
     static constexpr int kRtoDisabled = -1;
-    Pcb() : timely(freq_ghz, kLinkBandwidth) {}
+    PCB() : timely(freq_ghz, kLinkBandwidth) {}
 
     Timely timely;
+
+    eqds::EQDSCC eqds_cc;
 
     void mutliplicative_decrease() { ecn_alpha /= 2; }
     void additive_increase() {
@@ -206,5 +208,4 @@ struct Pcb {
     uint32_t stats_maxooo{0};
 };
 
-} // namespace swift
 } // namespace uccl

@@ -425,19 +425,19 @@ void UcclRDMAEngine::handle_install_flow_on_engine(
 
             auto *subflow = flow->sub_flows_[engine_idx_ % NUM_ENGINES];
 
-            subflow->eqds_cc.set_fid(flow_id);
+            subflow->pcb.eqds_cc.set_fid(flow_id);
             // All subflows belong to the same RDMAContext share the same
             // PacerCreditQPWrapper.
-            subflow->eqds_cc.set_pacer_credit_qpw(&rdma_ctx->pc_qpw_);
+            subflow->pcb.eqds_cc.set_pacer_credit_qpw(&rdma_ctx->pc_qpw_);
 
-            subflow->eqds_cc.init_active_item();
-            subflow->eqds_cc.init_idle_item();
+            subflow->pcb.eqds_cc.init_active_item();
+            subflow->pcb.eqds_cc.init_idle_item();
 
-            subflow->eqds_cc.highest_pull_target_.store(
+            subflow->pcb.eqds_cc.highest_pull_target_.store(
                 eqds::EQDSCC::INIT_PULL_QUANTA);
-            subflow->eqds_cc.latest_pull_ = eqds::EQDSCC::INIT_PULL_QUANTA;
+            subflow->pcb.eqds_cc.latest_pull_ = eqds::EQDSCC::INIT_PULL_QUANTA;
 
-            eqds_->request_pull(&subflow->eqds_cc);
+            eqds_->request_pull(&subflow->pcb.eqds_cc);
         }
     }
 

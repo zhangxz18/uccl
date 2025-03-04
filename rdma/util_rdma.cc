@@ -545,7 +545,7 @@ int RDMAContext::supply_rx_buff(struct ucclRequest *ureq) {
 bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
     auto *subflow = flow->sub_flows_[engine_offset_];
-    auto *eqds = &subflow->eqds_cc;
+    auto *eqds = &subflow->pcb.eqds_cc;
 
     auto size = ureq->send.data_len;
     auto laddr = ureq->send.laddr;
@@ -1261,10 +1261,10 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
             uint32_t index = 0;
             while (sack_bitmap_count && index < kSackBitmapSize &&
                    !subflow->txtracking.empty()) {
-                auto bucket_idx = index / swift::Pcb::kSackBitmapBucketSize;
+                auto bucket_idx = index / PCB::kSackBitmapBucketSize;
                 auto sack_bitmap = ucclsackh->sack_bitmap[bucket_idx].value();
 
-                auto cursor = index % swift::Pcb::kSackBitmapBucketSize;
+                auto cursor = index % PCB::kSackBitmapBucketSize;
 
                 if ((sack_bitmap & (1ULL << cursor)) == 0) {
                     // We found a hole.
@@ -1334,7 +1334,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
     // For duplicate ACKs and valid ACKs, we may need to update the SACK bitmap
     // at the sender side.
     if (update_sackbitmap) {
-        for (int i = 0; i < kSackBitmapSize / swift::Pcb::kSackBitmapBucketSize;
+        for (int i = 0; i < kSackBitmapSize / PCB::kSackBitmapBucketSize;
              i++)
             subflow->pcb.tx_sack_bitmap[i] = ucclsackh->sack_bitmap[i].value();
         subflow->pcb.tx_sack_bitmap_count =
@@ -1701,8 +1701,8 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     }
 
     auto bitmap_bucket_idx =
-        distance.to_uint32() / swift::Pcb::kSackBitmapBucketSize;
-    auto cursor = distance.to_uint32() % swift::Pcb::kSackBitmapBucketSize;
+        distance.to_uint32() / PCB::kSackBitmapBucketSize;
+    auto cursor = distance.to_uint32() % PCB::kSackBitmapBucketSize;
     auto sack_bitmap = &subflow->pcb.sack_bitmap[bitmap_bucket_idx];
     auto barrier_bitmap = &subflow->pcb.barrier_bitmap[bitmap_bucket_idx];
 
@@ -1784,7 +1784,7 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     /// FIXME: Should we send ACK immediately here?
     if (list_empty(&subflow->ack.ack_link))
         list_add_tail(&subflow->ack.ack_link, ack_list);
-    subflow->ack_path_ = qpidx;
+    subflow->next_ack_path_ = qpidx;
 
     retr_chunk_pool_->free_buff(chunk_addr);
 
@@ -1849,8 +1849,8 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
     }
 
     auto bitmap_bucket_idx =
-        distance.to_uint32() / swift::Pcb::kSackBitmapBucketSize;
-    auto cursor = distance.to_uint32() % swift::Pcb::kSackBitmapBucketSize;
+        distance.to_uint32() / PCB::kSackBitmapBucketSize;
+    auto cursor = distance.to_uint32() % PCB::kSackBitmapBucketSize;
     auto sack_bitmap = &subflow->pcb.sack_bitmap[bitmap_bucket_idx];
 
     if ((*sack_bitmap & (1ULL << cursor))) {
@@ -1910,7 +1910,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
         if (list_empty(&subflow->ack.ack_link))
             list_add_tail(&subflow->ack.ack_link, ack_list);
         // Don't let sender update the path's rtt.
-        subflow->ack_path_ = std::numeric_limits<uint16_t>::max();
+        subflow->next_ack_path_ = std::numeric_limits<uint16_t>::max();
 
         EventOnRxRTXData(subflow, &imm_data);
 
@@ -2046,7 +2046,7 @@ void RDMAContext::rx_data(struct list_head *ack_list) {
 
     if (list_empty(&subflow->ack.ack_link))
         list_add_tail(&subflow->ack.ack_link, ack_list);
-    subflow->ack_path_ = qpidx;
+    subflow->next_ack_path_ = qpidx;
 
     // Send ACK if needed.
     if (subflow->rxtracking.need_imm_ack()) {
@@ -2093,7 +2093,7 @@ void RDMAContext::craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr,
 
     ucclsackh->ackno = be16_t(subflow->pcb.ackno().to_uint32());
     ucclsackh->fid = be16_t(subflow->fid_);
-    ucclsackh->path = be16_t(subflow->ack_path_);
+    ucclsackh->path = be16_t(subflow->next_ack_path_);
 
     auto t4 = rdtsc();
     uint64_t t2;
@@ -2153,10 +2153,10 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto) {
     uint32_t index = 0;
     while (sack_bitmap_count && index < kSackBitmapSize &&
            !subflow->txtracking.empty()) {
-        auto bucket_idx = index / swift::Pcb::kSackBitmapBucketSize;
+        auto bucket_idx = index / PCB::kSackBitmapBucketSize;
         auto sack_bitmap = subflow->pcb.tx_sack_bitmap[bucket_idx];
 
-        auto cursor = index % swift::Pcb::kSackBitmapBucketSize;
+        auto cursor = index % PCB::kSackBitmapBucketSize;
 
         if ((sack_bitmap & (1ULL << cursor)) == 0) {
             // We found a hole.
