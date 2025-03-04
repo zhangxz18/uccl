@@ -743,13 +743,13 @@ class Endpoint {
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
     std::vector<std::unique_ptr<std::thread>> copy_th_vec_;
 
+    uint16_t listen_port_cur_ = kBootstrapPort;
+
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
     std::array<int, kNumEngines> engine_load_vec_ = {0};
     std::array<int, kNumEngines> engine_tx_load_vec_ = {0};
     std::array<int, kNumEngines> engine_rx_load_vec_ = {0};
-
-    int listen_fds_[kNumVdevices * kNumChannels];
 
     // We must use a thread-safe pool but not per-engine poll, as different
     // threads would issue send/recv even for the same engine.
@@ -764,12 +764,17 @@ class Endpoint {
     Endpoint();
     ~Endpoint();
 
+    std::vector<uint16_t> listen_port_vec_;
+    std::vector<int> listen_fd_vec_;
+
+    // Using TCP socket to listen on, and return the listen port and fd.
+    std::tuple<uint16_t, int> uccl_listen();
     // Connecting to a remote address; thread-safe
     ConnID uccl_connect(int local_vdev, int remote_vdev, std::string remote_ip,
-                        uint32_t channel_idx = 0);
+                        uint16_t listen_port);
     // Accepting a connection from a remote address; thread-safe
     ConnID uccl_accept(int local_vdev, int *remote_vdev, std::string &remote_ip,
-                       uint32_t channel_idx = 0);
+                       int listen_fd);
 
     // Sending the data by leveraging multiple port combinations.
     bool uccl_send(ConnID conn_id, const void *data, const int len,
@@ -807,8 +812,7 @@ class Endpoint {
                                 bool is_sender);
     inline int find_least_loaded_engine_idx_and_update(int vdev_idx,
                                                        FlowID flow_id,
-                                                       bool is_sender,
-                                                       uint32_t channel_idx);
+                                                       bool is_sender);
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
     std::mutex stats_mu_;

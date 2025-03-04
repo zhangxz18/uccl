@@ -2,7 +2,7 @@
 
 source ../shared.sh
 
-# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [ens32]
+# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [uccl quite] [ens32]
 
 TEST=${1:-srd}
 UCCL_HOME="/opt/uccl_rdma"

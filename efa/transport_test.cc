@@ -91,24 +91,29 @@ int main(int argc, char* argv[]) {
         ConnID conn_id_vec[kMaxArraySize];
         int remote_vdevs[kMaxArraySize];
 
-        conn_id = ep.uccl_connect(0, 0, FLAGS_serverip);
+        for (int i = 0; i < kMaxArraySize; i++) ep.uccl_listen();
+
+        conn_id = ep.uccl_connect(0, 0, FLAGS_serverip, ep.listen_port_vec_[0]);
         if (test_type == kMc) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumConns; i++)
-                conn_id_vec[i] = ep.uccl_connect(0, 0, FLAGS_serverip);
+                conn_id_vec[i] = ep.uccl_connect(0, 0, FLAGS_serverip,
+                                                 ep.listen_port_vec_[0]);
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++)
-                conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip);
+                conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip,
+                                                 ep.listen_port_vec_[i]);
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++) {
                 std::string remote_ip;
                 if (i % 2 == 0)
-                    conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip);
+                    conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip,
+                                                     ep.listen_port_vec_[i]);
                 else
-                    conn_id_vec[i] =
-                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip);
+                    conn_id_vec[i] = ep.uccl_accept(
+                        i, &remote_vdevs[i], remote_ip, ep.listen_fd_vec_[i]);
             }
         }
 
@@ -383,27 +388,32 @@ int main(int argc, char* argv[]) {
         std::string remote_ip[kMaxArraySize];
         int remote_vdevs[kMaxArraySize];
 
-        conn_id = ep.uccl_accept(0, &remote_vdevs[0], remote_ip[0]);
+        for (int i = 0; i < kMaxArraySize; i++) ep.uccl_listen();
+
+        conn_id = ep.uccl_accept(0, &remote_vdevs[0], remote_ip[0],
+                                 ep.listen_fd_vec_[0]);
         if (test_type == kMc) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumConns; i++) {
-                conn_id_vec[i] =
-                    ep.uccl_accept(0, &remote_vdevs[i], remote_ip[i]);
+                conn_id_vec[i] = ep.uccl_accept(
+                    0, &remote_vdevs[i], remote_ip[i], ep.listen_fd_vec_[0]);
             }
         } else if (test_type == kMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++) {
-                conn_id_vec[i] =
-                    ep.uccl_accept(i, &remote_vdevs[i], remote_ip[i]);
+                conn_id_vec[i] = ep.uccl_accept(
+                    i, &remote_vdevs[i], remote_ip[i], ep.listen_fd_vec_[i]);
             }
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++) {
                 if (i % 2 == 0)
                     conn_id_vec[i] =
-                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip[i]);
+                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip[i],
+                                       ep.listen_fd_vec_[i]);
                 else
-                    conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_clientip);
+                    conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_clientip,
+                                                     ep.listen_port_vec_[i]);
             }
         }
 
