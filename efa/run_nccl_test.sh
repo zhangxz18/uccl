@@ -31,7 +31,6 @@ if [ "$TEST" = "srd" ]; then
         -x NCCL_P2P_DISABLE=1 \
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
-        -x CUDA_VISIBLE_DEVICES="0,1" \
         -x NCCL_MAX_NCHANNELS=2 \
         -x NCCL_MIN_NCHANNELS=2 \
         -x NCCL_P2P_NET_CHUNKSIZE=524288 \
@@ -39,6 +38,7 @@ if [ "$TEST" = "srd" ]; then
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
         -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -t 1
 
+        # -x CUDA_VISIBLE_DEVICES="0,1" \
         # -x NCCL_ALGO=Ring \
         # -x NCCL_SOCKET_NTHREADS=4 \
         # -x NCCL_NSOCKS_PERTHREAD=2 \
@@ -65,7 +65,6 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
         -x GLOG_logtostderr=1 \
-        -x CUDA_VISIBLE_DEVICES="0,1" \
         -x NCCL_MAX_NCHANNELS=2 \
         -x NCCL_MIN_NCHANNELS=2 \
         -x NCCL_NET_GDR_LEVEL=SYS \
@@ -73,7 +72,7 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_BUFFSIZE=8388608 \
         -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -c 0 -t 1 \
+        -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -c 0 -t 8 \
         2>&1 | while read -r line; do
         # Extract rank from the format [1,2]
         if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
@@ -87,6 +86,7 @@ elif [ "$TEST" = "ud" ]; then
 
         # gdb -ex run --args \
 
+        # -x CUDA_VISIBLE_DEVICES="0,1" \
         # -x NCCL_ALGO=Ring \
         # -x NCCL_IB_CUDA_SUPPORT=1 \
         # -x NCCL_SOCKET_NTHREADS=4 \

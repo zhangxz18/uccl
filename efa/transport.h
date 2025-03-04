@@ -367,6 +367,11 @@ class RXTracking {
     friend class Endpoint;
 };
 
+static inline FlowID get_peer_flow_id(FlowID flow_id) {
+    return flow_id >= MAX_FLOW_ID ? flow_id - MAX_FLOW_ID
+                                  : flow_id + MAX_FLOW_ID;
+}
+
 /**
  * @class UcclFlow, a connection between a local and a remote endpoint.
  * @brief Class to abstract the components and functionality of a single flow.
@@ -426,6 +431,8 @@ class UcclFlow {
             for (uint32_t i = 0; i < kMaxPath; i++)
                 cubic_pp_[i].init(&pcb_, kMaxUnackedPktsPP);
         }
+
+        peer_flow_id_ = get_peer_flow_id(flow_id);
     }
     ~UcclFlow() {
         delete local_meta_;
@@ -550,6 +557,8 @@ class UcclFlow {
     // Each path has its own PCB for CC.
     swift::TimelyCtl *timely_pp_;
     swift::CubicCtl *cubic_pp_;
+    // Peer flow_id used for communication.
+    FlowID peer_flow_id_ = 0;
 
     uint32_t last_received_rwnd_ = kMaxUnconsumedRxMsgbufs;
 
@@ -735,7 +744,7 @@ class UcclEngine {
  * its all queues.
  */
 class Endpoint {
-    constexpr static uint16_t kBootstrapPort = 30000;
+    constexpr static uint16_t kBootstrapPort = 10000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
     Channel *channel_vec_[kNumEngines];

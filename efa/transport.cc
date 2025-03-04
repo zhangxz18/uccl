@@ -1018,7 +1018,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->msg_flags = msgbuf->get_msg_flags();
     ucclh->frame_len = be16_t(frame_len);
     ucclh->seqno = be32_t(seqno);
-    ucclh->flow_id = be64_t(flow_id_);
+    ucclh->flow_id = be64_t(peer_flow_id_);
 
     ucclh->timestamp1 =
         (net_flags == UcclPktHdr::UcclFlags::kDataRttProbe)
@@ -1050,7 +1050,7 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     ucclh->frame_len = be16_t(kControlPayloadBytes);
     ucclh->seqno = be32_t(seqno);
     ucclh->ackno = be32_t(ackno);
-    ucclh->flow_id = be64_t(flow_id_);
+    ucclh->flow_id = be64_t(peer_flow_id_);
     ucclh->timestamp1 = ts1;
     ucclh->timestamp2 = ts2;
 
@@ -1510,8 +1510,9 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
     // Generate unique flow ID for both client and server.
     FlowID flow_id;
     while (true) {
-        // Generating small range for debugging.
-        flow_id = U64Rand(0, std::numeric_limits<uint16_t>::max());
+        // generate flow_id sequentially for better debugging
+        static std::atomic<uint64_t> base_flow_id = 0;
+        flow_id = base_flow_id++;
         bool unique;
         {
             std::lock_guard<std::mutex> lock(fd_map_mu_);
@@ -1526,7 +1527,9 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
 
         LOG(INFO) << "[Endpoint] accept: propose FlowID: " << flow_id;
 
-        int ret = send_message(bootstrap_fd, &flow_id, sizeof(FlowID));
+        // Allowing flow src and dst to be the same process.
+        auto peer_flow_id = get_peer_flow_id(flow_id);
+        int ret = send_message(bootstrap_fd, &peer_flow_id, sizeof(FlowID));
         DCHECK(ret == sizeof(FlowID));
 
         bool unique_from_client;
