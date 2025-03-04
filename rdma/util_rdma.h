@@ -787,6 +787,16 @@ class RDMAContext {
 
         uint32_t *eob_;
 
+        inline void update_clock(double ratio, double offset) {
+            ratio_ = ratio;
+            offset_ = offset;
+        }
+
+        // Convert NIC clock to host clock (TSC).
+        inline uint64_t convert_nic_to_host(uint64_t nic_clock) {
+            return ratio_ * nic_clock + offset_;
+        }
+
         inline bool can_use_last_choice(uint32_t msize) {
             bool cond1 = msize <= kMAXUseCacheQPSize;
             bool cond2 = consecutive_same_choice_bytes_ + msize <= kMAXConsecutiveSameChoiceBytes;
@@ -796,16 +806,6 @@ class RDMAContext {
             }
             consecutive_same_choice_bytes_ = 0;
             return false;
-        }
-
-        inline void update_clock(double ratio, double offset) {
-            ratio_ = ratio;
-            offset_ = offset;
-        }
-
-        // Convert NIC clock to host clock (TSC).
-        inline uint64_t convert_nic_to_host(uint64_t nic_clock) {
-            return ratio_ * nic_clock + offset_;
         }
         
         // Select a QP index in a round-robin manner.
@@ -824,54 +824,54 @@ class RDMAContext {
         // Select a QP index in a power-of-two manner.
         uint32_t select_qpidx_pot(uint32_t msize, void *subflow_context);
 
-        int supply_rx_buff(struct ucclRequest *ureq);
+       /**
+        * @brief Poll the completion queues for all UC QPs.
+        * SQ and RQ use separate completion queues.
+        */
+        inline int poll_uc_cq(void) { 
+            int work = 0;
+            work += sender_poll_uc_cq();
+            work += receiver_poll_uc_cq();
+            return work;
+        }
+        int sender_poll_uc_cq(void);
+        int receiver_poll_uc_cq(void);
 
-        /**
-         * @brief Poll the completion queues for all RC QPs.
-         * SQ and RQ use separate completion queues.
-         */
+       /**
+        * @brief Poll the completion queues for all RC QPs.
+        * SQ and RQ use separate completion queues.
+        */
         inline int poll_rc_cq(void) {
             int work = 0;
             work += sender_poll_rc_cq();
             work += receiver_poll_rc_cq();
-            
             return work;
         }
         int sender_poll_rc_cq(void);
         int receiver_poll_rc_cq(void);
 
         /**
-         * @brief Poll the completion queues for all UC QPs.
-         * SQ and RQ use separate completion queues.
-         */
-        inline int poll_uc_cq(void) { 
-            int work = 0;
-            work += sender_poll_uc_cq();
-            work += receiver_poll_uc_cq();
-
-            return work;
-        }
-        int sender_poll_uc_cq(void);
-        int receiver_poll_uc_cq(void);
-
-        void rc_rx_ack(void);
-
-        void rc_rx_chunk(void);
-
-        /**
-         * @brief Poll the completion queue for the Ctrl QP.
-         * SQ and RQ use the same completion queue.
-         */
+        * @brief Poll the completion queue for the Ctrl QP.
+        * SQ and RQ use the same completion queue.
+        */
         int poll_ctrl_cq(void);
 
+        /**
+        * @brief Poll the completion queue for the Credit QP.
+        * SQ and RQ use different completion queues.
+        */
         int poll_credit_cq(void);
 
         /**
-         * @brief Poll the completion queue for the Retr QP.
-         * SQ and RQ use the same completion queue.
-         */
+        * @brief Poll the completion queue for the Retr QP.
+        * SQ and RQ use the same completion queue.
+        */
         int poll_retr_cq(void);
 
+        /**
+         * @brief Check if we need to post enough recv WQEs to the Credit QP.
+         * @param force Force to post WQEs.
+         */
         void check_credit_rq(bool force = false);
 
         /**
@@ -903,7 +903,7 @@ class RDMAContext {
         void drain_rtx_queue(SubUcclFlow *subflow);
 
         /**
-         * @brief Receive a chunk from the flow.
+         * @brief Receive a chunk. Flow infromation is embedded in the immediate data.
          * @param ack_list If this QP needs ACK, add it to the list.
          * @return true If the chunk is received successfully.
          */
@@ -916,25 +916,39 @@ class RDMAContext {
         void rx_ack(uint64_t pkt_addr);
 
         /**
-        * @brief Receive a retransmitted chunk from the flow.
+        * @brief Receive a retransmitted chunk. Flow infromation is embedded in the immediate data.
         * @param ack_list If this QP needs ACK, add it to the list.
         * @return true If the chunk is received successfully.
         */
         void rx_rtx_data(struct list_head *ack_list);
 
         /**
-        * @brief Receive a barrier from the flow.
+        * @brief Receive a barrier. Flow infromation is embedded in the immediate data.
         * @param ack_list If this QP needs ACK, add it to the list.
         * @return true If the barrier is received successfully.
         */
         void rx_barrier(struct list_head *ack_list);
- 
+        
+        /**
+         * @brief Receive a credit.
+         * @param pkt_addr The position of the Credit packet in the Credit chunk.
+         */
         void rx_credit(uint64_t pkt_addr);
 
-        bool receiverCC_tx_message(struct ucclRequest *ureq); 
-        
-        bool senderCC_tx_message(struct ucclRequest *ureq); 
+        /**
+         * @brief Supply buffers for receiving data.
+         * @param ureq
+         * @return 0 success
+         * @return -1 fail
+         */
+        int supply_rx_buff(struct ucclRequest *ureq);
 
+        /**
+         * @brief Transmit a message.
+         * @param ureq 
+         * @return true message is transmitted successfully.
+         * @return false message is not transmitted successfully.
+         */
         bool tx_message(struct ucclRequest *ureq) {
             if constexpr (kReceiverCCA != RECEIVER_CCA_NONE) {
                 return receiverCC_tx_message(ureq);
@@ -942,6 +956,8 @@ class RDMAContext {
                 return senderCC_tx_message(ureq);
             }
         }
+        bool receiverCC_tx_message(struct ucclRequest *ureq); 
+        bool senderCC_tx_message(struct ucclRequest *ureq); 
 
         virtual uint32_t EventOnSelectPath(SubUcclFlow *subflow, uint32_t chunk_size) = 0;
 
@@ -988,11 +1004,15 @@ class RDMAContext {
 
         /**
          * @brief Retransmit chunks for the given subUcclFlow.
-         * @param rto 
+         * @param rto triggered by RTO or not.
          */
         void __retransmit_for_flow(void *context, bool rto);
         inline void fast_retransmit_for_flow(void *context) { __retransmit_for_flow(context, false); }
         inline void rto_retransmit_for_flow(void *context) { __retransmit_for_flow(context, true); }
+
+        void rc_rx_ack(void);
+
+        void rc_rx_chunk(void);
 
         std::string to_string();
 
