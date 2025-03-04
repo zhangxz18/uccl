@@ -101,7 +101,7 @@ static constexpr uint32_t kMAXUseCacheQPSize = 8192;
 static constexpr uint32_t kBypassTimingWheelThres = 9000;
 
 // Limit the per-flow outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesPerFlow = 8 * kChunkSize;
+static constexpr uint32_t kMaxOutstandingBytesPerFlow = 9 * kChunkSize;
 // Limit the outstanding bytes on each engine.
 static constexpr uint32_t kMaxOutstandingBytesEngine = 24 * kChunkSize;
 // # of Tx work handled in one loop.
