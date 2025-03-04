@@ -749,7 +749,7 @@ class Endpoint {
     std::array<int, kNumEngines> engine_tx_load_vec_ = {0};
     std::array<int, kNumEngines> engine_rx_load_vec_ = {0};
 
-    int listen_fd_[kNumVdevices];
+    int listen_fds_[kNumVdevices * kNumChannels];
 
     // We must use a thread-safe pool but not per-engine poll, as different
     // threads would issue send/recv even for the same engine.

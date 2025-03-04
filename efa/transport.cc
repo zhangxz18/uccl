@@ -1345,13 +1345,13 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
     }
 #endif
 
-    for (int i = 0; i < kNumVdevices; i++) {
+    for (int i = 0; i < kNumVdevices * kNumChannels; i++) {
         // Create listening socket
-        listen_fd_[i] = socket(AF_INET, SOCK_STREAM, 0);
-        DCHECK(listen_fd_[i] >= 0) << "ERROR: opening socket";
+        listen_fds_[i] = socket(AF_INET, SOCK_STREAM, 0);
+        DCHECK(listen_fds_[i] >= 0) << "ERROR: opening socket";
 
         int flag = 1;
-        DCHECK(setsockopt(listen_fd_[i], SOL_SOCKET, SO_REUSEADDR, &flag,
+        DCHECK(setsockopt(listen_fds_[i], SOL_SOCKET, SO_REUSEADDR, &flag,
                           sizeof(int)) >= 0)
             << "ERROR: setsockopt SO_REUSEADDR fails";
 
@@ -1359,13 +1359,14 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         bzero((char *)&serv_addr, sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = INADDR_ANY;
-        // Note: vEFA/GPU i listens on kBootstrapPort + i.
+        // Note: vEFA/GPU i channel j listens on kBootstrapPort + i *
+        // kNumChannels + j.
         serv_addr.sin_port = htons(kBootstrapPort + i);
-        DCHECK(bind(listen_fd_[i], (struct sockaddr *)&serv_addr,
+        DCHECK(bind(listen_fds_[i], (struct sockaddr *)&serv_addr,
                     sizeof(serv_addr)) >= 0)
             << "ERROR: binding";
 
-        DCHECK(!listen(listen_fd_[i], 128)) << "ERROR: listen";
+        DCHECK(!listen(listen_fds_[i], 128)) << "ERROR: listen";
         LOG(INFO) << "[Endpoint] server ready, listening on port "
                   << kBootstrapPort + i;
     }
@@ -1376,7 +1377,7 @@ Endpoint::~Endpoint() {
     for (auto &engine_th : engine_th_vec_) engine_th->join();
     for (auto &copy_th : copy_th_vec_) copy_th->join();
     for (int i = 0; i < kNumEngines; i++) delete channel_vec_[i];
-    for (int i = 0; i < kNumVdevices; i++) close(listen_fd_[i]);
+    for (int i = 0; i < kNumVdevices * kNumChannels; i++) close(listen_fds_[i]);
     delete ctx_pool_;
     delete[] ctx_pool_buf_;
 
@@ -1426,8 +1427,10 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = str_to_ip(remote_ip.c_str());
-    // Note: vEFA/GPU i listens on kBootstrapPort + i.
-    serv_addr.sin_port = htons(kBootstrapPort + remote_vdev);
+    // Note: vEFA/GPU i channel j listens on kBootstrapPort + i *
+    // kNumChannels + j.
+    serv_addr.sin_port =
+        htons(kBootstrapPort + remote_vdev * kNumChannels + channel_idx);
 
     // Connect and set nonblocking and nodelay
     while (connect(bootstrap_fd, (struct sockaddr *)&serv_addr,
@@ -1491,7 +1494,8 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
     int ret;
     bool local_lock_first = false;
     bool is_sender = false;
-    int listen_fd = listen_fd_[local_vdev];
+    // Each channel listens on a different port to avoid nccl deadlock.
+    int listen_fd = listen_fds_[local_vdev * kNumChannels + channel_idx];
 
     // Accept connection and set nonblocking and nodelay
     bootstrap_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clilen);
@@ -1783,44 +1787,16 @@ inline int Endpoint::find_least_loaded_engine_idx_and_update(
     int vdev_idx, FlowID flow_id, bool is_sender, uint32_t channel_idx) {
     std::lock_guard<std::mutex> lock(engine_load_vec_mu_);
 
-    auto si = vdev_idx * kNumEnginesPerVdev;
-    auto ei = (vdev_idx + 1) * kNumEnginesPerVdev;
+    const auto kNumEnginesPerChannel = kNumEnginesPerVdev / kNumChannels;
+
+    auto si =
+        vdev_idx * kNumEnginesPerVdev + channel_idx * kNumEnginesPerChannel;
+    auto ei = si + kNumEnginesPerChannel;
 
     auto minElementIter = std::min_element(engine_load_vec_.begin() + si,
                                            engine_load_vec_.begin() + ei);
     *minElementIter += 1;
     return std::distance(engine_load_vec_.begin(), minElementIter);
-
-    // CHECK(kNumEnginesPerVdev >= channel_idx + 1)
-    //     << "Too many channels, more than engines per vdev: channel_idx "
-    //     << channel_idx << " kNumEnginesPerVdev " << kNumEnginesPerVdev;
-    // return si + channel_idx;
-
-    // auto min_engine_idx = si;
-    // if (kNumEnginesPerVdev != 1) {
-    //     if (min_engine_idx % 2 == is_sender) min_engine_idx++;
-    //     for (int i = si; i < ei; i++) {
-    //         // Avoiding mapping a flow's send and recv to the same engine.
-    //         if (i % 2 == (int)is_sender) continue;
-    //         if (engine_load_vec_[i] < engine_load_vec_[min_engine_idx]) {
-    //             min_engine_idx = i;
-    //         }
-    //     }
-    // }
-    // engine_load_vec_[min_engine_idx]++;
-    // return min_engine_idx;
-
-    // auto min_engine_idx = si;
-    // auto &load_vec = is_sender ? engine_tx_load_vec_ : engine_rx_load_vec_;
-    // if (kNumEnginesPerVdev != 1) {
-    //     for (int i = si; i < ei; i++) {
-    //         if (load_vec[i] < load_vec[min_engine_idx]) {
-    //             min_engine_idx = i;
-    //         }
-    //     }
-    // }
-    // load_vec[min_engine_idx]++;
-    // return min_engine_idx;
 }
 
 inline void Endpoint::fence_and_clean_ctx(PollCtx *ctx) {
