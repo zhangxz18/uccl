@@ -11,10 +11,11 @@ LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
 PROG_NAME=alltoall_perf
 NUM_PROCS=${2:-4}
-NIC=${3:-ens32}
+UCCL_QUITE=${3:-1}
+NIC=${4:-ens32}
 NODES=$(get_nodes "../nodes.txt")
 
-echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, ${NODES}"
+echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}"
 
 if [ "$TEST" = "srd" ]; then
 
@@ -70,7 +71,7 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_NET_GDR_LEVEL=SYS \
         -x NCCL_P2P_NET_CHUNKSIZE=524288 \
         -x NCCL_BUFFSIZE=8388608 \
-        -x UCCL_ENGINE_QUIET=0 \
+        -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
         -b 1K -e 1G -f 2 -g 1 -w 100 -n 100 -c 0 -t 1 \
         2>&1 | while read -r line; do

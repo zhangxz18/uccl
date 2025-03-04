@@ -25,9 +25,6 @@ struct UcclRequest {
     int recv_len[kMaxMultiRecv] = {0};
     PollCtx *poll_ctx = nullptr;
     void *req_pool = nullptr;
-    bool dup;
-
-    void clear() { memset(this, 0, sizeof(UcclRequest)); }
 };
 
 class UcclRequestBuffPool : public BuffPool {
@@ -390,7 +387,6 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     req->send_len = size;
     req->poll_ctx = ep->uccl_send_async(conn_id, data, req->send_len, mh);
     req->req_pool = (void *)scomm->base.uccl_req_pool.get();
-    req->dup = false;
 
     *request = req;
 
@@ -427,20 +423,7 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
     req->poll_ctx =
         ep->uccl_recv_multi_async(conn_id, data, req->recv_len, mhs, n);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
-    req->dup = false;
 
-    // if (last_recv_data == data) {
-    //     // This is a duplicate request; it is done when the previous one is
-    //     // done.
-    //     LOG(WARNING) << "Duplicate request on vdev: " << vdev << " size "
-    //                  << sizes[0] << " engine_id " <<
-    //                  req->poll_ctx->engine_idx
-    //                  << " flow_id " << conn_id.flow_id << " n " << n
-    //                  << " req_id " << req->poll_ctx->req_id << " data ptr "
-    //                  << std::hex << data;
-    //     req->poll_ctx->done = true;
-    //     req->dup = true;
-    // }
     last_recv_data = (void *)data;
 
     *request = req;
@@ -475,7 +458,6 @@ ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
     req->n = n;
     req->poll_ctx = ep->uccl_flush_async(conn_id, data, req->recv_len, mhs, n);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
-    req->dup = false;
 
     *request = req;
 
@@ -497,8 +479,6 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
 #endif
         } else if (req->type == ReqRx) {
             for (int i = 0; i < req->n; i++) size[i] = req->recv_len[i];
-            // if (req->dup) size[0] = last_recv_size;
-            // last_recv_size = size[0];
 #ifdef POLLCTX_DEBUG
             LOG(INFO) << "pluginTest ReqRx done: engine_id "
                       << req->poll_ctx->engine_idx << " flow_id "
@@ -510,7 +490,6 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         }
         auto uccl_req_pool =
             reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
-        req->clear();
         uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
     } else {
 #ifdef POLLCTX_DEBUG
