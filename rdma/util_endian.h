@@ -12,31 +12,27 @@ constexpr bool is_be_system() {
     return (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__);
 }
 
-template <typename T>
-class EndianBase {
-   public:
+template <typename T> class EndianBase {
+  public:
     static constexpr T swap(const T &v);
 };
 
-template <>
-class EndianBase<uint16_t> {
-   public:
+template <> class EndianBase<uint16_t> {
+  public:
     static constexpr uint16_t swap(const uint16_t &v) {
         return __builtin_bswap16(v);
     }
 };
 
-template <>
-class EndianBase<uint32_t> {
-   public:
+template <> class EndianBase<uint32_t> {
+  public:
     static constexpr uint32_t swap(const uint32_t &v) {
         return __builtin_bswap32(v);
     }
 };
 
-template <>
-class EndianBase<uint64_t> {
-   public:
+template <> class EndianBase<uint64_t> {
+  public:
     static constexpr uint64_t swap(const uint64_t &v) {
         return __builtin_bswap64(v);
     }
@@ -50,7 +46,7 @@ class EndianBase<uint64_t> {
 //       which may not be immediately clear from the variable name.
 template <typename T>
 class __attribute__((packed)) BigEndian final : public EndianBase<T> {
-   public:
+  public:
     BigEndian() = default;
     BigEndian(const BigEndian<T> &o) = default;
 
@@ -132,8 +128,8 @@ class __attribute__((packed)) BigEndian final : public EndianBase<T> {
         return std::vector<uint8_t>(&t.bytes[0], &t.bytes[sizeof(T)]);
     }
 
-   protected:
-    T data_;  // stored in big endian in memory
+  protected:
+    T data_; // stored in big endian in memory
 };
 
 using be16_t = BigEndian<uint16_t>;
@@ -162,4 +158,4 @@ bool uint64_to_bin(void *ptr, uint64_t val, size_t size, bool big_endian);
 // this is to make sure BigEndian has constexpr constructor and value()
 static_assert(be32_t(0x1234).value() == 0x1234, "Something is wrong");
 
-}  // namespace uccl
+} // namespace uccl

@@ -31,12 +31,13 @@ static void nano_sleep(size_t ns, double freq_ghz) {
     size_t start = rdtsc();
     size_t end = start;
     size_t upp = static_cast<size_t>(freq_ghz * ns);
-    while (end - start < upp) end = rdtsc();
+    while (end - start < upp)
+        end = rdtsc();
 }
 
 /// Simple time that uses std::chrono
 class ChronoTimer {
-   public:
+  public:
     ChronoTimer() { reset(); }
     void reset() { start_time_ = std::chrono::high_resolution_clock::now(); }
 
@@ -57,7 +58,7 @@ class ChronoTimer {
                 .count());
     }
 
-   private:
+  private:
     std::chrono::time_point<std::chrono::high_resolution_clock> start_time_;
 };
 
@@ -116,7 +117,7 @@ static double to_nsec(size_t cycles, double freq_ghz) {
 
 /// Simple time that uses RDTSC
 class TscTimer {
-   public:
+  public:
     size_t start_tsc_ = 0;
     size_t tsc_sum_ = 0;
     size_t num_calls_ = 0;
@@ -153,10 +154,10 @@ struct TimerData {
 };
 
 class TimerManager {
-public:
+  public:
     using CycleCount = uint64_t;
-    
-    explicit TimerManager(double timeout_us = 1000) 
+
+    explicit TimerManager(double timeout_us = 1000)
         : timeout_(us_to_cycles(timeout_us, freq_ghz)) {
         heap_.reserve(kPortEntropy * 64);
         flow_map_.reserve(kPortEntropy * 64);
@@ -223,17 +224,17 @@ public:
     std::vector<struct TimerData> check_expired() {
         std::vector<struct TimerData> expired;
         const CycleCount now = rdtsc();
-        
+
         while (!heap_.empty() && heap_[0].expire <= now) {
             expired.push_back(heap_[0].data);
             flow_map_.erase(heap_[0].data.flow);
-            
+
             if (heap_.size() > 1) {
                 heap_[0] = heap_.back();
                 flow_map_[heap_[0].data.flow] = 0;
             }
             heap_.pop_back();
-            
+
             if (!heap_.empty()) {
                 heapify_down(0);
             }
@@ -243,7 +244,8 @@ public:
 
     void disarm_timer(struct TimerData data) {
         auto it = flow_map_.find(data.flow);
-        if (it == flow_map_.end()) return;
+        if (it == flow_map_.end())
+            return;
 
         const size_t index = it->second;
         flow_map_.erase(data.flow);
@@ -259,18 +261,18 @@ public:
         }
     }
 
-private:
+  private:
     struct TimerNode {
         CycleCount expire;
         struct TimerData data;
-        
-        bool operator<(const TimerNode& rhs) const {
+
+        bool operator<(const TimerNode &rhs) const {
             return expire < rhs.expire;
         }
     };
 
     std::vector<TimerNode> heap_;
-    std::unordered_map<void*, size_t> flow_map_;
+    std::unordered_map<void *, size_t> flow_map_;
     const CycleCount timeout_;
 
     void heapify_up(size_t index) {
@@ -298,7 +300,7 @@ private:
             if (right < size && heap_[right] < heap_[smallest]) {
                 smallest = right;
             }
-            
+
             if (smallest != index) {
                 swap_nodes(index, smallest);
                 index = smallest;
@@ -309,7 +311,7 @@ private:
     }
 
     void adjust_heap_node(size_t index) {
-        if (index > 0 && heap_[index] < heap_[(index-1)/2]) {
+        if (index > 0 && heap_[index] < heap_[(index - 1) / 2]) {
             heapify_up(index);
         } else {
             heapify_down(index);
@@ -323,4 +325,4 @@ private:
     }
 };
 
-}  // namespace uccl
+} // namespace uccl

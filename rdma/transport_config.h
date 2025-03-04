@@ -3,8 +3,8 @@
 #include <unistd.h>
 
 #include <cstdint>
-#include <thread>
 #include <string>
+#include <thread>
 
 #define CLOUDLAB_DEV
 
@@ -20,13 +20,14 @@ static constexpr bool USE_ROCE = true;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
 static constexpr uint8_t NUM_DEVICES = 2;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2,3};
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2, 3};
 #else
 static constexpr bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("");
 static constexpr uint8_t NUM_DEVICES = 8;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0, 1, 2, 3, 4, 5, 6, 7};
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0, 1, 2, 3,
+                                                             4, 5, 6, 7};
 #endif
 static constexpr uint8_t IB_PORT_NUM = 1;
 #ifdef CLOUDLAB_DEV
@@ -43,7 +44,8 @@ static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // Minimum post receive size in NCCL.
 static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
-// PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
+// PortEntropy/Path/QP per engine. The total number is NUM_ENGINES *
+// kPortEntropy.
 static constexpr uint32_t kPortEntropy = 64;
 // Chunk size for each WQE.
 static constexpr uint32_t kChunkSize = 32 << 10;
@@ -75,13 +77,17 @@ enum ReceiverCCA {
 };
 static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
 static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_EQDS;
-static_assert(kSenderCCA != SENDER_CCA_NONE || kReceiverCCA != RECEIVER_CCA_NONE, "At least one of the sender and receiver must have a congestion control algorithm.");
+static_assert(kSenderCCA != SENDER_CCA_NONE ||
+                  kReceiverCCA != RECEIVER_CCA_NONE,
+              "At least one of the sender and receiver must have a congestion "
+              "control algorithm.");
 
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 
 // Use RC rather than UC.
 static constexpr bool kUSERC = false;
-constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ + 2 * (kUSERC ? 0 : 1) /* Ctrl QP, Retr QP */;
+constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
+                                2 * (kUSERC ? 0 : 1) /* Ctrl QP, Retr QP */;
 // Per-path cwnd or global cwnd.
 static constexpr bool kPPCwnd = false;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
@@ -131,7 +137,8 @@ static constexpr uint32_t kMaxSRQ = 64 * kMaxReq * 2;
 static constexpr uint32_t kMaxRetr = 64;
 // Maximum number of outstanding retransmission chunks on all QPs.
 static constexpr uint32_t kMaxInflightRetrChunks = 32;
-static_assert(kMaxInflightRetrChunks <= kMaxRetr, "kMaxInflightRetrChunks <= kMaxRetr");
+static_assert(kMaxInflightRetrChunks <= kMaxRetr,
+              "kMaxInflightRetrChunks <= kMaxRetr");
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
 static constexpr uint32_t kMaxBurstTW = 8;
 // Posting recv WQEs every kPostRQThreshold.
@@ -141,17 +148,18 @@ static constexpr uint32_t kPostRQThreshold = kMaxBatchCQ;
 static constexpr uint32_t kMAXCumWQE = 4;
 // When the cumulative bytes reach kMAXCumBytes, send immediate ack.
 static constexpr uint32_t kMAXCumBytes = kMAXCumWQE * kChunkSize;
-// Before reaching it, the receiver will not consider that it has encountered OOO,
-// and thus there is no immediate ack. This is to tolerate the OOO caused by the 
-// sender's qp scheduling.
+// Before reaching it, the receiver will not consider that it has encountered
+// OOO, and thus there is no immediate ack. This is to tolerate the OOO caused
+// by the sender's qp scheduling.
 static constexpr uint32_t kMAXRXOOO = 8;
 
 // Sack bitmap size in bits.
 static constexpr std::size_t kSackBitmapSize = 64 << 1;
-// kFastRexmitDupAckThres equals to 1 means all duplicate acks are caused by packet loss.
-// This is true for flow-level ECMP, which is the common case.
-// When the network supports adaptive routing, duplicate acks may be caused by adaptive routing.
-// In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
+// kFastRexmitDupAckThres equals to 1 means all duplicate acks are caused by
+// packet loss. This is true for flow-level ECMP, which is the common case. When
+// the network supports adaptive routing, duplicate acks may be caused by
+// adaptive routing. In this case, kFastRexmitDupAckThres should be set to a
+// value greater than 0.
 static constexpr std::size_t kFastRexmitDupAckThres = 16;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
@@ -163,10 +171,10 @@ static constexpr bool kConstRTO = false;
 static constexpr double kRTOUSec = 1000; // 1ms
 // kConstRTO == false: Minimum retransmission timeout in microseconds.
 static constexpr double kMinRTOUsec = 1000; // 1ms
-static constexpr uint32_t kRTORTT = 5;     // RTO = kRTORTT RTTs
+static constexpr uint32_t kRTORTT = 5;      // RTO = kRTORTT RTTs
 
 // Slow timer (periodic processing) interval in microseconds.
-static constexpr size_t kSlowTimerIntervalUs = 1000;  // 1ms
+static constexpr size_t kSlowTimerIntervalUs = 1000; // 1ms
 
 /// Debugging and testing.
 // Disable hardware timestamp.

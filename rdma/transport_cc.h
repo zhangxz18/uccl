@@ -8,9 +8,9 @@
 #include <string>
 #include <unordered_map>
 
-#include "util.h"
 #include "timely.h"
 #include "timing_wheel.h"
+#include "util.h"
 
 namespace uccl {
 namespace swift {
@@ -29,17 +29,17 @@ struct Pcb {
     static constexpr std::size_t kInitialCwnd = 256;
     static constexpr std::size_t kSackBitmapBucketSize = sizeof(uint64_t) * 8;
     static constexpr std::size_t kRtoMaxRexmitConsectutiveAllowed = 32;
-    static constexpr int kRtoExpireThresInTicks = 3;  // in slow timer ticks.
+    static constexpr int kRtoExpireThresInTicks = 3; // in slow timer ticks.
     static constexpr int kRtoDisabled = -1;
-    Pcb()
-        : timely(freq_ghz, kLinkBandwidth) {}
+    Pcb() : timely(freq_ghz, kLinkBandwidth) {}
 
     Timely timely;
 
     void mutliplicative_decrease() { ecn_alpha /= 2; }
     void additive_increase() {
         ecn_alpha += 0.1;
-        if (ecn_alpha > 1.0) ecn_alpha = 1.0;
+        if (ecn_alpha > 1.0)
+            ecn_alpha = 1.0;
     }
 
     UINT_CSN seqno() const { return snd_nxt; }
@@ -52,12 +52,14 @@ struct Pcb {
     std::string to_string() const {
         auto avg_rtt_diff = timely.get_avg_rtt_diff();
         auto rate_gbps = timely.get_rate_gbps();
-        std::string s; s.clear();
+        std::string s;
+        s.clear();
         s += "[CC] snd_nxt: " + std::to_string(snd_nxt.to_uint32()) +
              " snd_una: " + std::to_string(snd_una.to_uint32()) +
              " rcv_nxt: " + std::to_string(rcv_nxt.to_uint32()) +
-             " fast/rto rexmits: " + std::to_string(stats_fast_rexmits) + "/" + std::to_string(stats_rto_rexmits) +
-             Format(" prev_rtt: %.2lf us ", timely.get_avg_rtt()) + 
+             " fast/rto rexmits: " + std::to_string(stats_fast_rexmits) + "/" +
+             std::to_string(stats_rto_rexmits) +
+             Format(" prev_rtt: %.2lf us ", timely.get_avg_rtt()) +
              Format(" rate: %.2lf Gbps ", rate_gbps);
         return s;
     }
@@ -88,7 +90,7 @@ struct Pcb {
     /************* RTO related *************/
 
     void barrier_bitmap_shift_left_one() {
-        constexpr size_t barrier_bitmap_bucket_max_idx = 
+        constexpr size_t barrier_bitmap_bucket_max_idx =
             kSackBitmapSize / kSackBitmapBucketSize - 1;
 
         for (size_t i = 0; i < barrier_bitmap_bucket_max_idx; i++) {
@@ -136,7 +138,8 @@ struct Pcb {
 
     void barrier_bitmap_bit_set(const size_t index) {
         const size_t barrier_bitmap_bucket_idx = index / kSackBitmapBucketSize;
-        const size_t barrier_bitmap_idx_in_bucket = index % kSackBitmapBucketSize;
+        const size_t barrier_bitmap_idx_in_bucket =
+            index % kSackBitmapBucketSize;
 
         LOG_IF(FATAL, index >= kSackBitmapSize)
             << "Index out of bounds: " << index;
@@ -177,18 +180,19 @@ struct Pcb {
     uint32_t base_csn{0};
 
     // For RDMA retransmission.
-    uint64_t barrier_bitmap[kSackBitmapSize / kSackBitmapBucketSize] {0};
+    uint64_t barrier_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{0};
     uint8_t barrier_bitmap_count{0};
     std::unordered_map<uint64_t, struct pending_retr_chunk> pending_retr_chunks;
     // Incremented when a bitmap is shifted left by 1.
-    // Even if increment every one microsecond, it will take 584542 years to overflow.
+    // Even if increment every one microsecond, it will take 584542 years to
+    // overflow.
     uint64_t shift_count;
     uint16_t cwnd{kInitialCwnd};
     uint16_t duplicate_acks{0};
     int rto_timer{kRtoDisabled};
     uint16_t rto_rexmits_consectutive{0};
     double ecn_alpha{1.0};
-    
+
     // Stats
     uint32_t stats_fast_rexmits{0};
     uint32_t stats_rto_rexmits{0};
@@ -202,5 +206,5 @@ struct Pcb {
     uint32_t stats_maxooo{0};
 };
 
-}  // namespace swift
-}  // namespace uccl
+} // namespace swift
+} // namespace uccl

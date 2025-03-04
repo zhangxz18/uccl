@@ -96,7 +96,8 @@ static inline int lrpc_recv(struct lrpc_chan_in *chan, lrpc_msg *msg) {
     uint64_t cmd;
 
     cmd = load_acquire(&m->cmd);
-    if ((cmd & LRPC_DONE_PARITY) != parity) return -1;
+    if ((cmd & LRPC_DONE_PARITY) != parity)
+        return -1;
     chan->recv_head++;
 
     msg->cmd = cmd & LRPC_CMD_MASK;
@@ -128,7 +129,7 @@ class LRPC {
     struct lrpc_chan_out rcore_out_;
     struct lrpc_chan_in rcore_in_;
 
-   public:
+  public:
     LRPC() {
         const int lrpc_size = sizeof(struct head_wb) * 2 +
                               sizeof(lrpc_msg) * LRPC_CHANNEL_SIZE * 2;

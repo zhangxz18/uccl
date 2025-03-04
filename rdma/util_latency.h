@@ -20,7 +20,7 @@ namespace uccl {
  * fast, but computing a statistic is slow.
  */
 class Latency {
-   public:
+  public:
     Latency() { reset(); }
 
     void reset() { memset(this, 0, sizeof(Latency)); }
@@ -42,13 +42,18 @@ class Latency {
     }
 
     /// Combine two distributions
-    Latency& operator+=(const Latency& o) {
+    Latency &operator+=(const Latency &o) {
         size_t i;
-        for (i = 0; i < 128; i++) bin0_[i] += o.bin0_[i];
-        for (i = 0; i < 128; i++) bin1_[i] += o.bin1_[i];
-        for (i = 0; i < 128; i++) bin2_[i] += o.bin2_[i];
-        for (i = 0; i < 128; i++) bin3_[i] += o.bin3_[i];
-        for (i = 0; i < 128; i++) bin4_[i] += o.bin4_[i];
+        for (i = 0; i < 128; i++)
+            bin0_[i] += o.bin0_[i];
+        for (i = 0; i < 128; i++)
+            bin1_[i] += o.bin1_[i];
+        for (i = 0; i < 128; i++)
+            bin2_[i] += o.bin2_[i];
+        for (i = 0; i < 128; i++)
+            bin3_[i] += o.bin3_[i];
+        for (i = 0; i < 128; i++)
+            bin4_[i] += o.bin4_[i];
         bin5_ += o.bin5_;
         return *this;
     }
@@ -57,11 +62,16 @@ class Latency {
     size_t count() const {
         size_t count = 0;
         size_t i;
-        for (i = 0; i < 128; i++) count += bin0_[i];
-        for (i = 0; i < 128; i++) count += bin1_[i];
-        for (i = 0; i < 128; i++) count += bin2_[i];
-        for (i = 0; i < 128; i++) count += bin3_[i];
-        for (i = 0; i < 128; i++) count += bin4_[i];
+        for (i = 0; i < 128; i++)
+            count += bin0_[i];
+        for (i = 0; i < 128; i++)
+            count += bin1_[i];
+        for (i = 0; i < 128; i++)
+            count += bin2_[i];
+        for (i = 0; i < 128; i++)
+            count += bin3_[i];
+        for (i = 0; i < 128; i++)
+            count += bin4_[i];
         count += bin5_;
         return count;
     }
@@ -70,11 +80,16 @@ class Latency {
     size_t sum() const {
         size_t sum = 0;
         size_t i;
-        for (i = 0; i < 128; i++) sum += bin0_[i] * (0 + i * 1);
-        for (i = 0; i < 128; i++) sum += bin1_[i] * (128 + i * 2);
-        for (i = 0; i < 128; i++) sum += bin2_[i] * (384 + i * 4);
-        for (i = 0; i < 128; i++) sum += bin3_[i] * (896 + i * 8);
-        for (i = 0; i < 128; i++) sum += bin4_[i] * (1920 + i * 16);
+        for (i = 0; i < 128; i++)
+            sum += bin0_[i] * (0 + i * 1);
+        for (i = 0; i < 128; i++)
+            sum += bin1_[i] * (128 + i * 2);
+        for (i = 0; i < 128; i++)
+            sum += bin2_[i] * (384 + i * 4);
+        for (i = 0; i < 128; i++)
+            sum += bin3_[i] * (896 + i * 8);
+        for (i = 0; i < 128; i++)
+            sum += bin4_[i] * (1920 + i * 16);
         sum += bin5_ * 3968;
         return sum;
     }
@@ -89,15 +104,20 @@ class Latency {
     size_t latency_min() const {
         size_t i;
         for (i = 0; i < 128; i++)
-            if (bin0_[i] != 0) return 0 + i * 1;
+            if (bin0_[i] != 0)
+                return 0 + i * 1;
         for (i = 0; i < 128; i++)
-            if (bin1_[i] != 0) return 128 + i * 2;
+            if (bin1_[i] != 0)
+                return 128 + i * 2;
         for (i = 0; i < 128; i++)
-            if (bin2_[i] != 0) return 384 + i * 4;
+            if (bin2_[i] != 0)
+                return 384 + i * 4;
         for (i = 0; i < 128; i++)
-            if (bin3_[i] != 0) return 896 + i * 8;
+            if (bin3_[i] != 0)
+                return 896 + i * 8;
         for (i = 0; i < 128; i++)
-            if (bin4_[i] != 0) return 1920 + i * 16;
+            if (bin4_[i] != 0)
+                return 1920 + i * 16;
         // if (bin5_ != 0) return 3968;
         return 3968;
     }
@@ -105,17 +125,23 @@ class Latency {
     /// Return the (approximate) max sample
     size_t latency_max() const {
         int64_t i;
-        if (bin5_ != 0) return 3968;
+        if (bin5_ != 0)
+            return 3968;
         for (i = 127; i >= 0; i--)
-            if (bin4_[i] != 0) return 1920 + static_cast<size_t>(i) * 16;
+            if (bin4_[i] != 0)
+                return 1920 + static_cast<size_t>(i) * 16;
         for (i = 127; i >= 0; i--)
-            if (bin3_[i] != 0) return 896 + static_cast<size_t>(i) * 8;
+            if (bin3_[i] != 0)
+                return 896 + static_cast<size_t>(i) * 8;
         for (i = 127; i >= 0; i--)
-            if (bin2_[i] != 0) return 384 + static_cast<size_t>(i) * 4;
+            if (bin2_[i] != 0)
+                return 384 + static_cast<size_t>(i) * 4;
         for (i = 127; i >= 0; i--)
-            if (bin1_[i] != 0) return 128 + static_cast<size_t>(i) * 2;
+            if (bin1_[i] != 0)
+                return 128 + static_cast<size_t>(i) * 2;
         for (i = 127; i >= 0; i--)
-            if (bin0_[i] != 0) return 0 + static_cast<size_t>(i) * 1;
+            if (bin0_[i] != 0)
+                return 0 + static_cast<size_t>(i) * 1;
         return 0;
     }
 
@@ -124,7 +150,8 @@ class Latency {
         size_t i;
         int64_t thres = static_cast<int64_t>(p * static_cast<double>(count()));
         for (i = 0; i < 128; i++)
-            if ((thres -= static_cast<int64_t>(bin0_[i])) < 0) return 0 + i * 1;
+            if ((thres -= static_cast<int64_t>(bin0_[i])) < 0)
+                return 0 + i * 1;
         for (i = 0; i < 128; i++)
             if ((thres -= static_cast<int64_t>(bin1_[i])) < 0)
                 return 128 + i * 2;
@@ -141,7 +168,7 @@ class Latency {
     }
 
     /// Print the distribution to a file
-    void print(FILE* fp) const {
+    void print(FILE *fp) const {
         size_t i;
         for (i = 0; i < 128; i++)
             if (bin0_[i] != 0)
@@ -162,10 +189,11 @@ class Latency {
             if (bin4_[i] != 0)
                 fprintf(fp, "%4" PRIu64 " %6" PRIu64 "\n", 1920 + i * 16,
                         bin4_[i]);
-        if (bin5_ != 0) fprintf(fp, "%4d %6" PRIu64 "\n", 3968, bin5_);
+        if (bin5_ != 0)
+            fprintf(fp, "%4d %6" PRIu64 "\n", 3968, bin5_);
     }
 
-   private:
+  private:
     // [0, 128) us
     size_t bin0_[128];
     // [128, 384) us
@@ -179,4 +207,4 @@ class Latency {
     // [3968, inf) us
     size_t bin5_;
 };
-}  // namespace uccl
+} // namespace uccl

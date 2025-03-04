@@ -13,11 +13,11 @@
 
 #include "transport_config.h"
 #include "util.h"
-#include "util_list.h"
 #include "util_buffpool.h"
-#include "util_latency.h"
-#include "util_timer.h"
 #include "util_jring.h"
+#include "util_latency.h"
+#include "util_list.h"
+#include "util_timer.h"
 
 namespace uccl {
 
@@ -43,14 +43,16 @@ struct PacerCreditQPWrapper {
  * @brief Buffer pool for pull packets.
  */
 class CreditChunkBuffPool : public BuffPool {
-public:
+  public:
     static constexpr uint32_t kPktSize = 4;
     static constexpr uint32_t kChunkSize = kPktSize * 1;
     static constexpr uint32_t kNumChunk = kMaxBatchCQ << 6;
     static constexpr uint32_t kCreditMRSize = kNumChunk * kChunkSize;
-    static_assert((kNumChunk & (kNumChunk - 1)) == 0, "kNumChunk must be power of 2");
+    static_assert((kNumChunk & (kNumChunk - 1)) == 0,
+                  "kNumChunk must be power of 2");
 
-    CreditChunkBuffPool(struct ibv_mr *mr) : BuffPool(kNumChunk, kChunkSize, mr) {}
+    CreditChunkBuffPool(struct ibv_mr *mr)
+        : BuffPool(kNumChunk, kChunkSize, mr) {}
 
     ~CreditChunkBuffPool() = default;
 };
@@ -103,11 +105,11 @@ struct EQDSCC {
 
     static constexpr PullQuanta INIT_PULL_QUANTA = 50;
     static constexpr uint32_t kEQDSMaxCwnd = 100000; // Bytes
-    
+
     /********************************************************************/
     /************************ Sender-side states ************************/
     /********************************************************************/
-    
+
     // Last received highest credit in PullQuanta.
     PullQuanta pull_ = INIT_PULL_QUANTA;
     PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
@@ -156,14 +158,12 @@ struct EQDSCC {
             credit_spec_ -= chunk_size;
         else
             credit_spec_ = 0;
-        
+
         return false;
     }
 
     // Called when we receiving ACK or pull packet.
-    inline void stop_speculating() {
-        in_speculating_ = false;
-    }
+    inline void stop_speculating() { in_speculating_ = false; }
 
     PullQuanta compute_pull_target(void *context, uint32_t chunk_size);
 
@@ -192,9 +192,7 @@ struct EQDSCC {
 
     /// Helper functions called by pacer ///
 
-    inline void set_fid(uint32_t fid) {
-        fid_ = fid;
-    }
+    inline void set_fid(uint32_t fid) { fid_ = fid; }
 
     inline void set_pacer_credit_qpw(struct PacerCreditQPWrapper *pc_qpw) {
         pc_qpw_ = pc_qpw;
@@ -231,15 +229,14 @@ struct EQDSCC {
 
         return idle_cumulate_credit >= quantize_floor(kEQDSMaxCwnd);
     }
-
 };
 
 class EQDSChannel {
     static constexpr uint32_t kChannelSize = 1024;
 
-public:
+  public:
     struct Msg {
-        enum Op: uint8_t {
+        enum Op : uint8_t {
             kRequestPull,
         };
         Op opcode;
@@ -247,28 +244,26 @@ public:
     };
     static_assert(sizeof(Msg) % 4 == 0, "channelMsg must be 32-bit aligned");
 
-    EQDSChannel() {
-        cmdq_ = create_ring(sizeof(Msg), kChannelSize);
-    }
+    EQDSChannel() { cmdq_ = create_ring(sizeof(Msg), kChannelSize); }
 
-    ~EQDSChannel() {
-        free(cmdq_);
-    }
+    ~EQDSChannel() { free(cmdq_); }
 
     jring_t *cmdq_;
 };
 
 class EQDS {
-public:
-
+  public:
     // How many credits to grant per pull.
     static constexpr PullQuanta kCreditPerPull = 4;
     // How many senders to grant credit per iteration.
     static constexpr uint32_t kSendersPerPull = 2;
 
-    // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8, kCreditPerPull = 4, kSendersPerPull = 4,
-    // kPacingIntervalUs ~= 5.3 us.
-    static constexpr uint64_t kPacingIntervalUs = 0.99 /* slower than line rate */ * (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 * kSendersPerPull / kLinkBandwidth;
+    // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8,
+    // kCreditPerPull = 4, kSendersPerPull = 4, kPacingIntervalUs ~= 5.3 us.
+    static constexpr uint64_t kPacingIntervalUs =
+        0.99 /* slower than line rate */ *
+        (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 *
+        kSendersPerPull / kLinkBandwidth;
 
     EQDSChannel channel_;
 
@@ -289,20 +284,21 @@ public:
 
     bool send_pull_packet(EQDSCC *eqds_cc);
 
-    // For original EQDS, it stalls the pacer when ECN ratio reaches a threshold (i.e., 10%).
-    // Here we use resort to RTT-based stall.
+    // For original EQDS, it stalls the pacer when ECN ratio reaches a threshold
+    // (i.e., 10%). Here we use resort to RTT-based stall.
     void update_cc_state(void);
 
     // [Thread-safe] Request pacer to grant credit to this flow.
-    inline void request_pull(EQDSCC *eqds_cc) {        
+    inline void request_pull(EQDSCC *eqds_cc) {
         EQDSChannel::Msg msg = {
             .opcode = EQDSChannel::Msg::Op::kRequestPull,
             .eqds_cc = eqds_cc,
         };
-        while (jring_mp_enqueue_bulk(channel_.cmdq_, &msg, 1, nullptr) != 1) {}
+        while (jring_mp_enqueue_bulk(channel_.cmdq_, &msg, 1, nullptr) != 1) {
+        }
     }
 
-    EQDS(int dev): dev_(dev), channel_() {
+    EQDS(int dev) : dev_(dev), channel_() {
 
         pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
 
@@ -314,7 +310,6 @@ public:
                 run_pacer();
             }
         });
-
     }
 
     ~EQDS() {}
@@ -325,7 +320,7 @@ public:
         pacer_th_.join();
     }
 
-private:
+  private:
     std::thread pacer_th_;
     int dev_;
 
@@ -340,5 +335,5 @@ private:
     bool shutdown_ = false;
 };
 
-}
-};
+} // namespace eqds
+}; // namespace uccl

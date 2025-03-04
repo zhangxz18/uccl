@@ -19,7 +19,7 @@
  * @file timely-sweep-params.h
  * @brief Timely parameters that need to be sweeped
  */
-static constexpr bool kPatched = true;  ///< Patch from ECN-vs-delay
+static constexpr bool kPatched = true; ///< Patch from ECN-vs-delay
 // EWMA alpha used for global CC state.
 static constexpr double kEwmaAlpha = 0.125;
 static constexpr double kBeta = 0.008;
@@ -47,29 +47,28 @@ struct timely_record_t {
 
 /// Implementation of the Timely congestion control protocol from SIGCOMM 15
 class Timely {
-   public:
+  public:
     // Debugging
     static constexpr bool kVerbose = false;
-    static constexpr bool kRecord = false;  ///< Fast-record Timely steps
-    static constexpr bool kLatencyStats =
-        false;  ///< Track per-packet RTT stats
+    static constexpr bool kRecord = false;       ///< Fast-record Timely steps
+    static constexpr bool kLatencyStats = false; ///< Track per-packet RTT stats
 
-    // Config
-    #ifdef CLOUDLAB_DEV
+// Config
+#ifdef CLOUDLAB_DEV
     static constexpr double kMinRate = 60 * 1000 * 1000;
     static constexpr double kAddRate = 60 * 1000 * 1000;
     static constexpr double kTLow = 50;
     static constexpr double kTHigh = 500;
-    #else
+#else
     static constexpr double kMinRate = 0.1 * 1000 * 1000 * 1000;
     static constexpr double kAddRate = 0.5 * 1000 * 1000 * 1000;
     static constexpr double kTLow = 35;
     static constexpr double kTHigh = 350;
-    #endif
+#endif
     static constexpr double kMinRTT = 2;
     static constexpr size_t kHaiThresh = 5;
 
-    double rate_ = 0.0;  ///< The current sending rate
+    double rate_ = 0.0; ///< The current sending rate
     size_t neg_gradient_count_ = 0;
     double prev_rtt_ = kMinRTT;
     double avg_rtt_diff_ = 0.0;
@@ -90,21 +89,21 @@ class Timely {
 
     Timely() {}
     Timely(double freq_ghz, double link_bandwidth)
-        : last_update_tsc_(rdtsc()),
-          min_rtt_tsc_(kMinRTT * freq_ghz * 1000),
-          t_low_tsc_(kTLow * freq_ghz * 1000),
-          freq_ghz_(freq_ghz),
-          link_bandwidth_(link_bandwidth),
-          create_tsc_(rdtsc()) {
-        rate_ = link_bandwidth;  // Start sending at the max rate
-        if (kRecord) record_vec_.reserve(1000000);
+        : last_update_tsc_(rdtsc()), min_rtt_tsc_(kMinRTT * freq_ghz * 1000),
+          t_low_tsc_(kTLow * freq_ghz * 1000), freq_ghz_(freq_ghz),
+          link_bandwidth_(link_bandwidth), create_tsc_(rdtsc()) {
+        rate_ = link_bandwidth; // Start sending at the max rate
+        if (kRecord)
+            record_vec_.reserve(1000000);
     }
 
     /// The w() function from the ECN-vs-delay paper by Zhu et al. (CoNEXT 16)
     static double w_func(double g) {
         assert(kPatched);
-        if (g <= -0.25) return 0;
-        if (g >= 0.25) return 1;
+        if (g <= -0.25)
+            return 0;
+        if (g >= 0.25)
+            return 1;
         return (2 * g + 0.5);
     }
 
@@ -120,7 +119,7 @@ class Timely {
      */
     void update_rate(size_t _rdtsc, size_t sample_rtt_tsc, double ewma_alpha) {
         assert(_rdtsc >= 1000000000 &&
-               _rdtsc >= last_update_tsc_);  // Sanity check
+               _rdtsc >= last_update_tsc_); // Sanity check
         static constexpr bool kCcOptTimelyBypass = true;
         if (kCcOptTimelyBypass &&
             (rate_ == link_bandwidth_ && sample_rtt_tsc <= t_low_tsc_)) {
@@ -134,7 +133,8 @@ class Timely {
         }
 
         // Sample RTT can be lower than min RTT during retransmissions
-        if (unlikely(sample_rtt_tsc < min_rtt_tsc_)) return;
+        if (unlikely(sample_rtt_tsc < min_rtt_tsc_))
+            return;
 
         // Convert the sample RTT to usec, and don't use _sample_rtt_tsc from
         // now
@@ -146,7 +146,7 @@ class Timely {
             ((1 - ewma_alpha) * avg_rtt_diff_) + (ewma_alpha * rtt_diff);
 
         double delta_factor =
-            (_rdtsc - last_update_tsc_) / min_rtt_tsc_;  // fdiv
+            (_rdtsc - last_update_tsc_) / min_rtt_tsc_; // fdiv
         delta_factor = (std::min)(delta_factor, 1.0);
 
         double ai_factor = kAddRate * delta_factor;
@@ -157,19 +157,18 @@ class Timely {
             new_rate = rate_ + ai_factor;
         } else {
             double md_factor =
-                delta_factor * kBeta;  // Scaled factor for decrease
-            double norm_grad = avg_rtt_diff_ / kMinRTT;  // Normalized gradient
+                delta_factor * kBeta; // Scaled factor for decrease
+            double norm_grad = avg_rtt_diff_ / kMinRTT; // Normalized gradient
 
             if (likely(sample_rtt <= kTHigh)) {
                 if (kPatched) {
                     double wght = w_func(norm_grad);
                     double err = (sample_rtt - kTLow) / kTLow;
                     if (kVerbose) {
-                        printf(
-                            "wght = %.4f, err = %.4f, md = x%.3f, ai = %.3f "
-                            "Gbps\n",
-                            wght, err, (1 - md_factor * wght * err),
-                            rate_to_gbps(ai_factor * (1 - wght)));
+                        printf("wght = %.4f, err = %.4f, md = x%.3f, ai = %.3f "
+                               "Gbps\n",
+                               wght, err, (1 - md_factor * wght * err),
+                               rate_to_gbps(ai_factor * (1 - wght)));
                     }
 
                     new_rate = rate_ * (1 - md_factor * wght * err) +
@@ -198,7 +197,8 @@ class Timely {
         last_update_tsc_ = _rdtsc;
 
         // Debug/stats code goes here
-        if (kLatencyStats) latency_.update(static_cast<size_t>(sample_rtt));
+        if (kLatencyStats)
+            latency_.update(static_cast<size_t>(sample_rtt));
         if (kRecord && rate_ != link_bandwidth_) {
             record_vec_.emplace_back(sample_rtt, rate_);
         }
@@ -223,14 +223,15 @@ class Timely {
 
     /// Get RTT percentile if latency stats are enabled, and reset latency stats
     double get_rtt_perc(double perc) const {
-        if (!kLatencyStats || latency_.count() == 0) return -1.0;
+        if (!kLatencyStats || latency_.count() == 0)
+            return -1.0;
         double ret = latency_.perc(perc);
         return ret;
     }
 
     void reset_rtt_stats() { latency_.reset(); }
 
-    double get_avg_rtt() const {return prev_rtt_; }
+    double get_avg_rtt() const { return prev_rtt_; }
     double get_avg_rtt_diff() const { return avg_rtt_diff_; }
     double get_rate_gbps() const { return rate_to_gbps(rate_); }
 
@@ -245,4 +246,4 @@ class Timely {
     }
 };
 
-}  // namespace uccl
+} // namespace uccl

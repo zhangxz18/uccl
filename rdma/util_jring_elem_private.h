@@ -31,9 +31,9 @@ typedef struct {
     };
 } __attribute__((aligned(16))) j_int128_t;
 
-static inline __attribute__((always_inline)) void __jring_enqueue_elems_32(
-    struct jring *r, const uint32_t size, uint32_t idx, const void *obj_table,
-    uint32_t n) {
+static inline __attribute__((always_inline)) void
+__jring_enqueue_elems_32(struct jring *r, const uint32_t size, uint32_t idx,
+                         const void *obj_table, uint32_t n) {
     unsigned int i;
     uint32_t *ring = (uint32_t *)&r[1];
     const uint32_t *obj = (const uint32_t *)obj_table;
@@ -49,30 +49,33 @@ static inline __attribute__((always_inline)) void __jring_enqueue_elems_32(
             ring[idx + 7] = obj[i + 7];
         }
         switch (n & 0x7) {
-            case 7:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 6:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 5:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 4:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 3:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 2:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 1:
-                ring[idx++] = obj[i++]; /* fallthrough */
+        case 7:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 6:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 5:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 4:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 3:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 2:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 1:
+            ring[idx++] = obj[i++]; /* fallthrough */
         }
     } else {
-        for (i = 0; idx < size; i++, idx++) ring[idx] = obj[i];
+        for (i = 0; idx < size; i++, idx++)
+            ring[idx] = obj[i];
         /* Start at the beginning */
-        for (idx = 0; i < n; i++, idx++) ring[idx] = obj[i];
+        for (idx = 0; i < n; i++, idx++)
+            ring[idx] = obj[i];
     }
 }
 
-static __attribute__((always_inline)) inline void __jring_enqueue_elems_64(
-    struct jring *r, uint32_t prod_head, const void *obj_table, uint32_t n) {
+static __attribute__((always_inline)) inline void
+__jring_enqueue_elems_64(struct jring *r, uint32_t prod_head,
+                         const void *obj_table, uint32_t n) {
     unsigned int i;
     const uint32_t size = r->size;
     uint32_t idx = prod_head & r->mask;
@@ -86,22 +89,25 @@ static __attribute__((always_inline)) inline void __jring_enqueue_elems_64(
             ring[idx + 3] = obj[i + 3];
         }
         switch (n & 0x3) {
-            case 3:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 2:
-                ring[idx++] = obj[i++]; /* fallthrough */
-            case 1:
-                ring[idx++] = obj[i++];
+        case 3:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 2:
+            ring[idx++] = obj[i++]; /* fallthrough */
+        case 1:
+            ring[idx++] = obj[i++];
         }
     } else {
-        for (i = 0; idx < size; i++, idx++) ring[idx] = obj[i];
+        for (i = 0; idx < size; i++, idx++)
+            ring[idx] = obj[i];
         /* Start at the beginning */
-        for (idx = 0; i < n; i++, idx++) ring[idx] = obj[i];
+        for (idx = 0; i < n; i++, idx++)
+            ring[idx] = obj[i];
     }
 }
 
-static inline __attribute__((always_inline)) void __jring_enqueue_elems_128(
-    struct jring *r, uint32_t prod_head, const void *obj_table, uint32_t n) {
+static inline __attribute__((always_inline)) void
+__jring_enqueue_elems_128(struct jring *r, uint32_t prod_head,
+                          const void *obj_table, uint32_t n) {
     unsigned int i;
     const uint32_t size = r->size;
     uint32_t idx = prod_head & r->mask;
@@ -111,8 +117,8 @@ static inline __attribute__((always_inline)) void __jring_enqueue_elems_128(
         for (i = 0; i < (n & ~0x1); i += 2, idx += 2)
             memcpy((void *)(ring + idx), (const void *)(obj + i), 32);
         switch (n & 0x1) {
-            case 1:
-                memcpy((void *)(ring + idx), (const void *)(obj + i), 16);
+        case 1:
+            memcpy((void *)(ring + idx), (const void *)(obj + i), 16);
         }
     } else {
         for (i = 0; idx < size; i++, idx++)
@@ -127,9 +133,9 @@ static inline __attribute__((always_inline)) void __jring_enqueue_elems_128(
  * Placed here since identical code needed in both
  * single and multi producer enqueue functions.
  */
-static inline __attribute__((always_inline)) void __jring_enqueue_elems(
-    struct jring *r, uint32_t prod_head, const void *obj_table, uint32_t esize,
-    uint32_t num) {
+static inline __attribute__((always_inline)) void
+__jring_enqueue_elems(struct jring *r, uint32_t prod_head,
+                      const void *obj_table, uint32_t esize, uint32_t num) {
     /* 8B and 16B copies implemented individually to retain
      * the current performance.
      */
@@ -150,9 +156,9 @@ static inline __attribute__((always_inline)) void __jring_enqueue_elems(
     }
 }
 
-static inline __attribute__((always_inline)) void __jring_dequeue_elems_32(
-    struct jring *r, const uint32_t size, uint32_t idx, void *obj_table,
-    uint32_t n) {
+static inline __attribute__((always_inline)) void
+__jring_dequeue_elems_32(struct jring *r, const uint32_t size, uint32_t idx,
+                         void *obj_table, uint32_t n) {
     unsigned int i;
     uint32_t *ring = (uint32_t *)&r[1];
     uint32_t *obj = (uint32_t *)obj_table;
@@ -168,30 +174,33 @@ static inline __attribute__((always_inline)) void __jring_dequeue_elems_32(
             obj[i + 7] = ring[idx + 7];
         }
         switch (n & 0x7) {
-            case 7:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 6:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 5:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 4:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 3:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 2:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 1:
-                obj[i++] = ring[idx++]; /* fallthrough */
+        case 7:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 6:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 5:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 4:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 3:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 2:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 1:
+            obj[i++] = ring[idx++]; /* fallthrough */
         }
     } else {
-        for (i = 0; idx < size; i++, idx++) obj[i] = ring[idx];
+        for (i = 0; idx < size; i++, idx++)
+            obj[i] = ring[idx];
         /* Start at the beginning */
-        for (idx = 0; i < n; i++, idx++) obj[i] = ring[idx];
+        for (idx = 0; i < n; i++, idx++)
+            obj[i] = ring[idx];
     }
 }
 
-static inline __attribute__((always_inline)) void __jring_dequeue_elems_64(
-    struct jring *r, uint32_t prod_head, void *obj_table, uint32_t n) {
+static inline __attribute__((always_inline)) void
+__jring_dequeue_elems_64(struct jring *r, uint32_t prod_head, void *obj_table,
+                         uint32_t n) {
     unsigned int i;
     const uint32_t size = r->size;
     uint32_t idx = prod_head & r->mask;
@@ -205,22 +214,25 @@ static inline __attribute__((always_inline)) void __jring_dequeue_elems_64(
             obj[i + 3] = ring[idx + 3];
         }
         switch (n & 0x3) {
-            case 3:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 2:
-                obj[i++] = ring[idx++]; /* fallthrough */
-            case 1:
-                obj[i++] = ring[idx++]; /* fallthrough */
+        case 3:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 2:
+            obj[i++] = ring[idx++]; /* fallthrough */
+        case 1:
+            obj[i++] = ring[idx++]; /* fallthrough */
         }
     } else {
-        for (i = 0; idx < size; i++, idx++) obj[i] = ring[idx];
+        for (i = 0; idx < size; i++, idx++)
+            obj[i] = ring[idx];
         /* Start at the beginning */
-        for (idx = 0; i < n; i++, idx++) obj[i] = ring[idx];
+        for (idx = 0; i < n; i++, idx++)
+            obj[i] = ring[idx];
     }
 }
 
-static inline __attribute__((always_inline)) void __jring_dequeue_elems_128(
-    struct jring *r, uint32_t prod_head, void *obj_table, uint32_t n) {
+static inline __attribute__((always_inline)) void
+__jring_dequeue_elems_128(struct jring *r, uint32_t prod_head, void *obj_table,
+                          uint32_t n) {
     unsigned int i;
     const uint32_t size = r->size;
     uint32_t idx = prod_head & r->mask;
@@ -230,8 +242,8 @@ static inline __attribute__((always_inline)) void __jring_dequeue_elems_128(
         for (i = 0; i < (n & ~0x1); i += 2, idx += 2)
             memcpy((void *)(obj + i), (void *)(ring + idx), 32);
         switch (n & 0x1) {
-            case 1:
-                memcpy((void *)(obj + i), (void *)(ring + idx), 16);
+        case 1:
+            memcpy((void *)(obj + i), (void *)(ring + idx), 16);
         }
     } else {
         for (i = 0; idx < size; i++, idx++)
@@ -246,9 +258,9 @@ static inline __attribute__((always_inline)) void __jring_dequeue_elems_128(
  * Placed here since identical code needed in both
  * single and multi producer enqueue functions.
  */
-static inline __attribute__((always_inline)) void __jring_dequeue_elems(
-    struct jring *r, uint32_t cons_head, void *obj_table, uint32_t esize,
-    uint32_t num) {
+static inline __attribute__((always_inline)) void
+__jring_dequeue_elems(struct jring *r, uint32_t cons_head, void *obj_table,
+                      uint32_t esize, uint32_t num) {
     /* 8B and 16B copies implemented individually to retain
      * the current performance.
      */
@@ -269,16 +281,19 @@ static inline __attribute__((always_inline)) void __jring_dequeue_elems(
     }
 }
 
-static inline __attribute__((always_inline)) void __jring_wait_until_equal_32(
-    volatile uint32_t *addr, uint32_t expected, int memorder) {
+static inline __attribute__((always_inline)) void
+__jring_wait_until_equal_32(volatile uint32_t *addr, uint32_t expected,
+                            int memorder) {
     // assert(memorder == __ATOMIC_ACQUIRE || memorder == __ATOMIC_RELAXED);
 
-    while (__atomic_load_n(addr, memorder) != expected) machnet_pause();
+    while (__atomic_load_n(addr, memorder) != expected)
+        machnet_pause();
 }
 
-static inline __attribute__((always_inline)) void __jring_update_tail(
-    struct jring_headtail *ht, uint32_t old_val, uint32_t new_val,
-    uint32_t single, __attribute__((unused)) uint32_t enqueue) {
+static inline __attribute__((always_inline)) void
+__jring_update_tail(struct jring_headtail *ht, uint32_t old_val,
+                    uint32_t new_val, uint32_t single,
+                    __attribute__((unused)) uint32_t enqueue) {
     /*
      * If there are other enqueues/dequeues in progress that preceded us,
      * we need to wait for them to complete
@@ -345,7 +360,8 @@ __jring_move_prod_head(struct jring *r, unsigned int is_sp, unsigned int n,
         if (unlikely(n > *free_entries))
             n = (behavior == JRING_QUEUE_FIXED) ? 0 : *free_entries;
 
-        if (n == 0) return 0;
+        if (n == 0)
+            return 0;
 
         *new_head = *old_head + n;
         if (is_sp)
@@ -412,9 +428,11 @@ __jring_move_cons_head(struct jring *r, int is_sc, unsigned int n,
         *entries = (prod_tail - *old_head);
 
         /* Set the actual entries for dequeue */
-        if (n > *entries) n = (behavior == JRING_QUEUE_FIXED) ? 0 : *entries;
+        if (n > *entries)
+            n = (behavior == JRING_QUEUE_FIXED) ? 0 : *entries;
 
-        if (unlikely(n == 0)) return 0;
+        if (unlikely(n == 0))
+            return 0;
 
         *new_head = *old_head + n;
         if (is_sc)
@@ -462,13 +480,15 @@ __jring_do_enqueue_elem(struct jring *r, const void *obj_table,
 
     n = __jring_move_prod_head(r, is_sp, n, behavior, &prod_head, &prod_next,
                                &free_entries);
-    if (n == 0) goto end;
+    if (n == 0)
+        goto end;
 
     __jring_enqueue_elems(r, prod_head, obj_table, esize, n);
 
     __jring_update_tail(&r->prod, prod_head, prod_next, is_sp, 1);
 end:
-    if (free_space != NULL) *free_space = free_entries - n;
+    if (free_space != NULL)
+        *free_space = free_entries - n;
     return n;
 }
 
@@ -505,14 +525,16 @@ __jring_do_dequeue_elem(struct jring *r, void *obj_table, unsigned int esize,
 
     n = __jring_move_cons_head(r, (int)is_sc, n, behavior, &cons_head,
                                &cons_next, &entries);
-    if (n == 0) goto end;
+    if (n == 0)
+        goto end;
 
     __jring_dequeue_elems(r, cons_head, obj_table, esize, n);
 
     __jring_update_tail(&r->cons, cons_head, cons_next, is_sc, 0);
 
 end:
-    if (available != NULL) *available = entries - n;
+    if (available != NULL)
+        *available = entries - n;
     return n;
 }
 
