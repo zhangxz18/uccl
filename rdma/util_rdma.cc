@@ -1691,10 +1691,6 @@ void RDMAContext::rx_barrier(struct list_head *ack_list)
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[0] += chunk_len;
 
-    if (*msg_size == received_bytes[0]) {
-        // TODO: Support out-of-order message delivery.
-    }
-
     if (!last_chunk) {
         req = nullptr;
     }
@@ -1804,12 +1800,7 @@ void RDMAContext::rx_retr_chunk(struct list_head *ack_list)
         auto *msg_size = &req->ureq->recv.elems[0].size;
         uint32_t *received_bytes = req->received_bytes;
         received_bytes[0] += chunk_len;
-    
-        if (*msg_size == received_bytes[0]) {
-            // TODO: Support out-of-order message delivery.
-        }
-    
-    
+
         if (!last_chunk) {
             req = nullptr;
         }
@@ -1932,10 +1923,6 @@ void RDMAContext::receiverCC_rx_chunk(struct list_head *ack_list)
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[0] += byte_len;
 
-    if (*msg_size == received_bytes[0]) {
-        // TODO: Support out-of-order message delivery.
-    }
-
     if (!last_chunk) {
         req = nullptr;
     }
@@ -2037,10 +2024,6 @@ void RDMAContext::senderCC_rx_chunk(struct list_head *ack_list)
     auto *msg_size = &req->ureq->recv.elems[0].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[0] += byte_len;
-
-    if (*msg_size == received_bytes[0]) {
-        // TODO: Support out-of-order message delivery.
-    }
 
     if (!last_chunk) {
         req = nullptr;
