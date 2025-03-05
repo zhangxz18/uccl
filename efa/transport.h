@@ -773,6 +773,7 @@ class Endpoint {
     Endpoint();
     ~Endpoint();
 
+    std::mutex listen_mu_;
     std::vector<uint16_t> listen_port_vec_;
     std::vector<int> listen_fd_vec_;
 

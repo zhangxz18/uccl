@@ -1194,7 +1194,7 @@ void UcclEngine::handle_rto() {
 
 void UcclEngine::process_ctl_reqs() {
     Channel::CtrlMsg ctrl_work;
-    if (Channel::dequeue_sc(channel_->ctrl_task_q_, &ctrl_work)) {
+    while (Channel::dequeue_sc(channel_->ctrl_task_q_, &ctrl_work)) {
         switch (ctrl_work.opcode) {
             case Channel::CtrlMsg::Op::kInstallFlow:
                 handle_install_flow_on_engine(ctrl_work);
@@ -1395,6 +1395,7 @@ std::tuple<uint16_t, int> Endpoint::uccl_listen() {
     DCHECK(!listen(listen_fd, 128)) << "ERROR: listen";
     LOG(INFO) << "[Endpoint] server ready, listening on port " << listen_port;
 
+    std::lock_guard<std::mutex> lock(listen_mu_);
     listen_port_vec_.push_back(listen_port);
     listen_fd_vec_.push_back(listen_fd);
 
@@ -1773,7 +1774,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     // Wait until the flow has been installed on the engine.
     {
         std::unique_lock<std::mutex> lock(poll_ctx->mu);
-        poll_ctx->cv.wait(lock, [poll_ctx] { return poll_ctx->done.load(); });
+        poll_ctx->cv.wait(lock, [&poll_ctx] { return poll_ctx->done.load(); });
     }
     delete poll_ctx;
 
