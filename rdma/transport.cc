@@ -197,6 +197,11 @@ void UcclRDMAEngine::rc_handle_completion(void) {
         // Poll the CQ for data path QPs.
         work += it.second->poll_rc_cq();
 
+        if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
+            work += it.second->poll_credit_cq();
+            it.second->check_credit_rq(!work);
+        }
+
         // Foce check when there is no work.
         it.second->check_srq(!work);
     }

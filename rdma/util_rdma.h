@@ -125,45 +125,6 @@ class CtrlChunkBuffPool : public BuffPool {
     ~CtrlChunkBuffPool() = default;
 };
 
-class IMMDataRC {
-  public:
-    // High--------------------32bit----------------------Low
-    //  |***Reserved***|  NCHUNK  |  CSN  |  RID  |  MID  |
-    //       3bit          10bit     8bit    8bit    3bit
-    constexpr static int kMID = 0;
-    constexpr static int kRID = 3;
-    constexpr static int kCSN = 11;
-    constexpr static int kNCHUNK = kCSN + UINT_CSN_BIT;
-
-    IMMDataRC(uint32_t imm_data) : imm_data_(imm_data) {}
-    ~IMMDataRC() = default;
-
-    inline uint32_t GetNCHUNK(void) { return (imm_data_ >> kNCHUNK) & 0x3FF; }
-
-    inline uint32_t GetCSN(void) { return (imm_data_ >> kCSN) & UINT_CSN_MASK; }
-
-    inline uint32_t GetRID(void) { return (imm_data_ >> kRID) & 0xFF; }
-
-    inline uint32_t GetMID(void) { return (imm_data_ >> kMID) & 0x7; }
-
-    inline void SetNCHUNK(uint32_t nchunk) {
-        imm_data_ |= (nchunk & 0x3FF) << kNCHUNK;
-    }
-
-    inline void SetCSN(uint32_t psn) {
-        imm_data_ |= (psn & UINT_CSN_MASK) << kCSN;
-    }
-
-    inline void SetRID(uint32_t rid) { imm_data_ |= (rid & 0xFF) << kRID; }
-
-    inline void SetMID(uint32_t mid) { imm_data_ |= (mid & 0x7) << kMID; }
-
-    inline uint32_t GetImmData(void) { return imm_data_; }
-
-  private:
-    uint32_t imm_data_;
-};
-
 class IMMData {
   public:
     // HINT: Indicates whether the last chunk of a message.
@@ -461,6 +422,12 @@ class TXTracking {
         return unacked_chunks_.front();
     }
 
+    std::pair<uint64_t, uint32_t>
+    ack_rc_transmitted_chunks(void *subflow_context, RDMAContext *rdma_ctx,
+                              UINT_CSN csn, uint64_t now,
+                              uint32_t *outstanding_bytes,
+                              uint32_t *engine_outstanding_bytes);
+
     uint64_t ack_transmitted_chunks(void *subflow_context,
                                     RDMAContext *rdma_ctx,
                                     uint32_t num_acked_chunks, uint64_t t5,
@@ -523,13 +490,13 @@ class SubUcclFlow {
 
     // Protocol Control Block.
     PCB pcb;
-    
+
     // Chunks received but not yet received the corresponding barrier.
     std::unordered_map<uint64_t, struct pending_retr_chunk> pending_retr_chunks;
-    
+
     // Whether RTO is armed for the flow.
     bool rto_armed = false;
-    
+
     // Whether this flow has pending retransmission chunks for no credits.
     bool in_rtx = false;
 
@@ -574,7 +541,7 @@ struct __attribute__((packed)) UcclSackHdr {
     be64_t remote_queueing;   // t_ack_sent (SW) - t_remote_nic_rx (HW)
     be64_t sack_bitmap[kSackBitmapSize /
                        PCB::kSackBitmapBucketSize]; // Bitmap of the
-                                                           // SACKs received.
+                                                    // SACKs received.
 };
 
 /**
@@ -1033,7 +1000,7 @@ class RDMAContext {
 
     void rc_rx_ack(void);
 
-    void rc_rx_chunk(void);
+    void rc_rx_data(void);
 
     std::string to_string();
 
@@ -1080,6 +1047,7 @@ class EQDSRDMAContext : public RDMAContext {
     void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {
         auto *imm = reinterpret_cast<IMMDataEQDS *>(imm_data);
         if (subflow->pcb.eqds_cc.handle_pull_target(imm->GetTarget())) {
+            VLOG(5) << "Request pull for new target: " << (uint32_t)imm->GetTarget();
             eqds_->request_pull(&subflow->pcb.eqds_cc);
         }
     }
@@ -1094,8 +1062,8 @@ class EQDSRDMAContext : public RDMAContext {
             return false;
         }
         // Re-compute pull target.
-        auto pull_target =
-            subflow->pcb.eqds_cc.compute_pull_target(subflow, wr_ex->sge.length);
+        auto pull_target = subflow->pcb.eqds_cc.compute_pull_target(
+            subflow, wr_ex->sge.length);
         auto imm_data = IMMDataEQDS(ntohl(wr_ex->wr.imm_data));
         imm_data.SetTarget(pull_target);
         wr_ex->wr.imm_data = htonl(imm_data.GetImmData());
@@ -1119,6 +1087,7 @@ class EQDSRDMAContext : public RDMAContext {
                          eqds::PullQuanta pullno) override {
         subflow->pcb.eqds_cc.stop_speculating();
 
+        VLOG(5) << "Received credit: " << (uint32_t)pullno;
         if (subflow->pcb.eqds_cc.handle_pull(pullno)) {
             // TODO: trigger transmission for this subflow immediately.
         }
