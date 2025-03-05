@@ -52,8 +52,11 @@ static_assert(kNumEngines >= NUM_DEVICES * 2,
               "and one for receive to avoid deadlocks.");
 
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
-// Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
-static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
+// Using the middle 48 cores to avoid conflicting with nccl proxy service (that
+// uses the first 24 and last 24 cores as specified in p4d-24xl-topo.xml). The
+// two numbers are for numa 0 and 1 separately. GPU 0-3 + NIC 0-1 are on numa 0,
+// and GPU 4-7 + NIC 2-3 are on numa 1.
+static uint32_t ENGINE_CPU_START[2] = {NUM_CPUS / 4, NUM_CPUS / 2};
 static const uint16_t BASE_PORT = 10000;
 static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;

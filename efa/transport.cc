@@ -1303,9 +1303,16 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         auto engine_future = engine_promise.get_future();
         engine_futures.emplace_back(std::move(engine_future));
 
+        // GPU 0-3 on numa 0, and GPU 4-7 on numa 1.
+        auto engine_cpu_start = ENGINE_CPU_START[gpu_idx / 4];
+        // Total possible GPUs: 8 * kNumEnginesPerVdev, separated into two
+        // numas.
+        auto engine_th_cpuid =
+            engine_cpu_start + i % (8 * kNumEnginesPerVdev / 2);
+
         // Spawning a new thread to init engine and run the engine loop.
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
-            [this, i, engine_th_cpuid = ENGINE_CPU_START + i,
+            [this, i, engine_th_cpuid,
              engine_promise = std::move(engine_promise),
              engine = std::move(engine)]() mutable {
                 pin_thread_to_cpu(engine_th_cpuid);
@@ -1332,9 +1339,13 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
 #ifndef EMULATE_RC_ZC
     // Creating copy thread for each engine.
     for (int i = 0; i < kNumEngines; i++) {
+        auto gpu_idx = get_gpu_idx_by_engine_idx(i);
+        auto engine_cpu_start = ENGINE_CPU_START[gpu_idx / 4];
+        auto copy_th_cpuid = engine_cpu_start + kNumEngines / 2 +
+                             i % (8 * kNumEnginesPerVdev / 2);
+
         copy_th_vec_.emplace_back(std::make_unique<std::thread>(
-            [this, i, engine = engines[i],
-             copy_th_cpuid = ENGINE_CPU_START + kNumEngines + i]() {
+            [this, i, engine = engines[i], copy_th_cpuid]() {
                 pin_thread_to_cpu(copy_th_cpuid);
                 LOG(INFO) << "[Copy] thread " << i << " running on CPU "
                           << copy_th_cpuid;
