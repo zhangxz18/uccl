@@ -12,8 +12,9 @@ cuda_memcpy
 cuda_memcpy_async
 cuda_persist_kernel
 cuda_memcpy_gpu
+cuda_concurrent
+cuda_greenctx
 efa_sge_mr
 efa_shared_cp_ibverbs
 efa_shared_cp_libfabric
 efa_load_latency
-cuda_concurrent

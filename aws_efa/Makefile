@@ -5,7 +5,7 @@
 XDP_TARGETS  := af_xdp_kern af_xdp_kern_efa
 USER_TARGETS := af_xdp_user af_xdp_user_efa
 CUDA_HOME:=/usr/local/cuda
-CXXFLAGS = -I /opt/amazon/efa/include -L /opt/amazon/efa/lib -I$(CUDA_HOME)/include -L ${CUDA_HOME}/lib64 -lfabric -libverbs -lefa -lcudart -lpthread
+CXXFLAGS = -I /opt/amazon/efa/include -L /opt/amazon/efa/lib -I$(CUDA_HOME)/include -L ${CUDA_HOME}/lib64 -lfabric -libverbs -lefa -lcudart -lpthread -lcuda
 
 all: fi efa cuda
 
@@ -42,7 +42,7 @@ efa_sge_mr: efa_sge_mr.cc
 efa_load_latency: efa_load_latency.cc
 	g++ -O3 -g efa_load_latency.cc -o efa_load_latency $(CXXFLAGS)
 
-CUDA_BIN = cuda_event cuda_memcpy cuda_memcpy_async cuda_persist_kernel cuda_memcpy_gpu cuda_concurrent
+CUDA_BIN = cuda_event cuda_memcpy cuda_memcpy_async cuda_persist_kernel cuda_memcpy_gpu cuda_concurrent cuda_greenctx
 cuda: $(CUDA_BIN)
 
 cuda_event: cuda_event.cu
@@ -62,6 +62,9 @@ cuda_memcpy_gpu: cuda_memcpy_gpu.cu
 
 cuda_concurrent: cuda_concurrent.cu
 	nvcc -O3 -g cuda_concurrent.cu -o cuda_concurrent $(CXXFLAGS) -std=c++11
+
+cuda_greenctx: cuda_greenctx.cu
+	nvcc -O3 -g cuda_greenctx.cu -o cuda_greenctx $(CXXFLAGS) -std=c++11
 
 clean:
 	rm $(FI_BIN) $(EFA_BIN) $(CUDA_BIN)

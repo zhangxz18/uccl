@@ -129,13 +129,14 @@ int main() {
                                              m_bufrdy2, DSIZE, ITERS);
     cudaCheckErrors("kernel launch fail");
 
-    // cudaStream_t streame;
-    // cudaStreamCreate(&streame);
-    // cudaCheckErrors("cudaStreamCreate fail");
-    // emptykernel<<<nblock, nTPB, 0, streame>>>();
-    // cudaCheckErrors("kernel launch fail");
-    // cudaStreamSynchronize(streame);
-    // cudaCheckErrors("cudaStreamSync fail");
+    cudaStream_t streame;
+    cudaStreamCreate(&streame);
+    cudaCheckErrors("cudaStreamCreate fail");
+    int cnt = 0;
+    while (cnt++ < 1000) emptykernel<<<nblock, nTPB, 0, streame>>>();
+    cudaCheckErrors("kernel launch fail");
+    cudaStreamSynchronize(streame);
+    cudaCheckErrors("cudaStreamSync fail");
 
     volatile int *bufrdy;
     int *hbuf, *dbuf;
