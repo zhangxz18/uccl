@@ -1243,13 +1243,14 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
     }
 }
 
-std::string UcclEngine::status_to_string() {
+std::string UcclEngine::status_to_string(bool abbrev) {
     std::string s;
     int cnt = 0;
     s += Format("\n\tEngine %d active flows %lu:", local_engine_idx_,
                 active_flows_map_.size());
     for (auto [flow_id, flow] : active_flows_map_) s += Format(" %lu", flow_id);
     s += socket_->to_string();
+    if (abbrev) return s;
 
     for (auto [flow_id, flow] : active_flows_map_) {
         std::string arrow = flow->is_sender_ ? "->" : "<-";
@@ -1259,12 +1260,10 @@ std::string UcclEngine::status_to_string() {
                     flow->remote_engine_idx_);
         s += flow->to_string();
         cnt++;
-        // if (cnt == 2) break;
+        if (cnt == 2) break;
     }
     if (cnt < active_flows_map_.size())
         s += Format("\n\t\t... %d more flows", active_flows_map_.size() - cnt);
-    if (s.empty())
-        s += Format("\n\tEngine %d No active flows", local_engine_idx_);
     return s;
 }
 
@@ -1293,7 +1292,7 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         auto socket_idx = i;
 
         std::string local_ip_str;
-        auto ret = util_efa_get_ip_from_dev_idx(dev_idx, &local_ip_str);
+        auto ret = util_efa_get_ip_from_dev_idx(0, &local_ip_str);
         CHECK_EQ(ret, 0) << "Failed to get IP address from dev idx 0";
 
         // Creating engines sequentially to have inorder QPNs.
@@ -1382,23 +1381,24 @@ std::tuple<uint16_t, int> Endpoint::uccl_listen() {
                       sizeof(int)) >= 0)
         << "ERROR: setsockopt SO_REUSEADDR fails";
 
+    auto listen_port = listen_port_cur_.fetch_add(1);
+
     struct sockaddr_in serv_addr;
     bzero((char *)&serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(listen_port_cur_);
+    serv_addr.sin_port = htons(listen_port);
     DCHECK(bind(listen_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >=
            0)
         << "ERROR: binding";
 
     DCHECK(!listen(listen_fd, 128)) << "ERROR: listen";
-    LOG(INFO) << "[Endpoint] server ready, listening on port "
-              << listen_port_cur_;
+    LOG(INFO) << "[Endpoint] server ready, listening on port " << listen_port;
 
-    listen_port_vec_.push_back(listen_port_cur_);
+    listen_port_vec_.push_back(listen_port);
     listen_fd_vec_.push_back(listen_fd);
 
-    return {listen_port_cur_++, listen_fd};
+    return {listen_port, listen_fd};
 }
 
 ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
@@ -1419,13 +1419,12 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
     server = gethostbyname(remote_ip.c_str());
     DCHECK(server) << "uccl_connect: gethostbyname()";
 
-    // Force the socket to bind to the local IP address.
-    sockaddr_in localaddr = {0};
-    localaddr.sin_family = AF_INET;
-    auto *factory_dev = EFAFactory::GetEFADevice(local_pdev);
-    localaddr.sin_addr.s_addr = str_to_ip(factory_dev->local_ip_str.c_str());
-    ret = bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
-    DCHECK(ret == 0) << "uccl_connect: bind()";
+    // sockaddr_in localaddr = {0};
+    // localaddr.sin_family = AF_INET;
+    // auto *factory_dev = EFAFactory::GetEFADevice(local_pdev);
+    // localaddr.sin_addr.s_addr = str_to_ip(factory_dev->local_ip_str.c_str());
+    // ret = bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
+    // DCHECK(ret == 0) << "uccl_connect: bind()";
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = str_to_ip(remote_ip.c_str());
@@ -1439,8 +1438,7 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
     }
 
     LOG(INFO) << "[Endpoint] connected to <" << remote_ip << ", " << remote_vdev
-              << ">:" << kBootstrapPort + remote_vdev << " bootstrap_fd "
-              << bootstrap_fd;
+              << ">:" << listen_port << " bootstrap_fd " << bootstrap_fd;
 
     fcntl(bootstrap_fd, F_SETFL, O_NONBLOCK);
     int flag = 1;
@@ -1821,9 +1819,8 @@ void Endpoint::stats_thread_fn() {
         std::string s;
         s += "\n[Uccl Engine] ";
         for (auto &engine : engine_vec_) {
-            s += engine->status_to_string();
+            s += engine->status_to_string(cnt >= 1);
             cnt++;
-            // if (++cnt == 4) break;
         }
         if (cnt < engine_vec_.size())
             s += Format("\n\t... %d more engines", engine_vec_.size() - cnt);

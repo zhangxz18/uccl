@@ -206,7 +206,10 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
     DCHECK(pkt_hdr_mr_ != nullptr) << "ibv_reg_mr failed";
     pkt_hdr_pool_ = new PktHdrBuffPool(pkt_hdr_mr_);
 
-    auto ret = cudaSetDevice(gpu_idx);
+    auto old_gpu_idx = 0;
+    auto ret = cudaGetDevice(&old_gpu_idx);
+    CHECK(ret == cudaSuccess) << "cudaGetDevice failed ";
+    ret = cudaSetDevice(gpu_idx);
     CHECK(ret == cudaSuccess) << "cudaSetDevice failed ";
 
     // Allocate memory for packet data.
@@ -255,7 +258,7 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
         post_recv_wrs_for_ctrl(kMaxSendRecvWrForCtrl, i);
     }
 
-    ret = cudaSetDevice(0);
+    ret = cudaSetDevice(old_gpu_idx);
     CHECK(ret == cudaSuccess) << "cudaSetDevice failed ";
 }
 
@@ -759,27 +762,25 @@ std::string EFASocket::to_string() {
         "%u, unpolled tx pkts: %u, fill queue entries: %u",
         pkt_hdr_pool_->avail_slots(), pkt_data_pool_->avail_slots(),
         frame_desc_pool_->avail_slots(), send_queue_wrs_, recv_queue_wrs_);
-    if (socket_idx_ == 0) {
-        auto now = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                           now - last_stat_)
-                           .count();
-        last_stat_ = now;
+    auto now = std::chrono::high_resolution_clock::now();
+    auto elapsed =
+        std::chrono::duration_cast<std::chrono::microseconds>(now - last_stat_)
+            .count();
+    last_stat_ = now;
 
-        auto out_packets_rate = (double)out_packets_.load() / elapsed;
-        auto out_bytes_rate = (double)out_bytes_.load() / elapsed / 1000 * 8;
-        auto in_packets_rate = (double)in_packets_.load() / elapsed;
-        auto in_bytes_rate = (double)in_bytes_.load() / elapsed / 1000 * 8;
-        out_packets_ = 0;
-        out_bytes_ = 0;
-        in_packets_ = 0;
-        in_bytes_ = 0;
+    auto out_packets_rate = (double)out_packets_.load() / elapsed;
+    auto out_bytes_rate = (double)out_bytes_.load() / elapsed / 1000 * 8;
+    auto in_packets_rate = (double)in_packets_.load() / elapsed;
+    auto in_bytes_rate = (double)in_bytes_.load() / elapsed / 1000 * 8;
+    out_packets_ = 0;
+    out_bytes_ = 0;
+    in_packets_ = 0;
+    in_bytes_ = 0;
 
-        s += Format(
-            "\n\t\t      total in: %lf Mpps, %lf Gbps; total out: %lf "
-            "Mpps, %lf Gbps",
-            in_packets_rate, in_bytes_rate, out_packets_rate, out_bytes_rate);
-    }
+    s += Format(
+        "\n\t\t      total in: %lf Mpps, %lf Gbps; total out: %lf "
+        "Mpps, %lf Gbps",
+        in_packets_rate, in_bytes_rate, out_packets_rate, out_bytes_rate);
     return s;
 }
 

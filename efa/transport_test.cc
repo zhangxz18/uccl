@@ -90,6 +90,7 @@ int main(int argc, char* argv[]) {
         ConnID conn_id, conn_id2;
         ConnID conn_id_vec[kMaxArraySize];
         int remote_vdevs[kMaxArraySize];
+        std::string remote_ip[kMaxArraySize];
 
         for (int i = 0; i < kMaxArraySize; i++) ep.uccl_listen();
 
@@ -107,13 +108,13 @@ int main(int argc, char* argv[]) {
         } else if (test_type == kBiMq) {
             conn_id_vec[0] = conn_id;
             for (int i = 1; i < kNumVdevices; i++) {
-                std::string remote_ip;
                 if (i % 2 == 0)
                     conn_id_vec[i] = ep.uccl_connect(i, i, FLAGS_serverip,
                                                      ep.listen_port_vec_[i]);
                 else
-                    conn_id_vec[i] = ep.uccl_accept(
-                        i, &remote_vdevs[i], remote_ip, ep.listen_fd_vec_[i]);
+                    conn_id_vec[i] =
+                        ep.uccl_accept(i, &remote_vdevs[i], remote_ip[i],
+                                       ep.listen_fd_vec_[i]);
             }
         }
 
@@ -272,13 +273,14 @@ int main(int argc, char* argv[]) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
                         auto async_start = poll_ctx->timestamp;
-                        auto engine_idx = poll_ctx->engine_idx;
+                        auto vdev_idx =
+                            poll_ctx->engine_idx / kNumEnginesPerVdev;
                         if (ep.uccl_poll_once(poll_ctx)) {
                             rtts.push_back(
                                 to_usec(rdtsc() - async_start, freq_ghz));
                             sent_bytes += send_len;
                             i++;
-                            inflight_msgs[engine_idx]--;
+                            inflight_msgs[vdev_idx]--;
                         } else {
                             poll_ctxs.push_back(poll_ctx);
                         }
@@ -305,14 +307,15 @@ int main(int argc, char* argv[]) {
                     for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
                         auto async_start = poll_ctx->timestamp;
-                        auto engine_idx = poll_ctx->engine_idx;
+                        auto vdev_idx =
+                            poll_ctx->engine_idx / kNumEnginesPerVdev;
                         poll_ctxs.pop_front();
                         if (ep.uccl_poll_once(poll_ctx)) {
                             rtts.push_back(
                                 to_usec(rdtsc() - async_start, freq_ghz));
                             sent_bytes += send_len;
                             i++;
-                            inflight_msgs[engine_idx]--;
+                            inflight_msgs[vdev_idx]--;
                         } else {
                             poll_ctxs.push_back(poll_ctx);
                         }
@@ -537,9 +540,10 @@ int main(int argc, char* argv[]) {
                     for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
                         poll_ctxs.pop_front();
-                        auto engine_idx = poll_ctx->engine_idx;
+                        auto vdev_idx =
+                            poll_ctx->engine_idx / kNumEnginesPerVdev;
                         if (ep.uccl_poll_once(poll_ctx)) {
-                            inflight_msgs[engine_idx]--;
+                            inflight_msgs[vdev_idx]--;
                             i++;
                         } else {
                             poll_ctxs.push_back(poll_ctx);
@@ -564,10 +568,11 @@ int main(int argc, char* argv[]) {
                     auto inflights = poll_ctxs.size();
                     for (int j = 0; j < inflights; j++) {
                         auto poll_ctx = poll_ctxs.front();
-                        auto engine_idx = poll_ctx->engine_idx;
+                        auto vdev_idx =
+                            poll_ctx->engine_idx / kNumEnginesPerVdev;
                         poll_ctxs.pop_front();
                         if (ep.uccl_poll_once(poll_ctx)) {
-                            inflight_msgs[engine_idx]--;
+                            inflight_msgs[vdev_idx]--;
                             i++;
                         } else {
                             poll_ctxs.push_back(poll_ctx);

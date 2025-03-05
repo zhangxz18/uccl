@@ -203,7 +203,7 @@ struct TimelyCtl {
                                    void *msgbuf) {
         // auto rate = timely_.rate_;
         // auto rate = timely.link_bandwidth_;
-        auto rate = Timely::gbps_to_rate(50);
+        auto rate = Timely::gbps_to_rate(100);
         timely_pace_packet_with_rate(ref_tsc, pkt_size, msgbuf, rate);
     }
 

@@ -534,10 +534,10 @@ class EFASocket {
     uint32_t ctrl_send_queue_wrs_ = 0;
 
     std::chrono::time_point<std::chrono::high_resolution_clock> last_stat_;
-    inline static std::atomic<uint64_t> out_packets_ = 0;
-    inline static std::atomic<uint64_t> out_bytes_ = 0;
-    inline static std::atomic<uint64_t> in_packets_ = 0;
-    inline static std::atomic<uint64_t> in_bytes_ = 0;
+    std::atomic<uint64_t> out_packets_ = 0;
+    std::atomic<uint64_t> out_bytes_ = 0;
+    std::atomic<uint64_t> in_packets_ = 0;
+    std::atomic<uint64_t> in_bytes_ = 0;
 
     friend class EFAFactory;
 };

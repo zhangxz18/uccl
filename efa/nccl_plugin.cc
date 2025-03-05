@@ -37,7 +37,7 @@ class UcclRequestBuffPool : public BuffPool {
     ~UcclRequestBuffPool() = default;
 };
 
-std::shared_ptr<Endpoint> ep;
+Endpoint *ep;
 
 enum ConnState { kConnInit = 0, kConnConnecting, kConnConnected };
 
@@ -102,8 +102,10 @@ struct UcclSendComm {
 };
 
 ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
+    google::InitGoogleLogging("UCCL");
+    google::InstallFailureSignalHandler();
     // FLAGS_v = 4;
-    ep = std::make_shared<Endpoint>();
+    ep = new Endpoint();
     return ncclSuccess;
 }
 
@@ -131,7 +133,7 @@ ncclResult_t pluginGetProperties(int vdev, ncclNetProperties_v8_t *props) {
     auto factory_dev = EFAFactory::GetEFADevice(pdev);
 
     int vc_int = vdev % 2;
-    auto vc_str = std::to_string(vc_int);
+    auto vc_str = "_" + std::to_string(vc_int);
     const char *vc_suffix = vc_str.c_str();
 
     char *vc_name = new char[40];
@@ -147,8 +149,9 @@ ncclResult_t pluginGetProperties(int vdev, ncclNetProperties_v8_t *props) {
     strcat(props->pciPath, vc_suffix);
 
     // Only used to detect NICs with multiple PCI attachments.
-    props->guid = factory_dev->dev_attr.sys_image_guid + vc_int;
-    LOG(INFO) << "pluginGetProperties dev " << vdev << " guid " << props->guid;
+    props->guid = factory_dev->dev_attr.sys_image_guid + vdev;
+    LOG(INFO) << "pluginGetProperties dev " << vdev << " guid " << props->guid
+              << " name " << props->name << " pciPath " << props->pciPath;
 
     props->ptrSupport = NCCL_PTR_HOST;
     if (factory_dev->dma_buf_support)
@@ -249,8 +252,9 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
     }
 
     if (*sendComm) {
-        printf("Connected to %s/%d on vdev: %d, %lu\n", remote_ip_str.c_str(),
-               handle->remote_vdev, vdev, scomm->base.conn_id.flow_id);
+        LOG(INFO) << Format("Connected to %s/%d on vdev %d with flow_id %lu\n",
+                            remote_ip_str.c_str(), handle->remote_vdev, vdev,
+                            scomm->base.conn_id.flow_id);
     }
 
     return ncclSuccess;
@@ -301,9 +305,9 @@ ncclResult_t pluginAccept(void *listenComm, void **recvComm,
     }
 
     if (*recvComm) {
-        printf("Accepted from %s/%d on vdev: %d, %lu\n",
-               rcomm->remote_ip_str.c_str(), rcomm->remote_vdev, lcomm->vdev,
-               rcomm->base.conn_id.flow_id);
+        LOG(INFO) << Format("Accepted from %s/%d on vdev %d with flow_id %lu\n",
+                            rcomm->remote_ip_str.c_str(), rcomm->remote_vdev,
+                            lcomm->vdev, rcomm->base.conn_id.flow_id);
     }
 
     return ncclSuccess;
@@ -349,7 +353,7 @@ ncclResult_t pluginDeregMr(void *collComm, void *mhandle) {
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     ep->uccl_deregmr((struct Mhandle *)mhandle);
     LOG(INFO) << "pluginDeregMr, " << base->conn_id.flow_id;
-    if (--reg_cnt == 0) ep.reset();
+    if (--reg_cnt == 0) delete ep;
     return ncclSuccess;
 }
 
