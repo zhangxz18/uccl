@@ -34,6 +34,8 @@ void launchScatteredMemcpyAsync(uint32_t num_copies, const copy_param_t *params,
 // 0.56 us for pollScatteredMemcpy.
 int pollScatteredMemcpy(cudaStream_t stream);
 
+void launchPersistentScatteredMemcpy(int iterations, cudaStream_t streamk);
+
 #ifdef __cplusplus
 }
 #endif

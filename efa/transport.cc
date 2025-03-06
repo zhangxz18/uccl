@@ -285,6 +285,10 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 }
 
 void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
+    // see
+    // https://forums.developer.nvidia.com/t/persistent-kernel-does-not-work-properly-on-some-gpus/264019/5
+    CHECK(GetEnvVar("CUDA_MODULE_LOADING") == "EAGER");
+
     copy_param_t *copy_param = new copy_param_t();
     cudaStream_t copy_stream;
 
@@ -293,6 +297,17 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
     ret = cudaStreamCreate(&copy_stream);
     CHECK(ret == cudaSuccess) << "Failed to create cuda stream";
 
+    // Note: these two macro conflicts with each other.
+
+    // Test if this would block NCCL kernel launching---sadly, it does.
+    // #define TEST_CONCURRENT
+    // Test if empty copy would incur high perf overhead---it does not.
+    // #define TEST_EMPTY_COPY
+
+#ifdef TEST_CONCURRENT
+    launchPersistentScatteredMemcpy(4, copy_stream);
+#endif
+
     // Temporarily buffering Msg that are being copied by the cuda kernel.
     std::deque<Channel::Msg> ongoing_copy_queue;
     auto *socket = engine->socket_;
@@ -300,9 +315,11 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
 
     while (!engine->shutdown_) {
         if (!ongoing_copy_queue.empty()) {
-            // TODO(yang): using multiple streams to fine-grained poll when each
-            // kernel finishes; however, this consumes more resources.
+#if defined(TEST_CONCURRENT) || defined(TEST_EMPTY_COPY)
+            if (true) {
+#else
             if (pollScatteredMemcpy(copy_stream)) {
+#endif
                 while (!ongoing_copy_queue.empty()) {
                     auto &rx_copy_done_work = ongoing_copy_queue.back();
                     auto poll_ctx = rx_copy_done_work.poll_ctx;
@@ -376,7 +393,9 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
         }
 
         if (copy_idx) {
+#if !defined(TEST_CONCURRENT) && !defined(TEST_EMPTY_COPY)
             launchScatteredMemcpyAsync(copy_idx, copy_param, copy_stream);
+#endif
         }
     }
 }
@@ -1341,7 +1360,9 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
     for (int i = 0; i < kNumEngines; i++) {
         auto gpu_idx = get_gpu_idx_by_engine_idx(i);
         auto engine_cpu_start = ENGINE_CPU_START[gpu_idx / 4];
-        auto copy_th_cpuid = engine_cpu_start + kNumEngines / 2 +
+        auto num_engines_per_numa =
+            gpu_idx / 4 == 0 ? kNumEngines : kNumEngines / 2;
+        auto copy_th_cpuid = engine_cpu_start + num_engines_per_numa +
                              i % (8 * kNumEnginesPerVdev / 2);
 
         copy_th_vec_.emplace_back(std::make_unique<std::thread>(

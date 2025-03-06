@@ -8,7 +8,7 @@
 #define REXMIT_SET_PATH
 // #define USE_SRD
 // #define USE_SRD_FOR_CTRL
-#define EMULATE_RC_ZC
+// #define EMULATE_RC_ZC
 // #define RTT_STATS
 // #define POLLCTX_DEBUG
 
@@ -22,7 +22,7 @@ static constexpr CCType kCCType = CCType::kTimely;
 
 #define P4D
 
-static const uint32_t kNumVdevices = 8;        // # of vEFA/GPUs.
+static const uint32_t kNumVdevices = 1;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
