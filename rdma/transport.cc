@@ -204,10 +204,6 @@ void UcclRDMAEngine::rc_handle_completion(void) {
 
         // Foce check when there is no work.
         it.second->check_srq(!work);
-        
-        // This is a very corner case that the receiver engine hasn't allocated 
-        // a request in time, but the message has already arrived.
-        it.second->consume_pending_rc_rx_data();
     }
 }
 

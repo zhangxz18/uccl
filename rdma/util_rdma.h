@@ -743,8 +743,6 @@ class RDMAContext {
     struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
     uint32_t post_srq_cnt_ = 0;
 
-    std::deque<std::pair<IMMData, uint32_t>> pending_rc_rx_data_;
-
     // When the Retr chunk pool exhausts, we can't post enough WQEs to the Retr
     // RQ.
     uint32_t fill_retr_rq_cnt_ = 0;
@@ -824,8 +822,6 @@ class RDMAContext {
     }
     int sender_poll_rc_cq(void);
     int receiver_poll_rc_cq(void);
-
-    void consume_pending_rc_rx_data(void);
 
     /**
      * @brief Poll the completion queue for the Ctrl QP.
