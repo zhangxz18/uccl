@@ -154,6 +154,8 @@ static constexpr uint32_t kMAXCumBytes = kMAXCumWQE * kChunkSize;
 static constexpr uint32_t kMAXRXOOO = 8;
 
 // Sack bitmap size in bits.
+// Note that kSackBitmapSize must be <= half the maximum value of UINT_CSN.
+// E.g., UINT_CSN = 8bit, kSacBitmapSize <= 128.
 static constexpr std::size_t kSackBitmapSize = 64 << 1;
 // kFastRexmitDupAckThres equals to 1 means all duplicate acks are caused by
 // packet loss. This is true for flow-level ECMP, which is the common case. When
