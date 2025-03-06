@@ -2023,6 +2023,8 @@ void RDMAContext::rc_rx_data(void) {
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is "
                    "invalid for this chunk. Dropping.";
+        // FIXME: For RC, we can't drop the chunk.
+        CHECK(0);
         subflow->pcb.stats_chunk_drop++;
         return;
     }
