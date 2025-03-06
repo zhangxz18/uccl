@@ -1996,15 +1996,56 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
     }
 }
 
+void RDMAContext::consume_pending_rc_rx_data(void)
+{
+    uint32_t budget = std::min(pending_rc_rx_data_.size(), (size_t)4);
+    while (!pending_rc_rx_data_.empty() && budget--) {
+        auto &chunk = pending_rc_rx_data_.front();
+        auto imm_data = chunk.first;
+        auto byte_len = chunk.second;
+
+        auto last_chunk = imm_data.GetHINT();
+        auto csn = imm_data.GetCSN();
+        auto rid = imm_data.GetRID();
+        auto fid = imm_data.GetFID();
+
+        pending_rc_rx_data_.pop_front();
+
+        DCHECK(fid < MAX_FLOW);
+        auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
+        auto *subflow = flow->sub_flows_[engine_offset_];
+
+        // Locate request by rid
+        auto req = get_recvreq_by_id(rid);
+        if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
+            // For RC, we can't drop the chunk.
+            pending_rc_rx_data_.push_back({imm_data, byte_len});
+            return;
+        }
+
+        // There is no need to check CSN as RC provides reliable delivery.
+
+        auto *msg_size = &req->ureq->recv.elems[0].size;
+        uint32_t *received_bytes = req->received_bytes;
+        received_bytes[0] += byte_len;
+
+        if (!last_chunk) {
+            req = nullptr;
+        }
+
+        subflow->rxtracking.ready_csn_.insert({csn, req});
+
+        try_update_csn(subflow);
+
+        EventOnRxData(subflow, &imm_data);
+    }
+}
+
 void RDMAContext::rc_rx_data(void) {
     VLOG(5) << "rc_rx_data";
     auto cq_ex = recv_cq_ex_;
-    auto now = rdtsc();
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
-    auto qp_num = ibv_wc_read_qp_num(cq_ex);
-    auto qpidx = qpn2idx_[qp_num];
-    auto qpw = &dp_qps_[qpidx];
 
     auto last_chunk = imm_data.GetHINT();
     auto csn = imm_data.GetCSN();
@@ -2016,16 +2057,15 @@ void RDMAContext::rc_rx_data(void) {
     auto *subflow = flow->sub_flows_[engine_offset_];
 
     VLOG(5) << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
-            << csn << ", " << rid << ", " << fid << " from QP#" << qpidx;
+            << csn << ", " << rid << ", " << fid;
 
     // Locate request by rid
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is "
                    "invalid for this chunk. Dropping.";
-        // FIXME: For RC, we can't drop the chunk.
-        CHECK(0);
-        subflow->pcb.stats_chunk_drop++;
+        // For RC, we can't drop the chunk.
+        pending_rc_rx_data_.push_back({imm_data, byte_len});
         return;
     }
 
@@ -2054,7 +2094,6 @@ void RDMAContext::rx_data(struct list_head *ack_list) {
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
     auto qp_num = ibv_wc_read_qp_num(cq_ex);
     auto qpidx = qpn2idx_[qp_num];
-    auto qpw = &dp_qps_[qpidx];
 
     auto last_chunk = imm_data.GetHINT();
     auto csn = imm_data.GetCSN();
