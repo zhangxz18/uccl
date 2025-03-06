@@ -287,6 +287,7 @@ struct ucclRequest {
             uint32_t rkey;
             uint32_t rid;
             uint32_t sent_offset;
+            uint32_t acked_bytes; // RC only.
         } send;
     };
 };

@@ -1147,6 +1147,7 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle,
         ureq->n = nmsg;
         ureq->send.rid = slots[i].rid;
         ureq->send.sent_offset = 0;
+        ureq->send.acked_bytes = 0;
         if (slots[i].engine_offset == RDMAEndpoint::RC_MAGIC)
             ureq->rc_or_flush_done = false;
         else {

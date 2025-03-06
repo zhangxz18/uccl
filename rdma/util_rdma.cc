@@ -631,9 +631,10 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
         // Track this chunk.
         subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(),
                                         imm_data.GetHINT());
-        // Arm timer for TX
-        if constexpr (!kUSERC)
+        if constexpr (!kUSERC) {
+            // Arm timer for TX
             arm_timer_for_flow(subflow);
+        }
 
         *sent_offset += chunk_size;
 
@@ -716,11 +717,12 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
             DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
             // Track this chunk.
-            subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(),
-                                            imm_data.GetHINT());
-            // Arm timer for TX
-            if constexpr (!kUSERC)
+            subflow->txtracking.track_chunk(
+                ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
+            if constexpr (!kUSERC) {
+                // Arm timer for TX
                 arm_timer_for_flow(subflow);
+            }
 
             *sent_offset += chunk_size;
 
@@ -811,11 +813,13 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
                 // Track this chunk.
-                subflow->txtracking.track_chunk(
-                    ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
-                // Arm timer for TX
-                if constexpr (!kUSERC)
+                subflow->txtracking.track_chunk(ureq, wr_ex, now,
+                                                imm_data.GetCSN(),
+                                                imm_data.GetHINT());
+                if constexpr (!kUSERC) {
+                    // Arm timer for TX
                     arm_timer_for_flow(subflow);
+                }
 
                 VLOG(5) << "Directly sent " << chunk_size << " bytes to QP#"
                         << qpidx;
@@ -848,7 +852,8 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
          chunk++) {
         if (chunk->csn == csn.to_uint32()) {
             // We find it!
-            if (chunk->last_chunk) {
+            chunk->ureq->send.acked_bytes += chunk->wr_ex->sge.length;
+            if (chunk->ureq->send.acked_bytes == chunk->ureq->send.data_len) {
                 auto poll_ctx = chunk->ureq->poll_ctx;
                 // Wakeup app thread waiting one endpoint
                 uccl_wakeup(poll_ctx);
@@ -1654,15 +1659,17 @@ void RDMAContext::burst_timing_wheel(void) {
         auto ret = ibv_post_send(qpw->qp, &wr_ex->wr, &bad_wr);
         DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
-        // Track this chunk.
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
+        // Track this chunk.
         subflow->txtracking.track_chunk(wr_ex->ureq, wr_ex, rdtsc(),
-                                        imm_data.GetCSN(), imm_data.GetHINT());
+                                        imm_data.GetCSN(),
+                                        imm_data.GetHINT());
+        if constexpr (!kUSERC) {
+            // Arm timer for TX
+            arm_timer_for_flow(subflow);
+        }
         VLOG(5) << "Burst send: csn: " << imm_data.GetCSN() << " with QP#"
                 << wr_ex->qpidx;
-        // Arm timer for TX
-        if constexpr (!kUSERC)
-            arm_timer_for_flow(subflow);
 
         subflow->in_wheel_cnt_--;
 
@@ -2018,7 +2025,7 @@ void RDMAContext::rc_rx_data(void) {
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         LOG(ERROR) << "Can't find corresponding request or this request is "
-                   "invalid for this chunk. Dropping.";
+                      "invalid for this chunk. Dropping.";
         // This should never happen.
         CHECK(0);
         return;
