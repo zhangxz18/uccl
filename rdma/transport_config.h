@@ -156,18 +156,18 @@ static constexpr std::size_t kSackBitmapSize = 64 << 1;
 // the network supports adaptive routing, duplicate acks may be caused by
 // adaptive routing. In this case, kFastRexmitDupAckThres should be set to a
 // value greater than 0.
-static constexpr std::size_t kFastRexmitDupAckThres = 16;
+static constexpr std::size_t kFastRexmitDupAckThres = 4;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static constexpr uint32_t kRTOAbortThreshold = 50;
 
 // Constant/Dynamic RTO.
-static constexpr bool kConstRTO = false;
+static constexpr bool kConstRTO = true;
 // kConstRTO == true: Constant retransmission timeout in microseconds.
-static constexpr double kRTOUSec = 1000; // 1ms
+static constexpr double kRTOUSec = 100; // 100us
 // kConstRTO == false: Minimum retransmission timeout in microseconds.
-static constexpr double kMinRTOUsec = 1000; // 1ms
-static constexpr uint32_t kRTORTT = 5;      // RTO = kRTORTT RTTs
+static constexpr double kMinRTOUsec = 100; // 100us
+static constexpr uint32_t kRTORTT = 4;      // RTO = kRTORTT RTTs
 
 // Slow timer (periodic processing) interval in microseconds.
 static constexpr size_t kSlowTimerIntervalUs = 1000; // 1ms
