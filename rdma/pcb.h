@@ -45,9 +45,6 @@ struct PCB {
     // Timestamp of the last received data.
     uint64_t t_remote_nic_rx{0};
 
-    // Barrier bitmap for solving RDMA WRITE semantic issue when retransmitting
-    uint64_t barrier_bitmap[kSackBitmapSize / kSackBitmapBucketSize]{0};
-    uint8_t barrier_bitmap_count{0};
     // Incremented when a bitmap is shifted left by 1.
     // Even if increment every one microsecond, it will take 584542 years to
     // overflow.
@@ -80,31 +77,6 @@ struct PCB {
     void advance_rcv_nxt(UINT_CSN n) { rcv_nxt += n; }
     void advance_rcv_nxt() { rcv_nxt += 1; }
 
-    void barrier_bitmap_shift_left_one() {
-        constexpr size_t barrier_bitmap_bucket_max_idx =
-            kSackBitmapSize / kSackBitmapBucketSize - 1;
-
-        for (size_t i = 0; i < barrier_bitmap_bucket_max_idx; i++) {
-            // Shift the current each bucket to the left by 1 and take the most
-            // significant bit from the next bucket
-            uint64_t &barrier_bitmap_left_bucket = barrier_bitmap[i];
-            const uint64_t barrier_bitmap_right_bucket = barrier_bitmap[i + 1];
-
-            barrier_bitmap_left_bucket = (barrier_bitmap_left_bucket >> 1) |
-                                         (barrier_bitmap_right_bucket << 63);
-        }
-
-        // Special handling for the right most bucket
-        uint64_t &barrier_bitmap_right_most_bucket =
-            barrier_bitmap[barrier_bitmap_bucket_max_idx];
-        barrier_bitmap_right_most_bucket >>= 1;
-
-        barrier_bitmap_count--;
-
-        // Increment the shift count.
-        shift_count++;
-    }
-
     void sack_bitmap_shift_left_one() {
         constexpr size_t sack_bitmap_bucket_max_idx =
             kSackBitmapSize / kSackBitmapBucketSize - 1;
@@ -125,20 +97,6 @@ struct PCB {
         sack_bitmap_right_most_bucket >>= 1;
 
         sack_bitmap_count--;
-    }
-
-    void barrier_bitmap_bit_set(const size_t index) {
-        const size_t barrier_bitmap_bucket_idx = index / kSackBitmapBucketSize;
-        const size_t barrier_bitmap_idx_in_bucket =
-            index % kSackBitmapBucketSize;
-
-        LOG_IF(FATAL, index >= kSackBitmapSize)
-            << "Index out of bounds: " << index;
-
-        barrier_bitmap[barrier_bitmap_bucket_idx] |=
-            (1ULL << barrier_bitmap_idx_in_bucket);
-
-        barrier_bitmap_count++;
     }
 
     void sack_bitmap_bit_set(const size_t index) {

@@ -76,7 +76,7 @@ enum ReceiverCCA {
     RECEIVER_CCA_EQDS,
 };
 static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
-static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_EQDS;
+static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_NONE;
 static_assert(kSenderCCA != SENDER_CCA_NONE ||
                   kReceiverCCA != RECEIVER_CCA_NONE,
               "At least one of the sender and receiver must have a congestion "
@@ -85,9 +85,9 @@ static_assert(kSenderCCA != SENDER_CCA_NONE ||
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 
 // Use RC rather than UC.
-static constexpr bool kUSERC = true;
+static constexpr bool kUSERC = false;
 constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
-                                2 * (kUSERC ? 0 : 1) /* Ctrl QP, Retr QP */;
+                                (kUSERC ? 0 : 1) /* Ctrl QP */;
 // Per-path cwnd or global cwnd.
 static constexpr bool kPPCwnd = false;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
@@ -101,9 +101,9 @@ static constexpr uint32_t kMAXUseCacheQPSize = 8192;
 static constexpr uint32_t kBypassTimingWheelThres = 9000;
 
 // Limit the per-flow outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesPerFlow = 9 * kChunkSize;
+static constexpr uint32_t kMaxOutstandingBytesPerFlow = 8 * kChunkSize;
 // Limit the outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesEngine = 24 * kChunkSize;
+static constexpr uint32_t kMaxOutstandingBytesEngine = 16 * kChunkSize;
 // # of Tx work handled in one loop.
 static constexpr uint32_t kMaxTxWork = 2;
 // Maximum number of Tx bytes to be transmitted in one loop.
@@ -126,19 +126,13 @@ static constexpr uint32_t kCQMODPeriod = 100;
 // Maximum size of inline data.
 static constexpr uint32_t kMaxInline = 512;
 // Maximum number of SGEs in one WQE.
-static constexpr uint32_t kMaxSge = 1;
+static constexpr uint32_t kMaxSge = 2;
 // Maximum number of outstanding receive messages in one recv request.
 static constexpr uint32_t kMaxRecv = 1;
 // Maximum number of outstanding receive requests in one engine.
 static constexpr uint32_t kMaxReq = 128;
 // Maximum number of WQEs in SRQ (Shared Receive Queue).
-static constexpr uint32_t kMaxSRQ = 64 * kMaxReq * 2;
-// Maximum number of WQEs in Retr RQ.
-static constexpr uint32_t kMaxRetr = 64;
-// Maximum number of outstanding retransmission chunks on all QPs.
-static constexpr uint32_t kMaxInflightRetrChunks = 32;
-static_assert(kMaxInflightRetrChunks <= kMaxRetr,
-              "kMaxInflightRetrChunks <= kMaxRetr");
+static constexpr uint32_t kMaxSRQ = 16 * kMaxReq;
 // Maximum number of chunks can be transmitted from timing wheel in one loop.
 static constexpr uint32_t kMaxBurstTW = 8;
 // Posting recv WQEs every kPostRQThreshold.

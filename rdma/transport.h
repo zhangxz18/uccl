@@ -148,7 +148,6 @@ class UcclRDMAEngine {
      * @brief Handling all completion events for all RDMAContexts, including:
      * High-priority completion events from all Ctrl QPs.
      * Datapath completion events from all data path QPs.
-     * Occasinal completion events from all Retr CQs.
      */
     void uc_handle_completion(void);
 
@@ -618,7 +617,6 @@ class UcclFlow {
         qp_init_attr.cap.max_recv_wr = kMaxReq * kMaxRecv;
         qp_init_attr.cap.max_send_sge = kMaxSge;
         qp_init_attr.cap.max_recv_sge = kMaxSge;
-        qp_init_attr.cap.max_send_sge = kMaxSge;
         qp_init_attr.cap.max_inline_data = 0;
 
         struct ibv_qp_attr qpAttr;

@@ -247,7 +247,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
         qp_init_attr.qp_type = IBV_QPT_UC;
     else
         qp_init_attr.qp_type = IBV_QPT_RC;
-    qp_init_attr.cap.max_send_wr = 2 * kMaxReq * kMaxRecv + kMaxRetr;
+    qp_init_attr.cap.max_send_wr = 2 * kMaxReq * kMaxRecv;
     qp_init_attr.cap.max_send_sge = kMaxSge;
     qp_init_attr.cap.max_inline_data = 0;
     qp_init_attr.srq = srq_;
@@ -355,13 +355,18 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
         // Initialize Control packet buffer pool.
         ctrl_chunk_pool_.emplace(ctrl_mr_);
 
-        // Create Retr QP, CQ and MR.
-        retr_local_psn_ = BASE_PSN;
-        util_rdma_create_qp(context_, &retr_qp_, IBV_QPT_UC, true, false,
-                            (struct ibv_cq **)&retr_cq_ex_, false, kCQSize, pd_,
-                            &retr_mr_, nullptr, kRetrMRSize,
-                            RetrChunkBuffPool::kNumChunk,
-                            RetrChunkBuffPool::kNumChunk, 2, 1);
+        // Create Retr hdr/chunk MR.
+        void *retr_mr_addr = mmap(
+            nullptr, kRetrMRSize,
+            PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if (retr_mr_addr == MAP_FAILED)
+            throw std::runtime_error("mmap failed");
+        retr_mr_ = ibv_reg_mr(
+            pd_, retr_mr_addr, kRetrMRSize,
+            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        if (retr_mr_ == nullptr)
+            throw std::runtime_error("ibv_reg_mr failed");
+
         void *retr_hdr =
             mmap(nullptr, RetrHdrBuffPool::kNumHdr * RetrHdrBuffPool::kHdrSize,
                  PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
@@ -396,28 +401,6 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
                 wr.num_sge = 1;
                 struct ibv_recv_wr *bad_wr;
                 if (ibv_post_recv(ctrl_qp_, &wr, &bad_wr))
-                    throw std::runtime_error("ibv_post_recv failed");
-            }
-        }
-
-        // Populate recv work requestrs on Retr QP for consuming retransmission
-        // chunks.
-        {
-            struct ibv_sge sge;
-            for (int i = 0; i < kMaxRetr; i++) {
-                uint64_t chunk_addr;
-                if (retr_chunk_pool_->alloc_buff(&chunk_addr))
-                    throw std::runtime_error(
-                        "Failed to allocate buffer for retransmission chunk");
-                sge.addr = chunk_addr;
-                sge.length = RetrChunkBuffPool::kRetrChunkSize;
-                sge.lkey = retr_chunk_pool_->get_lkey();
-                wr.wr_id = chunk_addr;
-                wr.next = nullptr;
-                wr.sg_list = &sge;
-                wr.num_sge = 1;
-                struct ibv_recv_wr *bad_wr;
-                if (ibv_post_recv(retr_qp_, &wr, &bad_wr))
                     throw std::runtime_error("ibv_post_recv failed");
             }
         }
@@ -461,6 +444,20 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
     // Populate recv work requests to SRQ for consuming immediate data.
     for (int i = 0; i < kMaxSRQ; i++) {
         struct ibv_recv_wr *bad_wr;
+        struct ibv_sge sge;
+        if constexpr (!kUSERC) {
+            uint64_t chunk_addr;
+            if (retr_chunk_pool_->alloc_buff(&chunk_addr))
+                throw std::runtime_error(
+                    "Failed to allocate buffer for retransmission chunk");
+            sge.addr = chunk_addr;
+            sge.length = RetrChunkBuffPool::kRetrChunkSize;
+            sge.lkey = retr_chunk_pool_->get_lkey();
+            wr.wr_id = chunk_addr;
+            wr.next = nullptr;
+            wr.sg_list = &sge;
+            wr.num_sge = 1;
+        }
         DCHECK(ibv_post_srq_recv(srq_, &wr, &bad_wr) == 0);
     }
 
@@ -612,7 +609,10 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
 
         // We use high 8 bits of wr_id to store CSN.
         // Lower 56 bits to store subflow pointer.
-        wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
+        if constexpr (kUSERC)
+            wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
+        else
+            wr->wr_id = 0;
 
         // Select QP.
         auto qpidx = EventOnSelectPath(subflow, chunk_size);
@@ -700,7 +700,10 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
             // We use high 8 bits of wr_id to store CSN.
             // Lower 56 bits to store subflow pointer.
-            wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
+            if constexpr (kUSERC)
+                wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
+            else
+                wr->wr_id = 0;
 
             // Select QP.
             auto qpidx = select_qpidx_pot(chunk_size, subflow);
@@ -717,8 +720,8 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
             DCHECK(ibv_post_send(qpw->qp, wr, &bad_wr) == 0);
 
             // Track this chunk.
-            subflow->txtracking.track_chunk(
-                ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
+            subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(),
+                                            imm_data.GetHINT());
             if constexpr (!kUSERC) {
                 // Arm timer for TX
                 arm_timer_for_flow(subflow);
@@ -768,7 +771,10 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
         // We use high 8 bits of wr_id to store CSN.
         // Lower 56 bits to store subflow pointer.
-        wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
+        if constexpr (kUSERC)
+            wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
+        else
+            wr->wr_id = 0;
 
         {
             auto wheel = &wheel_;
@@ -813,9 +819,8 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 DCHECK(ret == 0) << pending_signal_poll_ << ", " << ret;
 
                 // Track this chunk.
-                subflow->txtracking.track_chunk(ureq, wr_ex, now,
-                                                imm_data.GetCSN(),
-                                                imm_data.GetHINT());
+                subflow->txtracking.track_chunk(
+                    ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
                 if constexpr (!kUSERC) {
                     // Arm timer for TX
                     arm_timer_for_flow(subflow);
@@ -1012,9 +1017,12 @@ int RDMAContext::receiver_poll_uc_cq(void) {
                 }
             } else {
                 DCHECK(opcode == IBV_WC_RECV);
-                DCHECK(ibv_wc_read_byte_len(cq_ex) == 0);
-                rx_barrier(&ack_list);
+                rx_rtx_data(&ack_list);
             }
+
+            auto chunk_addr = (uint64_t)cq_ex->wr_id;
+            retr_chunk_pool_->free_buff(chunk_addr);
+
             post_srq_cnt_++;
         } else {
             LOG(ERROR) << "data path CQ state error: " << cq_ex->status
@@ -1100,6 +1108,10 @@ int RDMAContext::sender_poll_uc_cq(void) {
         if (cq_ex->status != IBV_WC_SUCCESS)
             LOG(ERROR) << "data path CQ state error: " << cq_ex->status
                        << " from QP:" << ibv_wc_read_qp_num(cq_ex);
+        
+        auto retr_hdr = (uint64_t)cq_ex->wr_id;
+        if (retr_hdr) retr_hdr_pool_->free_buff(retr_hdr);
+        
         DCHECK(pending_signal_poll_ > 0);
         pending_signal_poll_--;
 
@@ -1180,8 +1192,23 @@ void RDMAContext::check_ctrl_rq(bool force) {
 }
 
 void RDMAContext::check_srq(bool force) {
+    struct ibv_sge sge[kPostRQThreshold];
     while (post_srq_cnt_ >= kPostRQThreshold) {
         struct ibv_recv_wr *bad_wr;
+
+        if constexpr (!kUSERC) {
+            for (int i = 0; i < kPostRQThreshold; i++) {
+                uint64_t chunk_addr;
+                DCHECK(retr_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+                sge[i].addr = chunk_addr;
+                sge[i].length = RetrChunkBuffPool::kRetrChunkSize;
+                sge[i].lkey = retr_chunk_pool_->get_lkey();
+                imm_wrs_[i].sg_list = &sge[i];
+                imm_wrs_[i].num_sge = 1;
+                imm_wrs_[i].wr_id = chunk_addr;
+            }
+        }
+
         DCHECK(ibv_post_srq_recv(srq_, &imm_wrs_[0], &bad_wr) == 0);
         VLOG(6) << "Posted " << kPostRQThreshold << " recv requests for SRQ";
         post_srq_cnt_ -= kPostRQThreshold;
@@ -1189,6 +1216,19 @@ void RDMAContext::check_srq(bool force) {
 
     if (force && post_srq_cnt_) {
         struct ibv_recv_wr *bad_wr;
+        if constexpr (!kUSERC) {
+            for (int i = 0; i < post_srq_cnt_; i++) {
+                uint64_t chunk_addr;
+                DCHECK(retr_chunk_pool_->alloc_buff(&chunk_addr) == 0);
+                sge[i].addr = chunk_addr;
+                sge[i].length = RetrChunkBuffPool::kRetrChunkSize;
+                sge[i].lkey = retr_chunk_pool_->get_lkey();
+                imm_wrs_[i].sg_list = &sge[i];
+                imm_wrs_[i].num_sge = 1;
+                imm_wrs_[i].wr_id = chunk_addr;
+            }
+        }
+
         imm_wrs_[post_srq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_srq_recv(srq_, &imm_wrs_[0], &bad_wr) == 0);
         VLOG(6) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
@@ -1203,48 +1243,27 @@ void RDMAContext::drain_rtx_queue(SubUcclFlow *subflow) {
 
 bool RDMAContext::try_retransmit_chunk(SubUcclFlow *subflow,
                                        struct wr_ex *wr_ex) {
-    if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
-        poll_retr_cq();
-        // Try again.
-        if (inflight_retr_chunks_ > kMaxInflightRetrChunks) {
-            /// FIXME: We should tell caller that we cannot retransmit the chunk
-            /// due to retransmission limit.
-            VLOG(5) << "Too many inflight retransmission chunks: "
-                    << inflight_retr_chunks_;
-            return false;
-        }
-    }
 
-    if (!EventOnTxRTXData(subflow, wr_ex)) {
+    if (!EventOnTxRTXData(subflow, wr_ex))
         return false;
-    }
 
     auto *lossy_qpw = &dp_qps_[wr_ex->qpidx];
-    struct ibv_send_wr barrier_wr, retr_wr, *bad_wr;
-    // Step1: Send a barrier WQE through the original lossy QP.
-    barrier_wr.sg_list = nullptr;
-    barrier_wr.num_sge = 0;
-    barrier_wr.next = nullptr;
-    barrier_wr.opcode = IBV_WR_SEND_WITH_IMM;
-    barrier_wr.send_flags = IBV_SEND_INLINE;
-    // Occasionally post a request with the IBV_SEND_SIGNALED flag.
-    if (lossy_qpw->signal_cnt_++ % kSignalInterval == 0) {
-        barrier_wr.send_flags |= IBV_SEND_SIGNALED;
-        pending_signal_poll_++;
-    }
-    barrier_wr.imm_data = wr_ex->wr.imm_data;
+    struct ibv_send_wr retr_wr, *bad_wr;
 
-    DCHECK(ibv_post_send(lossy_qpw->qp, &barrier_wr, &bad_wr) == 0);
-
-    // Step2: Use SEND/RECV for retransmission with Retr QP.
-    retr_wr = wr_ex->wr;
+    // Use SEND/RECV for retransmission through the original lossy QP.
+    memset(&retr_wr, 0, sizeof(retr_wr));
     struct ibv_sge retr_sge[2];
 
     uint64_t retr_hdr;
-    DCHECK(retr_hdr_pool_->alloc_buff(&retr_hdr) == 0);
+    
+    if (retr_hdr_pool_->alloc_buff(&retr_hdr))
+        return false;
+    
     struct retr_chunk_hdr *hdr =
         reinterpret_cast<struct retr_chunk_hdr *>(retr_hdr);
     hdr->remote_addr = wr_ex->wr.wr.rdma.remote_addr;
+    // Network byte order.
+    hdr->imm_data = wr_ex->wr.imm_data;
 
     retr_sge[0].addr = retr_hdr;
     retr_sge[0].length = sizeof(struct retr_chunk_hdr);
@@ -1255,11 +1274,14 @@ bool RDMAContext::try_retransmit_chunk(SubUcclFlow *subflow,
     retr_wr.wr_id = retr_hdr;
     retr_wr.sg_list = retr_sge;
     retr_wr.num_sge = 2;
-    retr_wr.opcode = IBV_WR_SEND_WITH_IMM;
+    retr_wr.opcode = IBV_WR_SEND;
     retr_wr.send_flags = IBV_SEND_SIGNALED;
+    retr_wr.next = nullptr;
 
-    DCHECK(ibv_post_send(retr_qp_, &retr_wr, &bad_wr) == 0);
-    inflight_retr_chunks_++;
+    pending_signal_poll_++;
+
+    int ret = ibv_post_send(lossy_qpw->qp, &retr_wr, &bad_wr);
+    DCHECK(ret == 0) << ret;
 
     VLOG(5) << "successfully retransmit chunk for QP#" << (lossy_qpw - dp_qps_)
             << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr
@@ -1423,124 +1445,6 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
     }
 }
 
-int RDMAContext::poll_retr_cq(void) {
-    auto cq_ex = retr_cq_ex_;
-    struct ibv_sge sges[kMaxBatchCQ];
-    LIST_HEAD(ack_list);
-    int cq_budget = 0;
-    int num_post_recv = 0;
-
-    struct ibv_poll_cq_attr poll_cq_attr = {};
-    if (ibv_start_poll(cq_ex, &poll_cq_attr)) {
-        // No events in Retr CQ. Try to post WQEs to Retr RQ.
-        if (fill_retr_rq_cnt_) {
-            int i;
-            for (i = 0; i < fill_retr_rq_cnt_; i++) {
-                uint64_t chunk_addr;
-                if (retr_chunk_pool_->alloc_buff(&chunk_addr)) {
-                    // Retr chunk pool exhausted. This may caused by serve
-                    // retransmission. We can't post enough recv requests for
-                    // retransmission chunks. Subsequent retransmission chunks
-                    // will be dropped until the pool is refilled.
-                    if (i)
-                        i--;
-                    break;
-                }
-                sges[i].addr = chunk_addr;
-                sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
-                sges[i].lkey = retr_chunk_pool_->get_lkey();
-                retr_wrs_[i].sg_list = &sges[i];
-                retr_wrs_[i].num_sge = 1;
-                retr_wrs_[i].wr_id = chunk_addr;
-            }
-            if (i) {
-                retr_wrs_[i - 1].next = nullptr;
-                struct ibv_recv_wr *bad_wr;
-                DCHECK(ibv_post_recv(retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
-                VLOG(5) << "Posted " << i << " recv requests for Retr QP";
-
-                // Restore
-                retr_wrs_[i - 1].next =
-                    (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
-            }
-            fill_retr_rq_cnt_ -= i;
-        }
-        return 0;
-    }
-
-    while (1) {
-        if (cq_ex->status == IBV_WC_SUCCESS) {
-            if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
-                rx_rtx_data(&ack_list);
-                num_post_recv++;
-            } else {
-                DCHECK(ibv_wc_read_opcode(cq_ex) == IBV_WC_SEND);
-                auto wr_id = cq_ex->wr_id;
-                retr_hdr_pool_->free_buff(wr_id);
-                inflight_retr_chunks_--;
-            }
-        } else {
-            LOG(ERROR) << "Retr CQ state error: " << cq_ex->status;
-        }
-
-        if (++cq_budget == kMaxBatchCQ || ibv_next_poll(cq_ex))
-            break;
-    }
-    ibv_end_poll(cq_ex);
-
-    // Send coalescing ACKs.
-    int num_ack = 0;
-    struct list_head *pos, *n;
-    uint64_t chunk_addr;
-    DCHECK(ctrl_chunk_pool_->alloc_buff(&chunk_addr) == 0);
-    list_for_each_safe(pos, n, &ack_list) {
-        auto ack_item = list_entry(pos, struct ack_item, ack_link);
-        auto subflow = ack_item->subflow;
-        craft_ack(subflow, chunk_addr, num_ack++);
-        list_del(pos);
-    }
-    flush_acks(num_ack, chunk_addr);
-    if (num_ack == 0)
-        ctrl_chunk_pool_->free_buff(chunk_addr);
-
-    // Populate recv work requests for consuming retransmission chunks.
-    if (num_post_recv) {
-        int i;
-        for (i = 0; i < num_post_recv; i++) {
-            uint64_t chunk_addr;
-            if (retr_chunk_pool_->alloc_buff(&chunk_addr)) {
-                // Retr chunk pool exhausted. This may caused by serve
-                // retransmission. We can't post enough recv requests for
-                // retransmission chunks. Subsequent retransmission chunks will
-                // be dropped until the pool is refilled.
-                if (i)
-                    i--;
-                break;
-            }
-            sges[i].addr = chunk_addr;
-            sges[i].length = RetrChunkBuffPool::kRetrChunkSize;
-            sges[i].lkey = retr_chunk_pool_->get_lkey();
-            retr_wrs_[i].sg_list = &sges[i];
-            retr_wrs_[i].num_sge = 1;
-            retr_wrs_[i].wr_id = chunk_addr;
-        }
-        if (i) {
-            retr_wrs_[i - 1].next = nullptr;
-            struct ibv_recv_wr *bad_wr;
-            DCHECK(ibv_post_recv(retr_qp_, &retr_wrs_[0], &bad_wr) == 0);
-            VLOG(5) << "Posted " << i << " recv requests for Retr QP";
-
-            // Restore
-            retr_wrs_[i - 1].next =
-                (i == kMaxBatchCQ) ? nullptr : &retr_wrs_[i];
-        }
-
-        fill_retr_rq_cnt_ += (num_post_recv - i);
-    }
-
-    return cq_budget;
-}
-
 int RDMAContext::poll_credit_cq(void) {
     uint64_t chunk_addr;
     int work = 0;
@@ -1662,8 +1566,7 @@ void RDMAContext::burst_timing_wheel(void) {
         IMMData imm_data(ntohl(wr_ex->wr.imm_data));
         // Track this chunk.
         subflow->txtracking.track_chunk(wr_ex->ureq, wr_ex, rdtsc(),
-                                        imm_data.GetCSN(),
-                                        imm_data.GetHINT());
+                                        imm_data.GetCSN(), imm_data.GetHINT());
         if constexpr (!kUSERC) {
             // Arm timer for TX
             arm_timer_for_flow(subflow);
@@ -1713,19 +1616,23 @@ void RDMAContext::try_update_csn(SubUcclFlow *subflow) {
 
         if constexpr (!kUSERC) {
             subflow->pcb.sack_bitmap_shift_left_one();
-            subflow->pcb.barrier_bitmap_shift_left_one();
         }
     }
 }
 
-void RDMAContext::rx_barrier(struct list_head *ack_list) {
-    VLOG(5) << "rx_barrier";
+void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
+    VLOG(5) << "rx_rtx_data";
     auto cq_ex = recv_cq_ex_;
+    auto now = rdtsc();
 
-    auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
-    auto qp_num = ibv_wc_read_qp_num(cq_ex);
-    auto qpidx = qpn2idx_[qp_num];
-    auto qpw = &dp_qps_[qpidx];
+    auto chunk_addr = cq_ex->wr_id;
+    auto chunk_len =
+        ibv_wc_read_byte_len(cq_ex) - sizeof(struct retr_chunk_hdr);
+
+    struct retr_chunk_hdr *hdr =
+        reinterpret_cast<struct retr_chunk_hdr *>(chunk_addr);
+
+    auto imm_data = IMMData(ntohl(hdr->imm_data));
 
     auto last_chunk = imm_data.GetHINT();
     auto csn = imm_data.GetCSN();
@@ -1736,118 +1643,63 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
     auto *subflow = flow->sub_flows_[engine_offset_];
 
-    VLOG(5) << "Receive barrier: (csn, rid, fid): " << csn << ", " << rid
-            << ", " << fid << " from QP#" << qpidx;
+    VLOG(5) << "Received retransmission chunk: (csn, rid, fid): " << csn << ", "
+            << rid << ", " << fid;
 
     // Locate request by rid
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is "
-                   "invalid for this barrier. Dropping.";
-        subflow->pcb.stats_barrier_drop++;
+                   "invalid for this retransmission chunk. Dropping.";
+        subflow->pcb.stats_retr_chunk_drop++;
         return;
     }
 
     // Compare CSN with the expected CSN.
     auto ecsn = subflow->pcb.rcv_nxt;
-
     auto distance = UINT_CSN(csn) - ecsn;
 
     if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
-        // Original chunk is already received. This barrier is invalid.
-        // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = subflow->pending_retr_chunks.find(
-            distance.to_uint32() + subflow->pcb.shift_count);
-        if (pending_retr_chunk != subflow->pending_retr_chunks.end()) {
-            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            retr_chunk_pool_->free_buff(chunk_addr);
-            subflow->pending_retr_chunks.erase(pending_retr_chunk);
-            VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
-            subflow->pcb.stats_retr_chunk_drop++;
-        }
-        subflow->pcb.stats_barrier_drop++;
+        // Original chunk is already received.
+        VLOG(5) << "Original chunk is already received. Dropping "
+                   "retransmission chunk for flow"
+                << fid;
+        subflow->pcb.stats_retr_chunk_drop++;
         return;
     }
 
     if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
-        VLOG(5) << "Barrier too far ahead. Dropping as we can't handle SACK. "
+        VLOG(5) << "Chunk too far ahead. Dropping as we can't handle SACK. "
                 << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
-        // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = subflow->pending_retr_chunks.find(
-            distance.to_uint32() + subflow->pcb.shift_count);
-        if (pending_retr_chunk != subflow->pending_retr_chunks.end()) {
-            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            retr_chunk_pool_->free_buff(chunk_addr);
-            subflow->pending_retr_chunks.erase(pending_retr_chunk);
-            VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
-            subflow->pcb.stats_retr_chunk_drop++;
-        }
-        subflow->pcb.stats_barrier_drop++;
+        subflow->pcb.stats_retr_chunk_drop++;
         return;
     }
 
     auto bitmap_bucket_idx = distance.to_uint32() / PCB::kSackBitmapBucketSize;
     auto cursor = distance.to_uint32() % PCB::kSackBitmapBucketSize;
     auto sack_bitmap = &subflow->pcb.sack_bitmap[bitmap_bucket_idx];
-    auto barrier_bitmap = &subflow->pcb.barrier_bitmap[bitmap_bucket_idx];
 
     if ((*sack_bitmap & (1ULL << cursor))) {
-        // Original chunk is already received. This barrier is invalid.
-        // Try to remove the pending retransmission chunk if exists.
-        auto pending_retr_chunk = subflow->pending_retr_chunks.find(
-            distance.to_uint32() + subflow->pcb.shift_count);
-        if (pending_retr_chunk != subflow->pending_retr_chunks.end()) {
-            auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-            retr_chunk_pool_->free_buff(chunk_addr);
-            subflow->pending_retr_chunks.erase(pending_retr_chunk);
-            VLOG(5) << "Remove pending retransmission chunk for QP#" << qpidx;
-            subflow->pcb.stats_retr_chunk_drop++;
-        }
-        subflow->pcb.stats_barrier_drop++;
+        // Original chunk is already received.
+        VLOG(5) << "Original chunk is already received. Dropping "
+                   "retransmission chunk for flow"
+                << fid;
+        subflow->pcb.stats_retr_chunk_drop++;
         return;
     }
 
-    if ((*barrier_bitmap & (1ULL << cursor))) {
-        // Duplicate barrier. This barrier is invalid.
-        VLOG(5) << "Received duplicate barrier " << csn << " from QP#" << qpidx;
-        subflow->pcb.stats_barrier_drop++;
-        return;
-    }
-
-    subflow->pcb.stats_accept_barrier++;
-
-    // This barrier is valid.
-    subflow->pcb.barrier_bitmap_bit_set(distance.to_uint32());
-
-    // Handle pending retransmission chunk waiting for this barrier (if exists).
-    auto pending_retr_chunk = subflow->pending_retr_chunks.find(
-        distance.to_uint32() + subflow->pcb.shift_count);
-    if (pending_retr_chunk == subflow->pending_retr_chunks.end()) {
-        // No pending retransmission chunk.
-        VLOG(5)
-            << "Barrier arrived without pending retransmission chunk for QP#"
-            << qpidx;
-        return;
-    }
-
-    VLOG(5) << "Barrier found a pending retransmission chunk for QP#" << qpidx;
-
-    // We found a pending retransmission chunk.
-    imm_data = IMMData(pending_retr_chunk->second.imm_data);
-    auto chunk_addr = pending_retr_chunk->second.chunk_addr;
-    auto chunk_len = pending_retr_chunk->second.chunk_len;
-    auto remote_addr = pending_retr_chunk->second.remote_addr;
-
+    VLOG(5) << "This retransmission chunk is accepted!!!";
 // Accept this retransmission chunk.
 #ifdef CLOUDLAB_DEV
-    memcpy(reinterpret_cast<void *>(remote_addr),
-           reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)),
-           chunk_len);
+    memcpy(reinterpret_cast<void *>(hdr->remote_addr),
+            reinterpret_cast<void *>(chunk_addr +
+                                    sizeof(struct retr_chunk_hdr)),
+            chunk_len);
 #else
-    cudaMemcpy(
-        reinterpret_cast<void *>(remote_addr),
-        reinterpret_cast<void *>(chunk_addr + sizeof(struct retr_chunk_hdr)),
-        chunk_len, cudaMemcpyHostToDevice);
+    cudaMemcpy(reinterpret_cast<void *>(hdr->remote_addr),
+                reinterpret_cast<void *>(chunk_addr +
+                                        sizeof(struct retr_chunk_hdr)),
+                chunk_len, cudaMemcpyHostToDevice);
 #endif
 
     subflow->pcb.stats_accept_retr++;
@@ -1869,138 +1721,12 @@ void RDMAContext::rx_barrier(struct list_head *ack_list) {
     /// FIXME: Should we send ACK immediately here?
     if (list_empty(&subflow->ack.ack_link))
         list_add_tail(&subflow->ack.ack_link, ack_list);
-    subflow->next_ack_path_ = qpidx;
+    // Don't let sender update the path's rtt.
+    subflow->next_ack_path_ = std::numeric_limits<uint16_t>::max();
 
-    retr_chunk_pool_->free_buff(chunk_addr);
+    EventOnRxRTXData(subflow, &imm_data);
 
-    subflow->pending_retr_chunks.erase(pending_retr_chunk);
-}
-
-void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
-    VLOG(5) << "rx_rtx_data";
-    auto cq_ex = retr_cq_ex_;
-    auto now = rdtsc();
-    auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
-
-    auto last_chunk = imm_data.GetHINT();
-    auto csn = imm_data.GetCSN();
-    auto rid = imm_data.GetRID();
-    auto fid = imm_data.GetFID();
-
-    DCHECK(fid < MAX_FLOW);
-    auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
-    auto *subflow = flow->sub_flows_[engine_offset_];
-
-    VLOG(5) << "Received retransmission chunk: (csn, rid, fid): " << csn << ", "
-            << rid << ", " << fid << " from Retr QP";
-
-    auto chunk_addr = cq_ex->wr_id;
-    auto chunk_len =
-        ibv_wc_read_byte_len(cq_ex) - sizeof(struct retr_chunk_hdr);
-
-    struct retr_chunk_hdr *hdr =
-        reinterpret_cast<struct retr_chunk_hdr *>(chunk_addr);
-
-    // Locate request by rid
-    auto req = get_recvreq_by_id(rid);
-    if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
-        VLOG(4) << "Can't find corresponding request or this request is "
-                   "invalid for this retransmission chunk. Dropping.";
-        retr_chunk_pool_->free_buff(chunk_addr);
-        subflow->pcb.stats_retr_chunk_drop++;
-        return;
-    }
-
-    // Compare CSN with the expected CSN.
-    auto ecsn = subflow->pcb.rcv_nxt;
-    auto distance = UINT_CSN(csn) - ecsn;
-
-    if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
-        // Original chunk is already received.
-        retr_chunk_pool_->free_buff(chunk_addr);
-        VLOG(5) << "Original chunk is already received. Dropping "
-                   "retransmission chunk for flow"
-                << fid;
-        subflow->pcb.stats_retr_chunk_drop++;
-        return;
-    }
-
-    if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
-        VLOG(5) << "Chunk too far ahead. Dropping as we can't handle SACK. "
-                << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
-        retr_chunk_pool_->free_buff(chunk_addr);
-        subflow->pcb.stats_retr_chunk_drop++;
-        return;
-    }
-
-    auto bitmap_bucket_idx = distance.to_uint32() / PCB::kSackBitmapBucketSize;
-    auto cursor = distance.to_uint32() % PCB::kSackBitmapBucketSize;
-    auto sack_bitmap = &subflow->pcb.sack_bitmap[bitmap_bucket_idx];
-
-    if ((*sack_bitmap & (1ULL << cursor))) {
-        // Original chunk is already received.
-        retr_chunk_pool_->free_buff(chunk_addr);
-        VLOG(5) << "Original chunk is already received. Dropping "
-                   "retransmission chunk for flow"
-                << fid;
-        subflow->pcb.stats_retr_chunk_drop++;
-        return;
-    }
-
-    // Check barrier bitmap first. We can only receive this chunk
-    // when a corresponding barrier has arrived.
-    auto barrier_btimap = &subflow->pcb.barrier_bitmap[bitmap_bucket_idx];
-
-    if ((*barrier_btimap & (1ULL << cursor)) == 0) {
-        // The corresponding barrier has not arrived yet.
-        // Store this retransmission chunk.
-        subflow->pending_retr_chunks[distance.to_uint32() +
-                                     subflow->pcb.shift_count] = {
-            hdr->remote_addr, chunk_addr, (uint32_t)chunk_len,
-            imm_data.GetImmData()};
-        VLOG(5) << "Wait for the corresponding barrier for flow" << fid;
-    } else {
-        VLOG(5) << "This retransmission chunk is accepted!!!";
-// Accept this retransmission chunk.
-#ifdef CLOUDLAB_DEV
-        memcpy(reinterpret_cast<void *>(hdr->remote_addr),
-               reinterpret_cast<void *>(chunk_addr +
-                                        sizeof(struct retr_chunk_hdr)),
-               chunk_len);
-#else
-        cudaMemcpy(reinterpret_cast<void *>(hdr->remote_addr),
-                   reinterpret_cast<void *>(chunk_addr +
-                                            sizeof(struct retr_chunk_hdr)),
-                   chunk_len, cudaMemcpyHostToDevice);
-#endif
-
-        subflow->pcb.stats_accept_retr++;
-
-        subflow->pcb.sack_bitmap_bit_set(distance.to_uint32());
-
-        auto *msg_size = &req->ureq->recv.elems[0].size;
-        uint32_t *received_bytes = req->received_bytes;
-        received_bytes[0] += chunk_len;
-
-        if (!last_chunk) {
-            req = nullptr;
-        }
-
-        subflow->rxtracking.ready_csn_.insert({csn, req});
-
-        try_update_csn(subflow);
-
-        /// FIXME: Should we send ACK immediately here?
-        if (list_empty(&subflow->ack.ack_link))
-            list_add_tail(&subflow->ack.ack_link, ack_list);
-        // Don't let sender update the path's rtt.
-        subflow->next_ack_path_ = std::numeric_limits<uint16_t>::max();
-
-        EventOnRxRTXData(subflow, &imm_data);
-
-        retr_chunk_pool_->free_buff(chunk_addr);
-        return;
-    }
+    return;
 }
 
 void RDMAContext::rc_rx_data(void) {
@@ -2354,12 +2080,9 @@ std::string RDMAContext::to_string() {
     uint32_t stats_rto_rexmits = 0;
     uint32_t stats_fast_rexmits = 0;
     uint32_t stats_accept_retr = 0;
-    uint32_t stats_accept_barrier = 0;
 
     uint32_t stats_chunk_drop = 0;
-    uint32_t stats_barrier_drop = 0;
     uint32_t stats_retr_chunk_drop = 0;
-    uint32_t stats_retr_chunk_pending = 0;
     uint32_t stats_ooo = 0;
     uint32_t stats_real_ooo = 0;
     uint32_t stats_maxooo = 0;
@@ -2371,12 +2094,9 @@ std::string RDMAContext::to_string() {
             if (flow) {
                 auto *subflow = flow->sub_flows_[engine_offset_];
                 stats_accept_retr += subflow->pcb.stats_accept_retr;
-                stats_accept_barrier += subflow->pcb.stats_accept_barrier;
 
                 stats_chunk_drop += subflow->pcb.stats_chunk_drop;
-                stats_barrier_drop += subflow->pcb.stats_barrier_drop;
                 stats_retr_chunk_drop += subflow->pcb.stats_retr_chunk_drop;
-                stats_retr_chunk_pending = subflow->pending_retr_chunks.size();
                 stats_ooo += subflow->pcb.stats_ooo;
                 stats_real_ooo += subflow->pcb.stats_real_ooo;
                 stats_maxooo =
@@ -2398,11 +2118,8 @@ std::string RDMAContext::to_string() {
     s += "\tRTO retr:" + std::to_string(stats_rto_rexmits) +
          "/Fast retr:" + std::to_string(stats_fast_rexmits) +
          "/Eat retr:" + std::to_string(stats_accept_retr) +
-         "/Eat barrier:" + std::to_string(stats_accept_barrier) +
          "/Chunk drop:" + std::to_string(stats_chunk_drop) +
-         "/Barrier drop:" + std::to_string(stats_barrier_drop) +
          "/Retr drop:" + std::to_string(stats_retr_chunk_drop) +
-         "/Retr pending:" + std::to_string(stats_retr_chunk_pending) +
          "/OOO: " + std::to_string(stats_ooo) +
          "/ROOO: " + std::to_string(stats_real_ooo) +
          "/MAXOOO: " + std::to_string(stats_maxooo);

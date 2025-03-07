@@ -70,9 +70,78 @@ class WrExBuffPool : public BuffPool {
     ~WrExBuffPool() = default;
 };
 
-struct retr_chunk_hdr {
+class IMMData {
+    public:
+      // HINT: Indicates whether the last chunk of a message.
+      // CSN:  Chunk Sequence Number.
+      // RID:  Request ID.
+      // FID:  Flow Index.
+      // High-----------------32bit------------------Low
+      //  | HINT |  RESERVED  |  CSN  |  RID  |  FID  |
+      //    1bit      8bit       8bit    7bit    8bit
+      constexpr static int kFID = 0;
+      constexpr static int kRID = 8;
+      constexpr static int kCSN = 15;
+      constexpr static int kRESERVED = kCSN + UINT_CSN_BIT;
+      constexpr static int kHINT = kRESERVED + 8;
+  
+      IMMData(uint32_t imm_data) : imm_data_(imm_data) {}
+  
+      inline uint32_t GetHINT(void) { return (imm_data_ >> kHINT) & 0x1; }
+  
+      inline uint32_t GetRESERVED(void) {
+          return (imm_data_ >> kRESERVED) & 0xFF;
+      }
+  
+      inline uint32_t GetCSN(void) { return (imm_data_ >> kCSN) & UINT_CSN_MASK; }
+  
+      inline uint32_t GetRID(void) { return (imm_data_ >> kRID) & 0x7F; }
+  
+      inline uint32_t GetFID(void) { return (imm_data_ >> kFID) & 0xFF; }
+  
+      inline void SetHINT(uint32_t hint) { imm_data_ |= (hint & 0x1) << kHINT; }
+  
+      inline void SetRESERVED(uint32_t reserved) {
+          imm_data_ |= (reserved & 0xFF) << kRESERVED;
+      }
+  
+      inline void SetCSN(uint32_t csn) {
+          imm_data_ |= (csn & UINT_CSN_MASK) << kCSN;
+      }
+  
+      inline void SetRID(uint32_t rid) { imm_data_ |= (rid & 0x7F) << kRID; }
+  
+      inline void SetFID(uint32_t fid) { imm_data_ |= (fid & 0xFF) << kFID; }
+  
+      inline uint32_t GetImmData(void) { return imm_data_; }
+  
+    protected:
+      uint32_t imm_data_;
+  };
+  
+  class IMMDataEQDS : public IMMData {
+    public:
+      // PULL_TARGET: Target for pulling data.
+      // High-----------------32bit------------------Low
+      //  | HINT | PULL_TARGET |  CSN  |  RID  |  FID  |
+      //    1bit      8bit        8bit    7bit    8bit
+      constexpr static int kPULL_TARGET = kRESERVED;
+  
+      IMMDataEQDS(uint32_t imm_data) : IMMData(imm_data) {}
+  
+      inline uint32_t GetTarget(void) {
+          return (imm_data_ >> kPULL_TARGET) & 0xFF;
+      }
+  
+      inline void SetTarget(uint32_t pull_target) {
+          imm_data_ |= (pull_target & 0xFF) << kPULL_TARGET;
+      }
+  };
+
+struct __attribute__((packed)) retr_chunk_hdr {
     // Target address for the lost chunk.
     uint64_t remote_addr;
+    uint32_t imm_data;
 };
 
 /**
@@ -84,7 +153,7 @@ class RetrChunkBuffPool : public BuffPool {
   public:
     static constexpr uint32_t kRetrChunkSize =
         kChunkSize + sizeof(retr_chunk_hdr);
-    static constexpr uint32_t kNumChunk = 256;
+    static constexpr uint32_t kNumChunk = 4096;
     static_assert((kNumChunk & (kNumChunk - 1)) == 0,
                   "kNumChunk must be power of 2");
 
@@ -100,7 +169,7 @@ class RetrChunkBuffPool : public BuffPool {
 class RetrHdrBuffPool : public BuffPool {
   public:
     static constexpr uint32_t kHdrSize = sizeof(struct retr_chunk_hdr);
-    static constexpr uint32_t kNumHdr = 256;
+    static constexpr uint32_t kNumHdr = 1024;
     static_assert((kNumHdr & (kNumHdr - 1)) == 0, "kNumHdr must be power of 2");
 
     RetrHdrBuffPool(struct ibv_mr *mr) : BuffPool(kNumHdr, kHdrSize, mr) {}
@@ -123,74 +192,6 @@ class CtrlChunkBuffPool : public BuffPool {
         : BuffPool(kNumChunk, kChunkSize, mr) {}
 
     ~CtrlChunkBuffPool() = default;
-};
-
-class IMMData {
-  public:
-    // HINT: Indicates whether the last chunk of a message.
-    // CSN:  Chunk Sequence Number.
-    // RID:  Request ID.
-    // FID:  Flow Index.
-    // High-----------------32bit------------------Low
-    //  | HINT |  RESERVED  |  CSN  |  RID  |  FID  |
-    //    1bit      8bit       8bit    7bit    8bit
-    constexpr static int kFID = 0;
-    constexpr static int kRID = 8;
-    constexpr static int kCSN = 15;
-    constexpr static int kRESERVED = kCSN + UINT_CSN_BIT;
-    constexpr static int kHINT = kRESERVED + 8;
-
-    IMMData(uint32_t imm_data) : imm_data_(imm_data) {}
-
-    inline uint32_t GetHINT(void) { return (imm_data_ >> kHINT) & 0x1; }
-
-    inline uint32_t GetRESERVED(void) {
-        return (imm_data_ >> kRESERVED) & 0xFF;
-    }
-
-    inline uint32_t GetCSN(void) { return (imm_data_ >> kCSN) & UINT_CSN_MASK; }
-
-    inline uint32_t GetRID(void) { return (imm_data_ >> kRID) & 0x7F; }
-
-    inline uint32_t GetFID(void) { return (imm_data_ >> kFID) & 0xFF; }
-
-    inline void SetHINT(uint32_t hint) { imm_data_ |= (hint & 0x1) << kHINT; }
-
-    inline void SetRESERVED(uint32_t reserved) {
-        imm_data_ |= (reserved & 0xFF) << kRESERVED;
-    }
-
-    inline void SetCSN(uint32_t csn) {
-        imm_data_ |= (csn & UINT_CSN_MASK) << kCSN;
-    }
-
-    inline void SetRID(uint32_t rid) { imm_data_ |= (rid & 0x7F) << kRID; }
-
-    inline void SetFID(uint32_t fid) { imm_data_ |= (fid & 0xFF) << kFID; }
-
-    inline uint32_t GetImmData(void) { return imm_data_; }
-
-  protected:
-    uint32_t imm_data_;
-};
-
-class IMMDataEQDS : public IMMData {
-  public:
-    // PULL_TARGET: Target for pulling data.
-    // High-----------------32bit------------------Low
-    //  | HINT | PULL_TARGET |  CSN  |  RID  |  FID  |
-    //    1bit      8bit        8bit    7bit    8bit
-    constexpr static int kPULL_TARGET = kRESERVED;
-
-    IMMDataEQDS(uint32_t imm_data) : IMMData(imm_data) {}
-
-    inline uint32_t GetTarget(void) {
-        return (imm_data_ >> kPULL_TARGET) & 0xFF;
-    }
-
-    inline void SetTarget(uint32_t pull_target) {
-        imm_data_ |= (pull_target & 0xFF) << kPULL_TARGET;
-    }
 };
 
 /**
@@ -457,13 +458,6 @@ struct ack_item {
     struct list_head ack_link;
 };
 
-struct pending_retr_chunk {
-    uint64_t remote_addr;
-    uint64_t chunk_addr;
-    uint32_t chunk_len;
-    uint32_t imm_data;
-};
-
 class SubUcclFlow {
   public:
     SubUcclFlow() {}
@@ -491,9 +485,6 @@ class SubUcclFlow {
 
     // Protocol Control Block.
     PCB pcb;
-
-    // Chunks received but not yet received the corresponding barrier.
-    std::unordered_map<uint64_t, struct pending_retr_chunk> pending_retr_chunks;
 
     // Whether RTO is armed for the flow.
     bool rto_armed = false;
@@ -567,7 +558,6 @@ class UcclEngine;
  * share the same SRQ.
  *   - (Ctrl QP): A high-priority QP for control messages and a dedicated CQ,
  * PD, and MR.
- *   - (Retr QP): A QP for retransmission and a dedicated CQ, PD, and MR.
  */
 class RDMAContext {
   public:
@@ -679,18 +669,9 @@ class RDMAContext {
     // Memory region for control messages.
     struct ibv_mr *ctrl_mr_;
 
-    // Retransmission QP.
-    struct ibv_qp *retr_qp_;
-    // Local PSN for retransmission.
-    uint32_t retr_local_psn_;
-    // Remote PSN for retransmission.
-    uint32_t retr_remote_psn_;
-    // Dedicated CQ for retransmission.
-    struct ibv_cq_ex *retr_cq_ex_;
     // Memory region for retransmission.
     struct ibv_mr *retr_mr_;
     struct ibv_mr *retr_hdr_mr_;
-    uint32_t inflight_retr_chunks_ = 0;
 
     // Global timing wheel for all data path QPs.
     TimingWheel wheel_;
@@ -743,10 +724,6 @@ class RDMAContext {
     // Pre-allocated WQEs for consuming immediate data.
     struct ibv_recv_wr imm_wrs_[kPostRQThreshold];
     uint32_t post_srq_cnt_ = 0;
-
-    // When the Retr chunk pool exhausts, we can't post enough WQEs to the Retr
-    // RQ.
-    uint32_t fill_retr_rq_cnt_ = 0;
 
     double ratio_;
     double offset_;
@@ -837,12 +814,6 @@ class RDMAContext {
     int poll_credit_cq(void);
 
     /**
-     * @brief Poll the completion queue for the Retr QP.
-     * SQ and RQ use the same completion queue.
-     */
-    int poll_retr_cq(void);
-
-    /**
      * @brief Check if we need to post enough recv WQEs to the Credit QP.
      * @param force Force to post WQEs.
      */
@@ -898,14 +869,6 @@ class RDMAContext {
      * @return true If the chunk is received successfully.
      */
     void rx_rtx_data(struct list_head *ack_list);
-
-    /**
-     * @brief Receive a barrier. Flow infromation is embedded in the immediate
-     * data.
-     * @param ack_list If this QP needs ACK, add it to the list.
-     * @return true If the barrier is received successfully.
-     */
-    void rx_barrier(struct list_head *ack_list);
 
     /**
      * @brief Receive a credit.
