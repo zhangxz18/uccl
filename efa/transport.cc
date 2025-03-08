@@ -190,6 +190,16 @@ void RXTracking::push_inorder_msgbuf_to_app(swift::Pcb *pcb) {
 
 void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
     if (rx_work) {
+#ifdef SCATTERED_MEMCPY
+        if (rx_work->opcode == Channel::Msg::kRxFreePtrs) {
+            int iov_n = rx_work->len;
+            void **iov_addrs = (void **)rx_work->data;
+            for (int i = 0; i < iov_n; i++) {
+                socket_->push_pkt_data((uint64_t)iov_addrs[i]);
+            }
+            return;
+        }
+#endif
         VLOG(3) << "num_unconsumed_msgbufs: " << num_unconsumed_msgbufs()
                 << " app_buf_queue_ size: " << app_buf_queue_.size();
         app_buf_queue_.push_back({*rx_work});
@@ -248,6 +258,8 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
                 poll_ctx->done = true;
                 poll_ctx->cv.notify_one();
             }
+#elif defined(SCATTERED_MEMCPY)
+            Channel::enqueue_sp(channel_->rx_copy_done_q_, &rx_copy_work);
 #else
             rx_copy_work.poll_ctx->write_barrier();
             Channel::enqueue_sp(channel_->rx_copy_q_, &rx_copy_work);
@@ -272,15 +284,48 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         auto *num_unconsumed_msgbufs = (uint32_t *)rx_copy_done_work.reserved;
         auto ready_msg = rx_copy_done_work.deser_msgs;
 
+        void **iov_addrs = (void **)rx_copy_done_work.data;
+        int *iov_lens = (int *)rx_copy_done_work.iov_lens;
+        int recv_len = 0;
+        int iov_n = 0;
+
         while (ready_msg != nullptr) {
+#ifdef SCATTERED_MEMCPY
+            auto *pkt_addr =
+                (uint8_t *)ready_msg->get_pkt_hdr_addr() + EFA_UD_ADDITION;
+            const auto *ucclh = reinterpret_cast<const UcclPktHdr *>(pkt_addr);
+            auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
+
+            iov_addrs[iov_n] = (void *)ready_msg->get_pkt_data_addr();
+            iov_lens[iov_n] = (int)payload_len;
+            recv_len += payload_len;
+            iov_n++;
+
+            // Header and frame desc are no longer needed.
+            socket_->push_pkt_hdr(ready_msg->get_pkt_hdr_addr());
+            socket_->push_frame_desc((uint64_t)ready_msg);
+#else
             // Free received frames that have been copied to app buf.
             socket_->push_pkt_hdr(ready_msg->get_pkt_hdr_addr());
             socket_->push_pkt_data(ready_msg->get_pkt_data_addr());
             socket_->push_frame_desc((uint64_t)ready_msg);
-
+#endif
             ready_msg = ready_msg->next();
             (*num_unconsumed_msgbufs)--;
         }
+
+#ifdef SCATTERED_MEMCPY
+        *rx_copy_done_work.len_p = recv_len;
+        *rx_copy_done_work.iov_n = iov_n;
+        auto *poll_ctx = rx_copy_done_work.poll_ctx;
+        // Wakeup app thread waiting on endpoint.
+        if (--(poll_ctx->num_unfinished) == 0) {
+            poll_ctx->write_barrier();
+            std::lock_guard<std::mutex> lock(poll_ctx->mu);
+            poll_ctx->done = true;
+            poll_ctx->cv.notify_one();
+        }
+#endif
     }
 }
 
@@ -1628,6 +1673,8 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
         .len = len,
         .len_p = nullptr,
         .data = const_cast<void *>(data),
+        .iov_n = nullptr,
+        .iov_lens = nullptr,
         .mhandle = mhandle,
         .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
@@ -1653,6 +1700,8 @@ PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
         .len = 0,
         .len_p = len_p,
         .data = data,
+        .iov_n = nullptr,
+        .iov_lens = nullptr,
         .mhandle = mhandle,
         .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
@@ -1660,6 +1709,49 @@ PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
     };
     Channel::enqueue_mp(channel_vec_[conn_id.engine_idx]->rx_task_q_, &msg);
     return poll_ctx;
+}
+PollCtx *Endpoint::uccl_recv_scattered_async(ConnID conn_id, int *iov_n,
+                                             void **iov_addrs, int *iov_lens,
+                                             int *len_p, Mhandle *mhandle) {
+    PollCtx *poll_ctx = ctx_pool_->pop();
+    poll_ctx->num_unfinished = 1;
+    poll_ctx->engine_idx = conn_id.engine_idx;
+#ifdef POLLCTX_DEBUG
+    poll_ctx->flow_id = conn_id.flow_id;
+    poll_ctx->req_id = req_id++;
+#endif
+
+    Channel::Msg msg = {
+        .opcode = Channel::Msg::Op::kRxScattered,
+        .len = 0,
+        .len_p = len_p,
+        .data = (void *)iov_addrs,
+        .iov_n = iov_n,
+        .iov_lens = iov_lens,
+        .mhandle = mhandle,
+        .flow_id = conn_id.flow_id,
+        .deser_msgs = nullptr,
+        .poll_ctx = poll_ctx,
+    };
+    Channel::enqueue_mp(channel_vec_[conn_id.engine_idx]->rx_task_q_, &msg);
+    return poll_ctx;
+}
+
+void Endpoint::uccl_recv_free_ptrs(ConnID conn_id, int iov_n,
+                                   void **iov_addrs) {
+    Channel::Msg msg = {
+        .opcode = Channel::Msg::Op::kRxFreePtrs,
+        .len = iov_n,
+        .len_p = nullptr,
+        .data = (void *)iov_addrs,
+        .iov_n = nullptr,
+        .iov_lens = nullptr,
+        .mhandle = nullptr,
+        .flow_id = conn_id.flow_id,
+        .deser_msgs = nullptr,
+        .poll_ctx = nullptr,
+    };
+    Channel::enqueue_mp(channel_vec_[conn_id.engine_idx]->rx_task_q_, &msg);
 }
 
 PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
@@ -1679,6 +1771,8 @@ PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
             .len = 0,
             .len_p = &(len_p[i]),
             .data = data[i],
+            .iov_n = nullptr,
+            .iov_lens = nullptr,
             .mhandle = mhandle[i],
             .flow_id = conn_id.flow_id,
             .deser_msgs = nullptr,

@@ -115,12 +115,16 @@ class Channel {
         enum Op : uint8_t {
             kTx = 0,
             kRx = 1,
+            kRxScattered = 2,
+            kRxFreePtrs = 3,
         };
         Op opcode;
         uint8_t unused_bytes[3];
         int len;
         int *len_p;
         void *data;
+        int *iov_n;
+        int *iov_lens;
         Mhandle *mhandle;
         FlowID flow_id;
         // A list of FrameDesc bw deser_th and engine_th.
@@ -801,6 +805,10 @@ class Endpoint {
     // Receiving the data by leveraging multiple port combinations.
     PollCtx *uccl_recv_async(ConnID conn_id, void *data, int *len_p,
                              Mhandle *mhandle);
+    PollCtx *uccl_recv_scattered_async(ConnID conn_id, int *iov_n,
+                                       void **iov_addrs, int *iov_lens,
+                                       int *len_p, Mhandle *mhandle);
+    void uccl_recv_free_ptrs(ConnID conn_id, int iov_n, void **iov_addrs);
     PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,
                                    Mhandle **mhandle, int n);
     PollCtx *uccl_flush_async(ConnID conn_id, void **data, int *len_p,

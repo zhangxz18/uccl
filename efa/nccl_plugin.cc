@@ -4,7 +4,7 @@
 #include <mutex>
 #include <thread>
 
-#include "nccl_net.h"
+#include "../nccl/src/include/nccl_net.h"
 #include "transport.h"
 #include "transport_config.h"
 
@@ -15,6 +15,8 @@ const char *PLUGIN_NAME = "EFA_Plugin";
 enum ReqType {
     ReqTx,
     ReqRx,
+    ReqRxScattered,
+    ReqRxFreePtrs,
     ReqFlush,
 };
 
@@ -392,9 +394,6 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     return ncclSuccess;
 }
 
-thread_local void *last_recv_data = nullptr;
-thread_local int last_recv_size = 0;
-
 ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
                          int *tags, void **mhandles, void **request) {
     struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
@@ -417,8 +416,6 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
         ep->uccl_recv_multi_async(conn_id, data, req->recv_len, mhs, n);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
 
-    last_recv_data = (void *)data;
-
     *request = req;
 
 #ifdef POLLCTX_DEBUG
@@ -428,6 +425,48 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
               << req->poll_ctx->req_id << " data ptr " << std::hex << data;
 #endif
 
+    return ncclSuccess;
+}
+
+ncclResult_t pluginIrecvScattered(void *recvComm, int *iov_n, void **iov_addrs,
+                                  int *iov_lens, int *tags, void *mhandles,
+                                  void **request) {
+    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
+    auto conn_id = rcomm->base.conn_id;
+    struct Mhandle *mhs = (struct Mhandle *)mhandles;
+    // checkMemoryLocation(data[0]);
+
+    uint64_t addr;
+    auto vdev = rcomm->base.vdev;
+    if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
+        CHECK(false);
+        *request = nullptr;
+        return ncclSuccess;
+    }
+
+    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
+    req->type = ReqRxScattered;
+    req->n = 1;
+    req->poll_ctx = ep->uccl_recv_scattered_async(
+        conn_id, iov_n, iov_addrs, iov_lens, &(req->recv_len[0]), mhs);
+    req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
+
+    *request = req;
+
+#ifdef POLLCTX_DEBUG
+    LOG(INFO) << "pluginIrecvScattered on vdev: " << vdev << " size "
+              << sizes[0] << " engine_id " << req->poll_ctx->engine_idx
+              << " flow_id " << conn_id.flow_id << " n " << 1 << " req_id "
+              << req->poll_ctx->req_id << " data ptr " << std::hex << data;
+#endif
+
+    return ncclSuccess;
+}
+
+ncclResult_t pluginIrecvFreePtrs(void *recvComm, int iov_n, void **iov_addrs) {
+    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
+    auto conn_id = rcomm->base.conn_id;
+    ep->uccl_recv_free_ptrs(conn_id, iov_n, iov_addrs);
     return ncclSuccess;
 }
 
@@ -480,6 +519,8 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
 #endif
         } else if (req->type == ReqFlush) {
             // Do nothing.
+        } else if (req->type == ReqRxScattered) {
+            size[0] = req->recv_len[0];
         }
         auto uccl_req_pool =
             reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
@@ -527,6 +568,8 @@ volatile ncclNet_v8_t ncclNetPlugin_v8 = {
     .deregMr = pluginDeregMr,
     .isend = pluginIsend,
     .irecv = pluginIrecv,
+    .irecv_scattered = pluginIrecvScattered,
+    .irecv_free_ptrs = pluginIrecvFreePtrs,
     .iflush = pluginIflush,
     .test = pluginTest,
     .closeSend = pluginCloseSend,
