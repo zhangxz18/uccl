@@ -13,6 +13,6 @@ export NCCL_MIN_NCHANNELS=2
 export NCCL_P2P_NET_CHUNKSIZE=524288
 export NCCL_BUFFSIZE=8388608
 
-sudo /usr/local/cuda/bin/nsys profile --trace=cuda,nvtx,osrt --output=nccl_test_report \
+sudo -E /usr/local/cuda/bin/nsys profile --trace=cuda,nvtx,osrt --output=nccl_test_report \
     --gpu-metrics-device=0 /opt/uccl_rdma/nccl-tests/build/all_reduce_perf \
     -b 1K -e 1G -f 2 -g 1 -w 5 -n 5 -t 2
