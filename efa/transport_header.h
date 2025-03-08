@@ -21,6 +21,7 @@ struct __attribute__((packed)) UcclPktHdr {
         kAck = 0b10,            // ACK packet.
         kDataRttProbe = 0b100,  // RTT probing packet.
         kAckRttProbe = 0b1000,  // RTT probing packet.
+        kCredit = 0b10000,      // Credit packet.
     };
     UcclFlags net_flags;  // Network flags.
     uint8_t msg_flags;    // Field to reflect the `FrameDesc' flags.
@@ -31,6 +32,7 @@ struct __attribute__((packed)) UcclPktHdr {
     uint64_t timestamp1;  // Filled by sender with calibration for output queue
     uint64_t timestamp2;  // Filled by recver eBPF
 };
+
 struct __attribute__((packed)) UcclSackHdr {
     uint64_t timestamp3;  // Filled by recer with calibration for output queue
     be64_t sack_bitmap[kSackBitmapSize /
@@ -39,9 +41,16 @@ struct __attribute__((packed)) UcclSackHdr {
     be16_t sack_bitmap_count;  // Length of the SACK bitmap [0-256].
     be32_t rwnd;        // Receiver window size in terms of packets.
 };
+
+typedef uint32_t PullQuanta;
+struct __attribute__((packed)) UcclPullHdr {
+    PullQuanta pullno;
+};
+
 static const size_t kUcclPktHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclPktDataMaxLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
+static const size_t kUcclPullHdrLen = sizeof(UcclPullHdr);
 
 inline UcclPktHdr::UcclFlags operator|(UcclPktHdr::UcclFlags lhs,
                                        UcclPktHdr::UcclFlags rhs) {

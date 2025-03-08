@@ -13,6 +13,7 @@
 #include <infiniband/verbs.h>
 
 #include "transport_config.h"
+#include "transport_header.h"
 #include "util.h"
 #include "util_efa.h"
 #include "util_buffpool.h"
@@ -23,9 +24,11 @@
 
 namespace uccl {
 
-namespace eqds{
+typedef uint64_t FlowID;
 
-typedef uint32_t PullQuanta;
+class UcclFlow;
+
+namespace eqds {
 
 constexpr bool pullno_lt(PullQuanta a, PullQuanta b) {
     return static_cast<int32_t>(a - b) < 0;
@@ -68,38 +71,25 @@ struct idle_item {
     struct list_head idle_link;
 };
 
+class CreditQPContext;
 
-// Per-QP congestion control state for EQDS.
-struct EQDSCC {
+// Congestion control state for EQDS.
+class EQDSCC {
 
-    static constexpr PullQuanta INIT_PULL_QUANTA = 50;
-    static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
+public:
+    EQDSCC() {
+        INIT_LIST_HEAD(&active_item.active_link);
+        active_item.eqds_cc = this;
 
-    /********************************************************************/
-    /************************ Sender-side states ************************/
-    /********************************************************************/
+        INIT_LIST_HEAD(&idle_item.idle_link);
+        idle_item.eqds_cc = this;
+    }
 
-    // Last received highest credit in PullQuanta.
-    PullQuanta pull_ = INIT_PULL_QUANTA;
-    PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
-    // Receive request credit in PullQuanta, but consume it in bytes
-    uint32_t credit_pull_ = 0;
-    uint32_t credit_spec_ = kEQDSMaxCwnd;
-    bool in_speculating_ = true;
-    /********************************************************************/
-    /*********************** Receiver-side states ***********************/
-    /********************************************************************/
+    ~EQDSCC() {}
 
-    /***************** Shared between engine and pacer ******************/
-    std::atomic<PullQuanta> highest_pull_target_;
+    std::function<bool(const PullQuanta &)> send_pullpacket;
 
-    /*************************** Pacer only *****************************/
-    PullQuanta latest_pull_;
-    struct active_item active_item;
-    struct idle_item idle_item;
-    /************************* No modification **************************/
-    uint32_t fid_;
-    struct PacerCreditQPWrapper *pc_qpw_;
+    inline PullQuanta get_latest_pull() { return latest_pull_; }
 
     inline uint32_t credit() { return credit_pull_ + credit_spec_; }
 
@@ -160,21 +150,27 @@ struct EQDSCC {
     }
 
     /// Helper functions called by pacer ///
+    inline bool in_active_list() { return list_empty(&active_item.active_link); }
+    inline bool in_idle_list() { return list_empty(&idle_item.idle_link); }
 
-    inline void set_fid(uint32_t fid) { fid_ = fid; }
-
-    inline void set_pacer_credit_qpw(struct PacerCreditQPWrapper *pc_qpw) {
-        pc_qpw_ = pc_qpw;
+    inline void add_to_active_list(struct list_head *active_senders) {
+        DCHECK(!in_active_list());
+        list_add_tail(&active_item.active_link, active_senders);
+    }
+    
+    inline void add_to_idle_list(struct list_head *idle_senders) {
+        DCHECK(!in_idle_list());
+        list_add_tail(&idle_item.idle_link, idle_senders);
     }
 
-    inline void init_active_item(void) {
-        INIT_LIST_HEAD(&active_item.active_link);
-        active_item.eqds_cc = this;
+    inline void remove_from_active_list() { 
+        DCHECK(in_active_list());
+        list_del(&active_item.active_link); 
     }
 
-    inline void init_idle_item(void) {
-        INIT_LIST_HEAD(&idle_item.idle_link);
-        idle_item.eqds_cc = this;
+    inline void remove_from_idle_list() { 
+        DCHECK(in_idle_list());
+        list_del(&idle_item.idle_link);
     }
 
     inline PullQuanta backlog() {
@@ -198,6 +194,41 @@ struct EQDSCC {
 
         return idle_cumulate_credit >= quantize_floor(kEQDSMaxCwnd);
     }
+
+    inline void inc_lastest_pull(uint32_t inc) {
+        latest_pull_ += inc;
+    }
+
+    inline void dec_latest_pull(uint32_t dec) {
+        latest_pull_ -= dec;
+    }
+
+private:
+    static constexpr PullQuanta INIT_PULL_QUANTA = 50;
+    static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
+
+    /********************************************************************/
+    /************************ Sender-side states ************************/
+    /********************************************************************/
+
+    // Last received highest credit in PullQuanta.
+    PullQuanta pull_ = INIT_PULL_QUANTA;
+    PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
+    // Receive request credit in PullQuanta, but consume it in bytes
+    uint32_t credit_pull_ = 0;
+    uint32_t credit_spec_ = kEQDSMaxCwnd;
+    bool in_speculating_ = true;
+    /********************************************************************/
+    /*********************** Receiver-side states ***********************/
+    /********************************************************************/
+
+    /***************** Shared between engine and pacer ******************/
+    std::atomic<PullQuanta> highest_pull_target_;
+
+    /*************************** Pacer only *****************************/
+    PullQuanta latest_pull_;
+    struct active_item active_item;
+    struct idle_item idle_item;
 };
 
 class EQDSChannel {
@@ -257,6 +288,12 @@ public:
         
         engine_frame_desc_pool_ = new FrameDescBuffPool();
 
+        for (int i = 0; i < kMaxChainedWr; i++) {
+            rq_wrs_[i].num_sge = 1;
+            rq_wrs_[i].sg_list = &rq_sges_[i];
+            rq_wrs_[i].next = (i == kMaxChainedWr - 1) ? nullptr : &rq_wrs_[i + 1];
+        }
+
         init_ = true;
     }
 
@@ -285,10 +322,42 @@ public:
         init_ = false;
     }
 
+    std::vector<FrameDesc *> engine_poll_credit_cq(void);
 
-    int poll_credit_cq(void);
+    int pacer_poll_credit_cq(void);
+
+    inline void push_frame_desc(uint64_t pkt_frame_desc) {
+        engine_frame_desc_pool_->free_buff(pkt_frame_desc);
+    }
+
+    inline uint64_t pop_frame_desc() {
+        uint64_t frame_desc;
+        DCHECK(engine_frame_desc_pool_->alloc_buff(&frame_desc));
+        return frame_desc;
+    }
+
+    inline void push_pkt_hdr(uint64_t pkt_hdr_addr) {
+        engine_hdr_pool_->free_buff(pkt_hdr_addr);
+    }
+
+    inline uint64_t pop_pkt_hdr() {
+        uint64_t pkt_hdr;
+        DCHECK(engine_hdr_pool_->alloc_buff(&pkt_hdr) == 0);
+        return pkt_hdr;
+    }
+
+    inline struct ibv_qp *get_qp_by_idx(uint32_t idx) {
+        DCHECK(idx < kMaxSrcDstQPCredit);
+        return credit_qp_list_[idx];
+    }
+
+    inline uint32_t get_engine_hdr_pool_lkey() {
+        return engine_hdr_pool_->get_lkey();
+    }
 
 private:
+
+    void __post_recv_wrs_for_credit(int nb, uint32_t src_qp_idx);
 
     inline struct ibv_qp *__create_credit_qp(struct ibv_cq *scq, struct ibv_cq *rcq) {
         struct ibv_qp_init_attr qp_attr = {};
@@ -340,6 +409,10 @@ private:
     struct ibv_mr *engine_hdr_mr_;
     PktHdrBuffPool *engine_hdr_pool_;
     FrameDescBuffPool *engine_frame_desc_pool_;
+    uint32_t post_rq_cnt_[kMaxSrcDstQPCredit] = {};
+
+    struct ibv_sge rq_sges_[kMaxChainedWr];
+    struct ibv_recv_wr rq_wrs_[kMaxChainedWr];
 
     /////////// Read only values ///////////
     bool init_ = false;
@@ -377,6 +450,10 @@ public:
 
     // Grant credits to senders.
     void handle_grant_credit(void);
+
+    bool grant_credit(EQDSCC *eqds_cc, bool idle);
+
+    bool send_pull_packet(EQDSCC *eqds_cc);
 
     EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
 

@@ -438,6 +438,11 @@ void UcclFlow::rx_messages() {
             reinterpret_cast<UcclSackHdr *>(pkt_addr + kUcclPktHdrLen);
 
         switch (ucclh->net_flags) {
+            case UcclPktHdr::UcclFlags::kCredit:
+                process_credit(ucclh);
+                credit_qp_ctx_->push_pkt_hdr(msgbuf->get_pkt_hdr_addr());
+                credit_qp_ctx_->push_frame_desc((uint64_t)msgbuf);
+                break;
             case UcclPktHdr::UcclFlags::kAckRttProbe:
                 timestamp4 = msgbuf->get_cpe_time_tsc();
                 // Sender gets the RTT probe response, update the flow.
@@ -603,6 +608,17 @@ bool UcclFlow::periodic_check() {
     }
 
     return true;
+}
+
+void UcclFlow::process_credit(const UcclPktHdr *ucclh)
+{
+    const auto *ucclpullh = reinterpret_cast<const UcclPullHdr *>(
+        reinterpret_cast<const uint8_t *>(ucclh) + kUcclPktHdrLen);
+    auto pullno = ucclpullh->pullno;
+
+    if (eqds_cc_.handle_pull(pullno)) {
+        // Trigger transmission.
+    }
 }
 
 void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
@@ -1048,6 +1064,52 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->timestamp2 = 0;
 }
 
+bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
+{
+    const size_t kControlPayloadBytes = kUcclPktHdrLen + kUcclPullHdrLen;
+
+    auto frame_desc_buff = credit_qp_ctx_->pop_frame_desc();
+    auto pkt_hdr_buff = credit_qp_ctx_->pop_pkt_hdr();
+    auto frame = FrameDesc::Create(frame_desc_buff, pkt_hdr_buff, kControlPayloadBytes,
+        0, 0, 0, 0);
+
+    uint8_t *pkt_addr = (uint8_t *)pkt_hdr_buff;
+    auto *ucclh = (UcclPktHdr *)(pkt_addr);
+    ucclh->magic = be16_t(UcclPktHdr::kMagic);
+    ucclh->net_flags = UcclPktHdr::UcclFlags::kCredit;
+    ucclh->frame_len = be16_t(kControlPayloadBytes);
+    ucclh->flow_id = be64_t(peer_flow_id_);
+    
+    auto *ucclpullh = (UcclPullHdr *)(pkt_addr + kUcclPktHdrLen);
+    ucclpullh->pullno = pullno;
+
+    frame->set_dest_ah(remote_ah_);
+    frame->set_dest_qpn(credit_qpidx_rr_++);
+
+    if (credit_qpidx_rr_ == kMaxSrcDstQPCredit)
+        credit_qpidx_rr_ = 0;
+    
+    struct ibv_sge sge = {
+        .addr = frame->get_pkt_hdr_addr(),
+        .length = frame->get_pkt_hdr_len(),
+        .lkey = credit_qp_ctx_->get_engine_hdr_pool_lkey(),
+    };
+
+    struct ibv_send_wr wr, *bad_wr;
+    wr.wr_id = (uint64_t)frame;
+    wr.num_sge = 1;
+    wr.sg_list = &sge;
+    wr.next = nullptr;
+    wr.wr.ud.ah = frame->get_dest_ah();
+    wr.wr.ud.remote_qpn = frame->get_dest_qpn();
+    wr.wr.ud.remote_qkey = QKEY;
+    wr.send_flags = IBV_SEND_SIGNALED;
+
+    DCHECK(ibv_post_send(credit_qp_ctx_->get_qp_by_idx(credit_qpidx_rr_), &wr, &bad_wr) == 0);
+
+    return true;
+}
+
 FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
                                      uint32_t ackno,
                                      const UcclPktHdr::UcclFlags net_flags,
@@ -1114,6 +1176,11 @@ void UcclEngine::run() {
         auto [_frames, polled_send_acks] =
             socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
         frames.insert(frames.end(), _frames.begin(), _frames.end());
+        
+        // Receive credits.
+        _frames = credit_qp_ctx_->engine_poll_credit_cq();
+        frames.insert(frames.end(), _frames.begin(), _frames.end());
+
         if (frames.size()) {
             process_rx_msg(frames);
         }
@@ -1133,9 +1200,6 @@ void UcclEngine::run() {
         }
 
         auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);
-
-        // Receive credits.
-        credit_qp_ctx_->poll_credit_cq();
     }
 
     // This will reset flow pcb state.
@@ -1244,7 +1308,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
 
     auto *flow =
         new UcclFlow(local_ip_str_, remote_ip_str, local_meta, remote_meta,
-                     local_engine_idx_, remote_engine_idx, socket_, channel_,
+                     local_engine_idx_, remote_engine_idx, socket_, credit_qp_ctx_, channel_,
                      flow_id, active_flows_map_, is_sender);
     auto *dev = EFAFactory::GetEFADevice(socket_->dev_idx());
     flow->remote_ah_ = dev->create_ah(remote_meta->gid);
@@ -1256,6 +1320,8 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
     LOG(INFO) << "[Engine] install FlowID " << flow_id << ": " << local_ip_str_
               << Format("(%d)", local_engine_idx_) << arrow << remote_ip_str
               << Format("(%d)", remote_engine_idx);
+    
+    request_pull(&flow->eqds_cc_);
 
     // Wakeup app thread waiting on endpoint.
     if (--(poll_ctx->num_unfinished) == 0) {
@@ -1324,7 +1390,8 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
 
         // Creating engines sequentially to have inorder QPNs.
         auto engine = std::make_unique<UcclEngine>(
-            local_ip_str, gpu_idx, dev_idx, socket_idx, channel_vec_[i], eqds_[dev_idx]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)]);
+            local_ip_str, gpu_idx, dev_idx, socket_idx, channel_vec_[i], 
+            eqds_[dev_idx]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)], &eqds_[dev_idx]->channel_);
 
         std::promise<std::unique_ptr<UcclEngine>> engine_promise;
         auto engine_future = engine_promise.get_future();

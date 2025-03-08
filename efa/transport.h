@@ -401,7 +401,7 @@ class UcclFlow {
     UcclFlow(std::string local_ip_str, std::string remote_ip_str,
              ConnMeta *local_meta, ConnMeta *remote_meta,
              uint32_t local_engine_idx, uint32_t remote_engine_idx,
-             EFASocket *socket, Channel *channel, FlowID flow_id,
+             EFASocket *socket, eqds::CreditQPContext *credit_qp_ctx, Channel *channel, FlowID flow_id,
              std::unordered_map<FlowID, UcclFlow *> &active_flows_map_,
              bool is_sender)
         : remote_ip_str_(remote_ip_str),
@@ -411,6 +411,7 @@ class UcclFlow {
           local_engine_idx_(local_engine_idx),
           remote_engine_idx_(remote_engine_idx),
           socket_(CHECK_NOTNULL(socket)),
+          credit_qp_ctx_(credit_qp_ctx),
           channel_(channel),
           flow_id_(flow_id),
           pcb_(),
@@ -418,7 +419,8 @@ class UcclFlow {
           timely_g_(),
           tx_tracking_(socket, channel),
           rx_tracking_(socket, channel, active_flows_map_),
-          is_sender_(is_sender) {
+          is_sender_(is_sender),
+          eqds_cc_() {
         // Initing per-flow CC states.
         timely_g_.init(&pcb_);
         if constexpr (kCCType == CCType::kTimelyPP) {
@@ -434,6 +436,10 @@ class UcclFlow {
         }
 
         peer_flow_id_ = get_peer_flow_id(flow_id);
+
+        eqds_cc_.send_pullpacket = [this](const PullQuanta &pullno) -> bool {
+            return this->send_pullpacket(pullno);
+        };
     }
     ~UcclFlow() {
         delete local_meta_;
@@ -493,6 +499,8 @@ class UcclFlow {
    private:
     void process_ack(const UcclPktHdr *ucclh);
 
+    void process_credit(const UcclPktHdr *ucclh);
+
     void fast_retransmit();
     void rto_retransmit(FrameDesc *msgbuf, uint32_t seqno);
 
@@ -520,6 +528,8 @@ class UcclFlow {
     FrameDesc *craft_ackpacket(uint32_t path_id, uint32_t seqno, uint32_t ackno,
                                const UcclPktHdr::UcclFlags net_flags,
                                uint64_t ts1, uint64_t ts2, uint32_t rwnd);
+    
+    bool send_pullpacket(const PullQuanta &pullno);
 
     std::string local_ip_str_;
     std::string remote_ip_str_;
@@ -535,6 +545,10 @@ class UcclFlow {
 
     // The underlying EFASocket.
     EFASocket *socket_;
+    
+    eqds::CreditQPContext *credit_qp_ctx_;
+    uint32_t credit_qpidx_rr_ = 0;
+
     // The channel this flow belongs to.
     Channel *channel_;
     // FlowID of this flow.
@@ -560,6 +574,9 @@ class UcclFlow {
     swift::CubicCtl *cubic_pp_;
     // Peer flow_id used for communication.
     FlowID peer_flow_id_ = 0;
+
+    // EQDS
+    eqds::EQDSCC eqds_cc_;
 
     uint32_t last_received_rwnd_ = kMaxUnconsumedRxMsgbufs;
 
@@ -659,12 +676,14 @@ class UcclEngine {
      * future it may be responsible for multiple channels.
      */
     UcclEngine(std::string local_ip_str, int gpu_idx, int dev_idx,
-               int socket_idx, Channel *channel, eqds::CreditQPContext *credit_qp_ctx)
+               int socket_idx, Channel *channel, eqds::CreditQPContext *credit_qp_ctx, 
+                eqds::EQDSChannel *eqds_channel)
         : local_ip_str_(local_ip_str),
           local_engine_idx_(socket_idx),
           socket_(EFAFactory::CreateSocket(gpu_idx, dev_idx, socket_idx)),
           channel_(channel),
           credit_qp_ctx_(credit_qp_ctx),
+          eqds_channel_(eqds_channel),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
@@ -712,6 +731,15 @@ class UcclEngine {
      */
     void process_ctl_reqs();
 
+    // [Thread-safe] Request pacer to grant credit to this flow.
+    inline void request_pull(eqds::EQDSCC *eqds_cc) {
+        eqds::EQDSChannel::Msg msg = {
+            .opcode = eqds::EQDSChannel::Msg::Op::kRequestPull,
+            .eqds_cc = eqds_cc,
+        };
+        while (jring_mp_enqueue_bulk(eqds_channel_->cmdq_, &msg, 1, nullptr) != 1) {}
+    }
+
    private:
     // Local IP address.
     std::string local_ip_str_;
@@ -722,6 +750,7 @@ class UcclEngine {
 
     // Receiver-driven CC.
     eqds::CreditQPContext * credit_qp_ctx_;
+    eqds::EQDSChannel *eqds_channel_;
 
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
