@@ -17,8 +17,9 @@ enum class CCType {
     kTimelyPP,
     kCubic,
     kCubicPP,
+    kEQDS,
 };
-static constexpr CCType kCCType = CCType::kTimely;
+static constexpr CCType kCCType = CCType::kEQDS;
 
 #define P4D
 
@@ -34,7 +35,7 @@ static const std::string EFA_DEVICE_NAME_LIST[] = {
     "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
 static const std::string ENA_DEVICE_NAME_LIST[] = {"ens32", "ens65", "ens130",
                                                    "ens163"};
-static const double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
+static constexpr double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
 static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
@@ -56,7 +57,8 @@ static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // uses the first 24 and last 24 cores as specified in p4d-24xl-topo.xml). The
 // two numbers are for numa 0 and 1 separately. GPU 0-3 + NIC 0-1 are on numa 0,
 // and GPU 4-7 + NIC 2-3 are on numa 1.
-static uint32_t ENGINE_CPU_START[2] = {NUM_CPUS / 4, NUM_CPUS / 2};
+static const uint32_t ENGINE_CPU_START[2] = {NUM_CPUS / 4, NUM_CPUS / 2};
+static const uint32_t PACER_CPU_START[2] = {ENGINE_CPU_START[0] + 8 /* 4 NIC * 2 EnginePerNIC */, ENGINE_CPU_START[1] + 8 /* 4 NIC * 2 EnginePerNIC */};
 static const uint16_t BASE_PORT = 10000;
 static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
@@ -88,10 +90,14 @@ static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxSrcQP = 16;
 static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQPCtrl = 16;
+static const uint32_t kMaxDstQPCredit = 16; // # of paths/QPs for credit.
+static const uint32_t kMaxSrcQPCredit = 16;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
     std::max(kMaxSrcQPCtrl, kMaxDstQPCtrl);
+static constexpr uint32_t kMaxSrcDstQPCredit = 
+    std::max(kMaxSrcQPCredit, kMaxDstQPCredit);
 static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
 static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);

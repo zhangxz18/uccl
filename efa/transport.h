@@ -39,6 +39,7 @@
 #include "util_latency.h"
 #include "util_shared_pool.h"
 #include "util_timer.h"
+#include "eqds.h"
 
 namespace uccl {
 
@@ -658,11 +659,12 @@ class UcclEngine {
      * future it may be responsible for multiple channels.
      */
     UcclEngine(std::string local_ip_str, int gpu_idx, int dev_idx,
-               int socket_idx, Channel *channel)
+               int socket_idx, Channel *channel, eqds::CreditQPContext *credit_qp_ctx)
         : local_ip_str_(local_ip_str),
           local_engine_idx_(socket_idx),
           socket_(EFAFactory::CreateSocket(gpu_idx, dev_idx, socket_idx)),
           channel_(channel),
+          credit_qp_ctx_(credit_qp_ctx),
           last_periodic_tsc_(rdtsc()),
           periodic_ticks_(0),
           kSlowTimerIntervalTsc_(us_to_cycles(kSlowTimerIntervalUs, freq_ghz)) {
@@ -717,6 +719,10 @@ class UcclEngine {
     uint32_t local_engine_idx_;
     // AFXDP socket used for send/recv packets.
     EFASocket *socket_;
+
+    // Receiver-driven CC.
+    eqds::CreditQPContext * credit_qp_ctx_;
+
     // UcclFlow map
     std::unordered_map<FlowID, UcclFlow *> active_flows_map_;
     // Control plane channel with Endpoint.
@@ -768,6 +774,9 @@ class Endpoint {
     std::mutex fd_map_mu_;
     // Mapping from unique (within this engine) flow_id to the boostrap fd.
     std::unordered_map<FlowID, int> fd_map_;
+
+    // Each physical device has its own EQDS pacer.
+    eqds::EQDS *eqds_[NUM_DEVICES] = {};
 
    public:
     Endpoint();
@@ -879,6 +888,10 @@ static inline uint32_t get_gpu_idx_by_engine_idx(uint32_t engine_idx) {
 
 static inline uint32_t get_dev_idx_by_engine_idx(uint32_t engine_idx) {
     return engine_idx / (kNumEnginesPerVdev * 2);
+}
+
+static inline uint32_t get_engine_off_by_engine_idx(uint32_t engine_idx) {
+    return engine_idx % (kNumEnginesPerVdev * 2);
 }
 
 static inline uint32_t get_dev_idx_by_gpu_idx(uint32_t gpu_idx) {

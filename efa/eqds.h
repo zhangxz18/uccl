@@ -1,0 +1,431 @@
+/**
+* @file eqds.h
+* @brief EQDS congestion control [NSDI'22]
+*/
+
+#pragma once
+
+#include <iomanip>
+#include <list>
+#include <optional>
+#include <atomic>
+
+#include <infiniband/verbs.h>
+
+#include "transport_config.h"
+#include "util.h"
+#include "util_efa.h"
+#include "util_buffpool.h"
+#include "util_jring.h"
+#include "util_latency.h"
+#include "util_list.h"
+#include "util_timer.h"
+
+namespace uccl {
+
+namespace eqds{
+
+typedef uint32_t PullQuanta;
+
+constexpr bool pullno_lt(PullQuanta a, PullQuanta b) {
+    return static_cast<int32_t>(a - b) < 0;
+}
+constexpr bool pullno_le(PullQuanta a, PullQuanta b) {
+    return static_cast<int32_t>(a - b) <= 0;
+}
+constexpr bool pullno_eq(PullQuanta a, PullQuanta b) {
+    return static_cast<int32_t>(a - b) == 0;
+}
+constexpr bool pullno_ge(PullQuanta a, PullQuanta b) {
+    return static_cast<int32_t>(a - b) >= 0;
+}
+constexpr bool pullno_gt(PullQuanta a, PullQuanta b) {
+    return static_cast<int32_t>(a - b) > 0;
+}
+
+#define PULL_QUANTUM 4096 // Half 8K MTU
+#define PULL_SHIFT 12
+
+static inline uint32_t unquantize(uint32_t pull_quanta) {
+    return (uint32_t)pull_quanta << PULL_SHIFT;
+}
+
+static inline PullQuanta quantize_floor(uint32_t bytes) {
+    return bytes >> PULL_SHIFT;
+}
+
+static inline PullQuanta quantize_ceil(uint32_t bytes) {
+    return (bytes + PULL_QUANTUM - 1) >> PULL_SHIFT;
+}
+
+struct active_item {
+    struct EQDSCC *eqds_cc;
+    struct list_head active_link;
+};
+
+struct idle_item {
+    struct EQDSCC *eqds_cc;
+    struct list_head idle_link;
+};
+
+
+// Per-QP congestion control state for EQDS.
+struct EQDSCC {
+
+    static constexpr PullQuanta INIT_PULL_QUANTA = 50;
+    static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
+
+    /********************************************************************/
+    /************************ Sender-side states ************************/
+    /********************************************************************/
+
+    // Last received highest credit in PullQuanta.
+    PullQuanta pull_ = INIT_PULL_QUANTA;
+    PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
+    // Receive request credit in PullQuanta, but consume it in bytes
+    uint32_t credit_pull_ = 0;
+    uint32_t credit_spec_ = kEQDSMaxCwnd;
+    bool in_speculating_ = true;
+    /********************************************************************/
+    /*********************** Receiver-side states ***********************/
+    /********************************************************************/
+
+    /***************** Shared between engine and pacer ******************/
+    std::atomic<PullQuanta> highest_pull_target_;
+
+    /*************************** Pacer only *****************************/
+    PullQuanta latest_pull_;
+    struct active_item active_item;
+    struct idle_item idle_item;
+    /************************* No modification **************************/
+    uint32_t fid_;
+    struct PacerCreditQPWrapper *pc_qpw_;
+
+    inline uint32_t credit() { return credit_pull_ + credit_spec_; }
+
+    // Called when transmitting a chunk.
+    // Return true if we can transmit the chunk. Otherwise,
+    // sender should pause sending this message until credit is received.
+    inline bool spend_credit(uint32_t chunk_size) {
+
+        if (credit_pull_ > 0) {
+            if (credit_pull_ > chunk_size)
+                credit_pull_ -= chunk_size;
+            else
+                credit_pull_ = 0;
+            return true;
+        } else if (in_speculating_ && credit_spec_ > 0) {
+            if (credit_spec_ > chunk_size)
+                credit_spec_ -= chunk_size;
+            else
+                credit_spec_ = 0;
+            return true;
+        }
+
+        // let pull target can advance
+        if (credit_spec_ > chunk_size)
+            credit_spec_ -= chunk_size;
+        else
+            credit_spec_ = 0;
+
+        return false;
+    }
+
+    // Called when we receiving ACK or pull packet.
+    inline void stop_speculating() { in_speculating_ = false; }
+
+    PullQuanta compute_pull_target(void *context, uint32_t chunk_size);
+
+    inline bool handle_pull_target(PullQuanta pull_target) {
+        PullQuanta hpt = highest_pull_target_.load();
+        if (pullno_gt(pull_target, hpt)) {
+            // Only we can increase the pull target.
+            highest_pull_target_.store(pull_target);
+            return true;
+        }
+        return false;
+    }
+
+    inline bool handle_pull(PullQuanta pullno) {
+        if (pullno_gt(pullno, pull_)) {
+            PullQuanta extra_credit = pullno - pull_;
+            credit_pull_ += unquantize(extra_credit);
+            if (credit_pull_ > kEQDSMaxCwnd) {
+                credit_pull_ = kEQDSMaxCwnd;
+            }
+            pull_ = pullno;
+            return true;
+        }
+        return false;
+    }
+
+    /// Helper functions called by pacer ///
+
+    inline void set_fid(uint32_t fid) { fid_ = fid; }
+
+    inline void set_pacer_credit_qpw(struct PacerCreditQPWrapper *pc_qpw) {
+        pc_qpw_ = pc_qpw;
+    }
+
+    inline void init_active_item(void) {
+        INIT_LIST_HEAD(&active_item.active_link);
+        active_item.eqds_cc = this;
+    }
+
+    inline void init_idle_item(void) {
+        INIT_LIST_HEAD(&idle_item.idle_link);
+        idle_item.eqds_cc = this;
+    }
+
+    inline PullQuanta backlog() {
+        auto hpt = highest_pull_target_.load();
+        if (pullno_gt(hpt, latest_pull_)) {
+            return hpt - latest_pull_;
+        } else {
+            return 0;
+        }
+    }
+
+    inline bool idle_credit_enough() {
+        PullQuanta idle_cumulate_credit;
+        auto hpt = highest_pull_target_.load();
+
+        if (pullno_ge(hpt, latest_pull_)) {
+            idle_cumulate_credit = 0;
+        } else {
+            idle_cumulate_credit = latest_pull_ - hpt;
+        }
+
+        return idle_cumulate_credit >= quantize_floor(kEQDSMaxCwnd);
+    }
+};
+
+class EQDSChannel {
+    static constexpr uint32_t kChannelSize = 2048;
+
+    public:
+    struct Msg {
+        enum Op : uint8_t {
+            kRequestPull,
+        };
+        Op opcode;
+        EQDSCC *eqds_cc;
+    };
+    static_assert(sizeof(Msg) % 4 == 0, "channelMsg must be 32-bit aligned");
+
+    EQDSChannel() { cmdq_ = create_ring(sizeof(Msg), kChannelSize); }
+
+    ~EQDSChannel() { free(cmdq_); }
+
+    jring_t *cmdq_;
+};
+
+// Per engine Credit QP context.
+class CreditQPContext {
+public:
+    CreditQPContext(struct ibv_context *context, struct ibv_pd *pd, ibv_gid gid) {
+        context_ = context;
+        pd_ = pd;
+        gid_ = gid;
+
+        pacer_credit_cq_ = ibv_create_cq(context_, kMaxCqeTotal, nullptr, nullptr, 0);
+        engine_credit_cq_ = ibv_create_cq(context_, kMaxCqeTotal, nullptr, nullptr, 0);
+        DCHECK(pacer_credit_cq_ && engine_credit_cq_) << "Failed to create pacer/engine_credit_cq.";
+
+        for (int i = 0; i < kMaxSrcDstQPCredit; i++)
+            credit_qp_list_[i] = __create_credit_qp(pacer_credit_cq_, engine_credit_cq_);
+        
+        // Allocate memory for credit headers on engine/pacer.
+        void *pacer_hdr_addr = mmap(nullptr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        DCHECK(pacer_hdr_addr != MAP_FAILED);
+
+        pacer_hdr_mr_ = ibv_reg_mr(pd_, pacer_hdr_addr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, IBV_ACCESS_LOCAL_WRITE);
+        DCHECK(pacer_hdr_mr_ != nullptr);
+
+        pacer_hdr_pool_ = new PktHdrBuffPool(pacer_hdr_mr_);
+
+        void *engine_hdr_addr = mmap(nullptr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        DCHECK(engine_hdr_addr != MAP_FAILED);
+
+        engine_hdr_mr_ = ibv_reg_mr(pd_, engine_hdr_addr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, IBV_ACCESS_LOCAL_WRITE);
+        DCHECK(engine_hdr_mr_ != nullptr);
+
+        engine_hdr_pool_ = new PktHdrBuffPool(engine_hdr_mr_);
+
+        // Allocate memory for frame desc on engine/pacer.
+        pacer_frame_desc_pool_ = new FrameDescBuffPool();
+        
+        engine_frame_desc_pool_ = new FrameDescBuffPool();
+
+        init_ = true;
+    }
+
+    ~CreditQPContext() {
+
+        if (!init_) return;
+
+        delete engine_frame_desc_pool_;
+
+        delete pacer_frame_desc_pool_;
+
+        delete engine_hdr_pool_;
+
+        munmap(engine_hdr_mr_->addr, engine_hdr_mr_->length);
+        ibv_dereg_mr(engine_hdr_mr_);
+        
+        munmap(pacer_hdr_mr_->addr, pacer_hdr_mr_->length);
+        ibv_dereg_mr(pacer_hdr_mr_);
+        
+        for (int i = 0; i < kMaxSrcDstQPCredit; i++)
+            ibv_destroy_qp(credit_qp_list_[i]);
+    
+        ibv_destroy_cq(pacer_credit_cq_);
+        ibv_destroy_cq(engine_credit_cq_);
+        
+        init_ = false;
+    }
+
+
+    int poll_credit_cq(void);
+
+private:
+
+    inline struct ibv_qp *__create_credit_qp(struct ibv_cq *scq, struct ibv_cq *rcq) {
+        struct ibv_qp_init_attr qp_attr = {};
+        qp_attr.send_cq = scq;
+        qp_attr.recv_cq = rcq;
+        qp_attr.cap.max_send_wr = kMaxSendWr;
+        qp_attr.cap.max_recv_wr = kMaxRecvWr;
+        qp_attr.cap.max_send_sge = 1;
+        qp_attr.cap.max_recv_sge = 1;
+
+        qp_attr.qp_type = IBV_QPT_UD;
+        struct ibv_qp *qp = ibv_create_qp(pd_, &qp_attr);
+        DCHECK(qp) << "Failed to create credit QP.";
+
+        struct ibv_qp_attr attr = {};
+        attr.qp_state = IBV_QPS_INIT;
+        attr.pkey_index = 0;
+        attr.port_num = EFA_PORT_NUM;
+        attr.qkey = QKEY;
+        DCHECK(ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY) == 0)
+            << "Failed to modify Credit QP INIT.";
+
+        memset(&attr, 0, sizeof(attr));
+        attr.qp_state = IBV_QPS_RTR;
+        DCHECK(ibv_modify_qp(qp, &attr, IBV_QP_STATE) == 0) << "Failed to modify Credit QP RTR.";
+        
+        memset(&attr, 0, sizeof(attr));
+        attr.qp_state = IBV_QPS_RTS;
+        attr.sq_psn = SQ_PSN;
+        DCHECK(ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_SQ_PSN) == 0) << "Failed to modify Credit QP RTS.";
+        
+        return qp;
+    }
+
+    struct ibv_qp *credit_qp_list_[kMaxSrcDstQPCredit];
+        
+    /////////// Data touched by UCCL Pacer ///////////
+    // Used by pacer to poll TX events.
+    struct ibv_cq *pacer_credit_cq_;
+
+    struct ibv_mr *pacer_hdr_mr_;
+    PktHdrBuffPool *pacer_hdr_pool_;
+    FrameDescBuffPool *pacer_frame_desc_pool_;
+
+    /////////// Data touched by UCCL Engine ///////////
+    // Used by engine to poll RX events.
+    struct ibv_cq *engine_credit_cq_;
+
+    struct ibv_mr *engine_hdr_mr_;
+    PktHdrBuffPool *engine_hdr_pool_;
+    FrameDescBuffPool *engine_frame_desc_pool_;
+
+    /////////// Read only values ///////////
+    bool init_ = false;
+    struct ibv_context *context_;
+    struct ibv_pd *pd_;
+    ibv_gid gid_;
+};
+
+class EQDS {
+public:
+    // How many credits to grant per pull.
+    static const PullQuanta kCreditPerPull = 4;
+    // How many senders to grant credit per iteration.
+    static const uint32_t kSendersPerPull = 1;
+
+    // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8,
+    // kCreditPerPull = 4, kSendersPerPull = 4, kPacingIntervalUs ~= 5.3 us.
+    static const uint64_t kPacingIntervalUs =
+        0.99 /* slower than line rate */ *
+        (38 /* FCS overhead */ + PULL_QUANTUM) * kCreditPerPull * 1e6 *
+        kSendersPerPull / kLinkBandwidth;
+    
+    CreditQPContext *credit_qp_ctx_[kNumEnginesPerVdev];
+
+    EQDSChannel channel_;
+
+    // Make progress on the pacer.
+    void run_pacer(void);
+
+    // Handle registration requests.
+    void handle_pull_request(void);
+
+    // Handle Credit CQ TX events.
+    void handle_poll_cq(void);
+
+    // Grant credits to senders.
+    void handle_grant_credit(void);
+
+    EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
+
+        DCHECK(pdev_idx_ < 4);
+
+        pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
+        
+        auto *factory_dev = EFAFactory::GetEFADevice(pdev_idx_);
+        for (int i = 0; i < kNumEnginesPerVdev; i++)
+            credit_qp_ctx_[i]= new CreditQPContext(factory_dev->context, factory_dev->pd, factory_dev->gid);
+
+        auto numa_node = pdev_idx_ / 2;
+        DCHECK(numa_node == 0 || numa_node == 1);
+        auto pacer_cpu = PACER_CPU_START[numa_node] + pdev_idx_ % 2;
+
+        // Initialize the pacer thread.
+        pacer_th_ = std::thread([this, pacer_cpu] {
+            // Pin the pacer thread to a specific CPU.
+            pin_thread_to_cpu(PACER_CPU_START[pacer_cpu]);
+            while (!shutdown_) {
+                run_pacer();
+            }
+        });
+    }
+
+    ~EQDS() {}
+
+    // Shutdown the EQDS pacer thread.
+    inline void shutdown(void) {
+        shutdown_ = true;
+        pacer_th_.join();
+
+        for (int i = 0; i < kNumEnginesPerVdev; i++) delete credit_qp_ctx_[i];
+    }
+
+private:
+    std::thread pacer_th_;
+    int pdev_idx_;
+
+    LIST_HEAD(active_senders_);
+    LIST_HEAD(idle_senders_);
+
+    uint64_t last_pacing_tsc_;
+
+    uint64_t pacing_interval_tsc_;
+
+    bool shutdown_ = false;
+};
+
+}; // namesapce eqds
+
+}; // namesapce uccl
