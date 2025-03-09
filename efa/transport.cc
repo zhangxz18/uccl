@@ -1001,8 +1001,7 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
     size_t remaining_bytes = tx_work.len - cur_offset;
 
     uint32_t path_id = kMaxPath;
-    if constexpr (kCCType == CCType::kTimelyPP ||
-                kCCType == CCType::kEQDS) {
+    if constexpr (kCCType == CCType::kTimelyPP) {
         path_id = get_path_id_with_lowest_rtt();
     }
 

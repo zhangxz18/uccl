@@ -45,8 +45,8 @@ constexpr bool pullno_gt(PullQuanta a, PullQuanta b) {
     return static_cast<int16_t>(a - b) > 0;
 }
 
-#define PULL_QUANTUM 16384
-#define PULL_SHIFT 14
+#define PULL_QUANTUM 8192
+#define PULL_SHIFT 13
 
 static inline uint32_t unquantize(uint32_t pull_quanta) {
     return (uint32_t)pull_quanta << PULL_SHIFT;
@@ -463,7 +463,7 @@ private:
 class EQDS {
 public:
     // How many credits to grant per pull.
-    static const PullQuanta kCreditPerPull = 4;
+    static const PullQuanta kCreditPerPull = 2;
     // How many senders to grant credit per iteration.
     static const uint32_t kSendersPerPull = 1;
 
