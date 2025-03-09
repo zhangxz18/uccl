@@ -1898,14 +1898,16 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
         str << local_meta->qpn_list_ctrl[i] << " ";
     }
 
-    for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
-        local_meta->qpn_list_credit[i] = 
-            engine_vec_[local_engine_idx]->credit_qp_ctx_->get_qpn(i);
-    }
-
-    str << "\n [Engine] local_meta->qpn_list_credit: ";
-    for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
-        str << local_meta->qpn_list_credit[i] << " ";
+    if constexpr (kCCType == CCType::kEQDS) {
+        for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
+            local_meta->qpn_list_credit[i] = 
+                engine_vec_[local_engine_idx]->credit_qp_ctx_->get_qpn(i);
+        }
+    
+        str << "\n [Engine] local_meta->qpn_list_credit: ";
+        for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
+            str << local_meta->qpn_list_credit[i] << " ";
+        }
     }
     LOG(INFO) << str.str();
 

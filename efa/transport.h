@@ -439,9 +439,12 @@ class UcclFlow {
 
         peer_flow_id_ = get_peer_flow_id(flow_id);
 
-        eqds_cc_.send_pullpacket = [this](const PullQuanta &pullno) -> bool {
-            return this->send_pullpacket(pullno);
-        };
+        if constexpr (kCCType == CCType::kEQDS) {
+            eqds_cc_.send_pullpacket = [this](const PullQuanta &pullno) -> bool {
+                return this->send_pullpacket(pullno);
+            };
+        }
+
     }
     ~UcclFlow() {
         delete local_meta_;

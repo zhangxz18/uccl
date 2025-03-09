@@ -214,7 +214,7 @@ public:
 
 private:
     static constexpr PullQuanta INIT_PULL_QUANTA = 50;
-    static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
+    static constexpr uint32_t kEQDSMaxCwnd = 600000; // BDPBytes = 100Gbps * 50us RTT
 
     /********************************************************************/
     /************************ Sender-side states ************************/
@@ -496,8 +496,6 @@ public:
 
     EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
 
-        if constexpr (kCCType != CCType::kEQDS) return;
-
         DCHECK(pdev_idx_ < 4);
 
         pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
@@ -525,9 +523,8 @@ public:
     // Shutdown the EQDS pacer thread.
     inline void shutdown(void) {
 
-        if constexpr (kCCType != CCType::kEQDS) return;
-
         shutdown_ = true;
+        
         pacer_th_.join();
 
         for (int i = 0; i < kNumEnginesPerVdev; i++) delete credit_qp_ctx_[i];
