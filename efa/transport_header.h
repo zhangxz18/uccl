@@ -8,6 +8,7 @@
 
 namespace uccl {
 
+typedef uint32_t PullQuanta;
 /**
  * Uccl Packet Header just after UDP header.
  */
@@ -31,6 +32,7 @@ struct __attribute__((packed)) UcclPktHdr {
     be32_t ackno;  // Sequence number to denote the packet counter in the flow.
     uint64_t timestamp1;  // Filled by sender with calibration for output queue
     uint64_t timestamp2;  // Filled by recver eBPF
+    be32_t pullno;    // Receiver-driven congestion control.
 };
 
 struct __attribute__((packed)) UcclSackHdr {
@@ -42,15 +44,9 @@ struct __attribute__((packed)) UcclSackHdr {
     be32_t rwnd;        // Receiver window size in terms of packets.
 };
 
-typedef uint32_t PullQuanta;
-struct __attribute__((packed)) UcclPullHdr {
-    PullQuanta pullno;
-};
-
 static const size_t kUcclPktHdrLen = sizeof(UcclPktHdr);
 static const size_t kUcclPktDataMaxLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
-static const size_t kUcclPullHdrLen = sizeof(UcclPullHdr);
 
 inline UcclPktHdr::UcclFlags operator|(UcclPktHdr::UcclFlags lhs,
                                        UcclPktHdr::UcclFlags rhs) {

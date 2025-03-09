@@ -1,4 +1,6 @@
 #include "transport.h"
+#include "transport_config.h"
+#include "transport_header.h"
 
 namespace uccl {
 
@@ -107,7 +109,11 @@ std::optional<FrameDesc *> TXTracking::get_and_update_oldest_unsent() {
     return msgbuf;
 }
 
-RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameDesc *msgbuf) {
+RXTracking::ConsumeRet RXTracking::consume(UcclFlow *flow, FrameDesc *msgbuf) {
+    
+    auto *pcb = flow->get_pcb();
+    auto *eqds_cc = flow->get_eqds_cc();
+
     uint8_t *pkt_addr = (uint8_t *)msgbuf->get_pkt_hdr_addr() + EFA_UD_ADDITION;
     auto *ucclh = reinterpret_cast<UcclPktHdr *>(pkt_addr);
     const auto frame_len = ucclh->frame_len.value();
@@ -169,6 +175,12 @@ RXTracking::ConsumeRet RXTracking::consume(swift::Pcb *pcb, FrameDesc *msgbuf) {
 
     // These frames will be freed when the message is delivered to the app.
     push_inorder_msgbuf_to_app(pcb);
+
+    if constexpr (kCCType == CCType::kEQDS) {
+        if (eqds_cc->handle_pull_target(ucclh->pullno.value())) {
+            flow->request_pull();
+        }
+    }
 
     return kOOOTrackableExpectedOrInOrder;
 }
@@ -467,7 +479,7 @@ void UcclFlow::rx_messages() {
             case UcclPktHdr::UcclFlags::kData:
                 // Data packet, process the payload. The frame will be freed
                 // once the engine copies the payload into app buffer
-                consume_ret = rx_tracking_.consume(&pcb_, msgbuf);
+                consume_ret = rx_tracking_.consume(this, msgbuf);
                 num_data_frames_recvd++;
                 path_id = ucclh->path_id;
                 break;
@@ -518,6 +530,11 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     auto remaining_bytes = tx_work.len;
     auto *app_mr = tx_work.mhandle->mr;
     auto *poll_ctx = tx_work.poll_ctx;
+
+    if constexpr (kCCType == CCType::kEQDS) {
+        eqds_cc_.inc_backlog(tx_work.len);
+    }
+
     while (remaining_bytes > 0) {
         auto payload_len = std::min(remaining_bytes, (int)kUcclPktDataMaxLen);
         auto frame_desc = socket_->pop_frame_desc();
@@ -612,12 +629,11 @@ bool UcclFlow::periodic_check() {
 
 void UcclFlow::process_credit(const UcclPktHdr *ucclh)
 {
-    const auto *ucclpullh = reinterpret_cast<const UcclPullHdr *>(
-        reinterpret_cast<const uint8_t *>(ucclh) + kUcclPktHdrLen);
-    auto pullno = ucclpullh->pullno;
+    auto pullno = ucclh->pullno.value();
 
     if (eqds_cc_.handle_pull(pullno)) {
-        // Trigger transmission.
+        // Kick transmission.
+        transmit_pending_packets();
     }
 }
 
@@ -868,6 +884,11 @@ void UcclFlow::transmit_pending_packets() {
     if constexpr (kCCType == CCType::kCubicPP) {
         permitted_packets = std::min(hard_budget, SEND_BATCH_SIZE);
     }
+    if constexpr (kCCType == CCType::kEQDS) {
+        permitted_packets = std::min(hard_budget, eqds_cc_.credit() / EFA_MTU);
+        if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MTU))
+            permitted_packets = 0;
+    }
 
     // static uint64_t transmit_tries = 0;
     // static uint64_t transmit_success = 0;
@@ -1062,11 +1083,15 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
             : 0;
     // let the receiver fill this in when receiving this data packet.
     ucclh->timestamp2 = 0;
+
+    if constexpr (kCCType == CCType::kEQDS) {
+        ucclh->pullno = be32_t(eqds_cc_.compute_pull_target());
+    }
 }
 
 bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
 {
-    const size_t kControlPayloadBytes = kUcclPktHdrLen + kUcclPullHdrLen;
+    const size_t kControlPayloadBytes = kUcclPktHdrLen;
 
     auto frame_desc_buff = credit_qp_ctx_->pop_frame_desc();
     auto pkt_hdr_buff = credit_qp_ctx_->pop_pkt_hdr();
@@ -1080,8 +1105,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     ucclh->frame_len = be16_t(kControlPayloadBytes);
     ucclh->flow_id = be64_t(peer_flow_id_);
     
-    auto *ucclpullh = (UcclPullHdr *)(pkt_addr + kUcclPktHdrLen);
-    ucclpullh->pullno = pullno;
+    ucclh->pullno = be32_t(pullno);
 
     frame->set_dest_ah(remote_ah_);
     frame->set_dest_qpn(credit_qpidx_rr_++);
@@ -1177,9 +1201,11 @@ void UcclEngine::run() {
             socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
         frames.insert(frames.end(), _frames.begin(), _frames.end());
         
-        // Receive credits.
-        _frames = credit_qp_ctx_->engine_poll_credit_cq();
-        frames.insert(frames.end(), _frames.begin(), _frames.end());
+        if constexpr (kCCType == CCType::kEQDS) {            
+            // Receive credits.
+            _frames = credit_qp_ctx_->engine_poll_credit_cq();
+            frames.insert(frames.end(), _frames.begin(), _frames.end());
+        }
 
         if (frames.size()) {
             process_rx_msg(frames);
@@ -1308,7 +1334,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
 
     auto *flow =
         new UcclFlow(local_ip_str_, remote_ip_str, local_meta, remote_meta,
-                     local_engine_idx_, remote_engine_idx, socket_, credit_qp_ctx_, channel_,
+                     local_engine_idx_, remote_engine_idx, socket_, credit_qp_ctx_, eqds_channel_, channel_,
                      flow_id, active_flows_map_, is_sender);
     auto *dev = EFAFactory::GetEFADevice(socket_->dev_idx());
     flow->remote_ah_ = dev->create_ah(remote_meta->gid);
@@ -1321,7 +1347,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
               << Format("(%d)", local_engine_idx_) << arrow << remote_ip_str
               << Format("(%d)", remote_engine_idx);
     
-    request_pull(&flow->eqds_cc_);
+    flow->request_pull();
 
     // Wakeup app thread waiting on endpoint.
     if (--(poll_ctx->num_unfinished) == 0) {

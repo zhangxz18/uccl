@@ -145,12 +145,12 @@ void CreditQPContext::__post_recv_wrs_for_credit(int nb, uint32_t qpidx)
 
             auto *frame_desc = FrameDesc::Create(
                 frame_desc_buf, pkt_hdr_buf,
-                    EFA_UD_ADDITION + kUcclPktHdrLen + kUcclPullHdrLen, 0, 0, 0, 0);
+                    EFA_UD_ADDITION + kUcclPktHdrLen, 0, 0, 0, 0);
             
             frame_desc->set_src_qp_idx(qpidx);
 
             rq_sges_[i].addr = pkt_hdr_buf;
-            rq_sges_[i].length = EFA_UD_ADDITION + kUcclPktHdrLen + kUcclPullHdrLen;
+            rq_sges_[i].length = EFA_UD_ADDITION + kUcclPktHdrLen;
             rq_sges_[i].lkey = engine_hdr_pool_->get_lkey();
 
             rq_wrs_[i].wr_id = (uint64_t)frame_desc;
@@ -210,6 +210,36 @@ int CreditQPContext::pacer_poll_credit_cq(void)
     }
 
     return nr_cqe;
+}
+
+PullQuanta EQDSCC::compute_pull_target()
+{
+    uint32_t pull_target_bytes = backlog_bytes_;
+
+    if (pull_target_bytes > kEQDSMaxCwnd)
+        pull_target_bytes = kEQDSMaxCwnd;
+
+    if (pull_target_bytes > credit_pull_ + credit_spec_)
+        pull_target_bytes -= (credit_pull_ + credit_spec_);
+    else
+        pull_target_bytes = 0;
+
+    pull_target_bytes += unquantize(pull_);
+
+    PullQuanta old_pull_target_bytes = unquantize(last_sent_pull_target_);
+
+    if (!in_speculating_ && credit_spec_ > 0 &&
+        pull_target_bytes - old_pull_target_bytes < PULL_QUANTUM / 2) {
+        if (credit_spec_ > PULL_QUANTUM)
+            credit_spec_ -= PULL_QUANTUM;
+        else
+            credit_spec_ = 0;
+        pull_target_bytes += PULL_QUANTUM;
+    }
+
+    last_sent_pull_target_ = quantize_ceil(pull_target_bytes);
+
+    return last_sent_pull_target_;
 }
 
 }; // namesapce eqds

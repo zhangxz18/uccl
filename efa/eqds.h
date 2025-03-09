@@ -18,7 +18,6 @@
 #include "util_efa.h"
 #include "util_buffpool.h"
 #include "util_jring.h"
-#include "util_latency.h"
 #include "util_list.h"
 #include "util_timer.h"
 
@@ -124,7 +123,7 @@ public:
     // Called when we receiving ACK or pull packet.
     inline void stop_speculating() { in_speculating_ = false; }
 
-    PullQuanta compute_pull_target(void *context, uint32_t chunk_size);
+    PullQuanta compute_pull_target();
 
     inline bool handle_pull_target(PullQuanta pull_target) {
         PullQuanta hpt = highest_pull_target_.load();
@@ -196,11 +195,22 @@ public:
     }
 
     inline void inc_lastest_pull(uint32_t inc) {
+        // Handle wraparound correctly.
         latest_pull_ += inc;
     }
-
+    
     inline void dec_latest_pull(uint32_t dec) {
+        // Handle wraparound correctly.
         latest_pull_ -= dec;
+    }
+
+    inline void inc_backlog(uint32_t inc) {
+        backlog_bytes_ += inc;
+    }
+
+    inline void dec_backlog(uint32_t dec) {
+        DCHECK(backlog_bytes_ >= dec);
+        backlog_bytes_ -= dec;
     }
 
 private:
@@ -210,7 +220,7 @@ private:
     /********************************************************************/
     /************************ Sender-side states ************************/
     /********************************************************************/
-
+    uint32_t backlog_bytes_ = 0;
     // Last received highest credit in PullQuanta.
     PullQuanta pull_ = INIT_PULL_QUANTA;
     PullQuanta last_sent_pull_target_ = INIT_PULL_QUANTA;
@@ -457,6 +467,8 @@ public:
 
     EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
 
+        if constexpr (kCCType != CCType::kEQDS) return;
+
         DCHECK(pdev_idx_ < 4);
 
         pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
@@ -483,6 +495,9 @@ public:
 
     // Shutdown the EQDS pacer thread.
     inline void shutdown(void) {
+
+        if constexpr (kCCType != CCType::kEQDS) return;
+
         shutdown_ = true;
         pacer_th_.join();
 

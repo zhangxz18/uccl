@@ -319,7 +319,7 @@ class RXTracking {
         kOOOTrackableExpectedOrInOrder = 3,
     };
 
-    ConsumeRet consume(swift::Pcb *pcb, FrameDesc *msgbuf);
+    ConsumeRet consume(UcclFlow *flow, FrameDesc *msgbuf);
 
    private:
     std::unordered_map<FlowID, UcclFlow *> &active_flows_map_;
@@ -401,7 +401,8 @@ class UcclFlow {
     UcclFlow(std::string local_ip_str, std::string remote_ip_str,
              ConnMeta *local_meta, ConnMeta *remote_meta,
              uint32_t local_engine_idx, uint32_t remote_engine_idx,
-             EFASocket *socket, eqds::CreditQPContext *credit_qp_ctx, Channel *channel, FlowID flow_id,
+             EFASocket *socket, eqds::CreditQPContext *credit_qp_ctx, eqds::EQDSChannel *eqds_channel,
+             Channel *channel, FlowID flow_id,
              std::unordered_map<FlowID, UcclFlow *> &active_flows_map_,
              bool is_sender)
         : remote_ip_str_(remote_ip_str),
@@ -412,6 +413,7 @@ class UcclFlow {
           remote_engine_idx_(remote_engine_idx),
           socket_(CHECK_NOTNULL(socket)),
           credit_qp_ctx_(credit_qp_ctx),
+          eqds_channel_(eqds_channel),
           channel_(channel),
           flow_id_(flow_id),
           pcb_(),
@@ -496,6 +498,19 @@ class UcclFlow {
      */
     bool periodic_check();
 
+    inline swift::Pcb *get_pcb() { return &pcb_; }
+
+    inline eqds::EQDSCC *get_eqds_cc() { return &eqds_cc_; }
+
+    // [Thread-safe] Request pacer to grant credit to this flow.
+    inline void request_pull() {
+        eqds::EQDSChannel::Msg msg = {
+            .opcode = eqds::EQDSChannel::Msg::Op::kRequestPull,
+            .eqds_cc = &eqds_cc_,
+        };
+        while (jring_mp_enqueue_bulk(eqds_channel_->cmdq_, &msg, 1, nullptr) != 1) {}
+    }
+
    private:
     void process_ack(const UcclPktHdr *ucclh);
 
@@ -547,6 +562,7 @@ class UcclFlow {
     EFASocket *socket_;
     
     eqds::CreditQPContext *credit_qp_ctx_;
+    eqds::EQDSChannel *eqds_channel_;
     uint32_t credit_qpidx_rr_ = 0;
 
     // The channel this flow belongs to.
@@ -730,15 +746,6 @@ class UcclEngine {
      * requests and processes them. It is called periodically.
      */
     void process_ctl_reqs();
-
-    // [Thread-safe] Request pacer to grant credit to this flow.
-    inline void request_pull(eqds::EQDSCC *eqds_cc) {
-        eqds::EQDSChannel::Msg msg = {
-            .opcode = eqds::EQDSChannel::Msg::Op::kRequestPull,
-            .eqds_cc = eqds_cc,
-        };
-        while (jring_mp_enqueue_bulk(eqds_channel_->cmdq_, &msg, 1, nullptr) != 1) {}
-    }
 
    private:
     // Local IP address.
