@@ -71,6 +71,7 @@ static const uint64_t MAX_FLOW_ID = 1000000;
 static const uint32_t kMaxSendWr = 1024;
 static const uint32_t kMaxRecvWr = 128;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;
+static const uint32_t kMaxSendRecvWrForCredit = 1024;
 static const uint32_t kMaxCqeTotal = 16384;
 static const uint32_t kMaxPollBatch = 32;
 static const uint32_t kMaxRecvWrDeficit = 32;

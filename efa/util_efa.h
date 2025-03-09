@@ -301,6 +301,7 @@ struct ConnMeta {
     // data qps + ctrl qp.
     uint32_t qpn_list[kMaxSrcDstQP];
     uint32_t qpn_list_ctrl[kMaxSrcDstQPCtrl];
+    uint32_t qpn_list_credit[kMaxSrcDstQPCredit];
     union ibv_gid gid;
 };
 

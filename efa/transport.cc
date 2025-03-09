@@ -1,6 +1,7 @@
 #include "transport.h"
 #include "transport_config.h"
 #include "transport_header.h"
+#include <glog/logging.h>
 
 namespace uccl {
 
@@ -452,8 +453,8 @@ void UcclFlow::rx_messages() {
         switch (ucclh->net_flags) {
             case UcclPktHdr::UcclFlags::kCredit:
                 process_credit(ucclh);
-                credit_qp_ctx_->push_pkt_hdr(msgbuf->get_pkt_hdr_addr());
-                credit_qp_ctx_->push_frame_desc((uint64_t)msgbuf);
+                credit_qp_ctx_->engine_push_pkt_hdr(msgbuf->get_pkt_hdr_addr());
+                credit_qp_ctx_->engine_push_frame_desc((uint64_t)msgbuf);
                 break;
             case UcclPktHdr::UcclFlags::kAckRttProbe:
                 timestamp4 = msgbuf->get_cpe_time_tsc();
@@ -859,6 +860,9 @@ void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
  * of pending TX data.
  */
 void UcclFlow::transmit_pending_packets() {
+
+    if (!tx_tracking_.num_unsent_msgbufs()) return;
+
     // Avoid sending too many packets.
     if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return;
     auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
@@ -886,6 +890,7 @@ void UcclFlow::transmit_pending_packets() {
     }
     if constexpr (kCCType == CCType::kEQDS) {
         permitted_packets = std::min(hard_budget, eqds_cc_.credit() / EFA_MTU);
+        permitted_packets = std::min(permitted_packets, tx_tracking_.num_unsent_msgbufs());
         if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MTU))
             permitted_packets = 0;
     }
@@ -993,7 +998,8 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
     size_t remaining_bytes = tx_work.len - cur_offset;
 
     uint32_t path_id = kMaxPath;
-    if constexpr (kCCType == CCType::kTimelyPP) {
+    if constexpr (kCCType == CCType::kTimelyPP ||
+                kCCType == CCType::kEQDS) {
         path_id = get_path_id_with_lowest_rtt();
     }
 
@@ -1093,8 +1099,8 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
 {
     const size_t kControlPayloadBytes = kUcclPktHdrLen;
 
-    auto frame_desc_buff = credit_qp_ctx_->pop_frame_desc();
-    auto pkt_hdr_buff = credit_qp_ctx_->pop_pkt_hdr();
+    auto frame_desc_buff = credit_qp_ctx_->pacer_pop_frame_desc();
+    auto pkt_hdr_buff = credit_qp_ctx_->pacer_pop_pkt_hdr();
     auto frame = FrameDesc::Create(frame_desc_buff, pkt_hdr_buff, kControlPayloadBytes,
         0, 0, 0, 0);
 
@@ -1108,7 +1114,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     ucclh->pullno = be32_t(pullno);
 
     frame->set_dest_ah(remote_ah_);
-    frame->set_dest_qpn(credit_qpidx_rr_++);
+    frame->set_dest_qpn(remote_meta_->qpn_list_credit[credit_qpidx_rr_++]);
 
     if (credit_qpidx_rr_ == kMaxSrcDstQPCredit)
         credit_qpidx_rr_ = 0;
@@ -1116,11 +1122,12 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     struct ibv_sge sge = {
         .addr = frame->get_pkt_hdr_addr(),
         .length = frame->get_pkt_hdr_len(),
-        .lkey = credit_qp_ctx_->get_engine_hdr_pool_lkey(),
+        .lkey = credit_qp_ctx_->get_pacer_hdr_pool_lkey(),
     };
 
     struct ibv_send_wr wr, *bad_wr;
     wr.wr_id = (uint64_t)frame;
+    wr.opcode = IBV_WR_SEND;
     wr.num_sge = 1;
     wr.sg_list = &sge;
     wr.next = nullptr;
@@ -1347,7 +1354,9 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
               << Format("(%d)", local_engine_idx_) << arrow << remote_ip_str
               << Format("(%d)", remote_engine_idx);
     
-    flow->request_pull();
+    if constexpr (kCCType == CCType::kEQDS) {
+        if (!is_sender) flow->request_pull();
+    }
 
     // Wakeup app thread waiting on endpoint.
     if (--(poll_ctx->num_unfinished) == 0) {
@@ -1885,6 +1894,16 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     str << "\n [Engine] local_meta->qpn_list_ctrl: ";
     for (int i = 0; i < kMaxSrcDstQPCtrl; i++) {
         str << local_meta->qpn_list_ctrl[i] << " ";
+    }
+
+    for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
+        local_meta->qpn_list_credit[i] = 
+            engine_vec_[local_engine_idx]->credit_qp_ctx_->get_qpn(i);
+    }
+
+    str << "\n [Engine] local_meta->qpn_list_credit: ";
+    for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
+        str << local_meta->qpn_list_credit[i] << " ";
     }
     LOG(INFO) << str.str();
 

@@ -136,6 +136,7 @@ public:
     }
 
     inline bool handle_pull(PullQuanta pullno) {
+        // LOG(INFO) << "pull_: " << pull_ << ", pullno: " << pullno;
         if (pullno_gt(pullno, pull_)) {
             PullQuanta extra_credit = pullno - pull_;
             credit_pull_ += unquantize(extra_credit);
@@ -149,8 +150,8 @@ public:
     }
 
     /// Helper functions called by pacer ///
-    inline bool in_active_list() { return list_empty(&active_item.active_link); }
-    inline bool in_idle_list() { return list_empty(&idle_item.idle_link); }
+    inline bool in_active_list() { return !list_empty(&active_item.active_link); }
+    inline bool in_idle_list() { return !list_empty(&idle_item.idle_link); }
 
     inline void add_to_active_list(struct list_head *active_senders) {
         DCHECK(!in_active_list());
@@ -273,8 +274,9 @@ public:
         engine_credit_cq_ = ibv_create_cq(context_, kMaxCqeTotal, nullptr, nullptr, 0);
         DCHECK(pacer_credit_cq_ && engine_credit_cq_) << "Failed to create pacer/engine_credit_cq.";
 
-        for (int i = 0; i < kMaxSrcDstQPCredit; i++)
-            credit_qp_list_[i] = __create_credit_qp(pacer_credit_cq_, engine_credit_cq_);
+        for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
+            credit_qp_list_[i] = __create_credit_qp(pacer_credit_cq_, engine_credit_cq_);         
+        }
         
         // Allocate memory for credit headers on engine/pacer.
         void *pacer_hdr_addr = mmap(nullptr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -302,6 +304,10 @@ public:
             rq_wrs_[i].num_sge = 1;
             rq_wrs_[i].sg_list = &rq_sges_[i];
             rq_wrs_[i].next = (i == kMaxChainedWr - 1) ? nullptr : &rq_wrs_[i + 1];
+        }
+
+        for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
+            __post_recv_wrs_for_credit(kMaxSendRecvWrForCredit, i);            
         }
 
         init_ = true;
@@ -336,23 +342,44 @@ public:
 
     int pacer_poll_credit_cq(void);
 
-    inline void push_frame_desc(uint64_t pkt_frame_desc) {
+    inline uint32_t get_qpn(uint32_t idx) {
+        return credit_qp_list_[idx]->qp_num;
+    }
+
+    inline void engine_push_frame_desc(uint64_t pkt_frame_desc) {
         engine_frame_desc_pool_->free_buff(pkt_frame_desc);
     }
 
-    inline uint64_t pop_frame_desc() {
+    inline void pacer_push_frame_desc(uint64_t pkt_frame_desc) {
+        pacer_frame_desc_pool_->free_buff(pkt_frame_desc);
+    }
+
+    inline uint64_t engine_pop_frame_desc() {
         uint64_t frame_desc;
-        DCHECK(engine_frame_desc_pool_->alloc_buff(&frame_desc));
+        DCHECK(engine_frame_desc_pool_->alloc_buff(&frame_desc) == 0);
+        return frame_desc;
+    }
+    inline uint64_t pacer_pop_frame_desc() {
+        uint64_t frame_desc;
+        DCHECK(pacer_frame_desc_pool_->alloc_buff(&frame_desc) == 0);
         return frame_desc;
     }
 
-    inline void push_pkt_hdr(uint64_t pkt_hdr_addr) {
+    inline void engine_push_pkt_hdr(uint64_t pkt_hdr_addr) {
         engine_hdr_pool_->free_buff(pkt_hdr_addr);
     }
+    inline void pacer_push_pkt_hdr(uint64_t pkt_hdr_addr) {
+        pacer_hdr_pool_->free_buff(pkt_hdr_addr);
+    }
 
-    inline uint64_t pop_pkt_hdr() {
+    inline uint64_t engine_pop_pkt_hdr() {
         uint64_t pkt_hdr;
         DCHECK(engine_hdr_pool_->alloc_buff(&pkt_hdr) == 0);
+        return pkt_hdr;
+    }
+    inline uint64_t pacer_pop_pkt_hdr() {
+        uint64_t pkt_hdr;
+        DCHECK(pacer_hdr_pool_->alloc_buff(&pkt_hdr) == 0);
         return pkt_hdr;
     }
 
@@ -365,6 +392,10 @@ public:
         return engine_hdr_pool_->get_lkey();
     }
 
+    inline uint32_t get_pacer_hdr_pool_lkey() {
+        return pacer_hdr_pool_->get_lkey();
+    }
+
 private:
 
     void __post_recv_wrs_for_credit(int nb, uint32_t src_qp_idx);
@@ -373,8 +404,8 @@ private:
         struct ibv_qp_init_attr qp_attr = {};
         qp_attr.send_cq = scq;
         qp_attr.recv_cq = rcq;
-        qp_attr.cap.max_send_wr = kMaxSendWr;
-        qp_attr.cap.max_recv_wr = kMaxRecvWr;
+        qp_attr.cap.max_send_wr = kMaxSendRecvWrForCredit;
+        qp_attr.cap.max_recv_wr = kMaxSendRecvWrForCredit;
         qp_attr.cap.max_send_sge = 1;
         qp_attr.cap.max_recv_sge = 1;
 

@@ -140,8 +140,8 @@ void CreditQPContext::__post_recv_wrs_for_credit(int nb, uint32_t qpidx)
         uint64_t pkt_hdr_buf, frame_desc_buf;
         
         for (int i = 0; i < nr_post; i++) {
-            DCHECK(engine_hdr_pool_->alloc_buff(&pkt_hdr_buf) == 0);
-            DCHECK(engine_frame_desc_pool_->alloc_buff(&frame_desc_buf) == 0);
+            pkt_hdr_buf = engine_pop_pkt_hdr();
+            frame_desc_buf = engine_pop_frame_desc();
 
             auto *frame_desc = FrameDesc::Create(
                 frame_desc_buf, pkt_hdr_buf,
@@ -184,9 +184,6 @@ std::vector<FrameDesc *> CreditQPContext::engine_poll_credit_cq(void)
 
         __post_recv_wrs_for_credit(1, frame->get_src_qp_idx());
 
-        // auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
-        // engine_hdr_pool_->free_buff(pkt_hdr_addr);
-        // engine_frame_desc_pool_->free_buff((uint64_t)frame);
     }
 
     return frames;
@@ -204,9 +201,8 @@ int CreditQPContext::pacer_poll_credit_cq(void)
 
         auto *frame = (FrameDesc *)wc->wr_id;
 
-        auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
-        pacer_hdr_pool_->free_buff(pkt_hdr_addr);
-        pacer_frame_desc_pool_->free_buff((uint64_t)frame);
+        pacer_push_pkt_hdr(frame->get_pkt_hdr_addr());
+        pacer_push_frame_desc((uint64_t)frame);
     }
 
     return nr_cqe;
