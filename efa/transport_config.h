@@ -19,7 +19,7 @@ enum class CCType {
     kCubicPP,
     kEQDS,
 };
-static constexpr CCType kCCType = CCType::kEQDS;
+static constexpr CCType kCCType = CCType::kCubicPP;
 
 #define P4D
 

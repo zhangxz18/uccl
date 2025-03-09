@@ -972,7 +972,9 @@ void UcclFlow::transmit_pending_packets() {
         msgbuf->set_dest_qpn(remote_meta_->qpn_list[dst_qp_idx]);
         pending_tx_frames_.push_back(msgbuf);
 
-        eqds_cc_.dec_backlog(msgbuf->get_pkt_data_len());
+        if constexpr (kCCType == CCType::kEQDS) {
+            eqds_cc_.dec_backlog(msgbuf->get_pkt_data_len());
+        }
 
         pcb_.add_to_rto_wheel(msgbuf, seqno);
     }
