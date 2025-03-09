@@ -8,7 +8,7 @@
 
 namespace uccl {
 
-typedef uint32_t PullQuanta;
+typedef uint16_t PullQuanta;
 /**
  * Uccl Packet Header just after UDP header.
  */
@@ -32,7 +32,7 @@ struct __attribute__((packed)) UcclPktHdr {
     be32_t ackno;  // Sequence number to denote the packet counter in the flow.
     uint64_t timestamp1;  // Filled by sender with calibration for output queue
     uint64_t timestamp2;  // Filled by recver eBPF
-    be32_t pullno;    // Receiver-driven congestion control.
+    be16_t pullno;    // Receiver-driven congestion control.
 };
 
 struct __attribute__((packed)) UcclSackHdr {

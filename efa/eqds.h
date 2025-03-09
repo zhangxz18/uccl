@@ -30,23 +30,23 @@ class UcclFlow;
 namespace eqds {
 
 constexpr bool pullno_lt(PullQuanta a, PullQuanta b) {
-    return static_cast<int32_t>(a - b) < 0;
+    return static_cast<int16_t>(a - b) < 0;
 }
 constexpr bool pullno_le(PullQuanta a, PullQuanta b) {
-    return static_cast<int32_t>(a - b) <= 0;
+    return static_cast<int16_t>(a - b) <= 0;
 }
 constexpr bool pullno_eq(PullQuanta a, PullQuanta b) {
-    return static_cast<int32_t>(a - b) == 0;
+    return static_cast<int16_t>(a - b) == 0;
 }
 constexpr bool pullno_ge(PullQuanta a, PullQuanta b) {
-    return static_cast<int32_t>(a - b) >= 0;
+    return static_cast<int16_t>(a - b) >= 0;
 }
 constexpr bool pullno_gt(PullQuanta a, PullQuanta b) {
-    return static_cast<int32_t>(a - b) > 0;
+    return static_cast<int16_t>(a - b) > 0;
 }
 
-#define PULL_QUANTUM 4096 // Half 8K MTU
-#define PULL_SHIFT 12
+#define PULL_QUANTUM 16384
+#define PULL_SHIFT 14
 
 static inline uint32_t unquantize(uint32_t pull_quanta) {
     return (uint32_t)pull_quanta << PULL_SHIFT;
@@ -96,7 +96,6 @@ public:
     // Return true if we can transmit the chunk. Otherwise,
     // sender should pause sending this message until credit is received.
     inline bool spend_credit(uint32_t chunk_size) {
-
         if (credit_pull_ > 0) {
             if (credit_pull_ > chunk_size)
                 credit_pull_ -= chunk_size;
@@ -136,7 +135,6 @@ public:
     }
 
     inline bool handle_pull(PullQuanta pullno) {
-        // LOG(INFO) << "pull_: " << pull_ << ", pullno: " << pullno;
         if (pullno_gt(pullno, pull_)) {
             PullQuanta extra_credit = pullno - pull_;
             credit_pull_ += unquantize(extra_credit);

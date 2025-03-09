@@ -75,6 +75,8 @@ bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) {
     else
         increment = kCreditPerPull;
 
+    if (!increment) return true;
+
     eqds_cc->inc_lastest_pull(increment);
 
     if (!send_pull_packet(eqds_cc)) {
@@ -234,6 +236,10 @@ PullQuanta EQDSCC::compute_pull_target()
     }
 
     last_sent_pull_target_ = quantize_ceil(pull_target_bytes);
+
+    // if (pull_ > 1040000) {
+    //     LOG_EVERY_N(INFO, 1) << pull_ << ", last_sent_pull_target_: " << last_sent_pull_target_;
+    // }
 
     return last_sent_pull_target_;
 }

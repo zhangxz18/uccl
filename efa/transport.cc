@@ -891,6 +891,7 @@ void UcclFlow::transmit_pending_packets() {
     if constexpr (kCCType == CCType::kEQDS) {
         permitted_packets = std::min(hard_budget, eqds_cc_.credit() / EFA_MTU);
         permitted_packets = std::min(permitted_packets, tx_tracking_.num_unsent_msgbufs());
+        permitted_packets = std::min(permitted_packets, SEND_BATCH_SIZE);
         if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MTU))
             permitted_packets = 0;
     }
@@ -970,6 +971,8 @@ void UcclFlow::transmit_pending_packets() {
         msgbuf->set_dest_ah(remote_ah_);
         msgbuf->set_dest_qpn(remote_meta_->qpn_list[dst_qp_idx]);
         pending_tx_frames_.push_back(msgbuf);
+
+        eqds_cc_.dec_backlog(msgbuf->get_pkt_data_len());
 
         pcb_.add_to_rto_wheel(msgbuf, seqno);
     }
@@ -1091,7 +1094,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     ucclh->timestamp2 = 0;
 
     if constexpr (kCCType == CCType::kEQDS) {
-        ucclh->pullno = be32_t(eqds_cc_.compute_pull_target());
+        ucclh->pullno = be16_t(eqds_cc_.compute_pull_target());
     }
 }
 
@@ -1111,7 +1114,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     ucclh->frame_len = be16_t(kControlPayloadBytes);
     ucclh->flow_id = be64_t(peer_flow_id_);
     
-    ucclh->pullno = be32_t(pullno);
+    ucclh->pullno = be16_t(pullno);
 
     frame->set_dest_ah(remote_ah_);
     frame->set_dest_qpn(remote_meta_->qpn_list_credit[credit_qpidx_rr_++]);
