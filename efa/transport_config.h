@@ -91,8 +91,8 @@ static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxSrcQP = 16;
 static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQPCtrl = 16;
-static const uint32_t kMaxDstQPCredit = 2; // # of paths/QPs for credit.
-static const uint32_t kMaxSrcQPCredit = 2;
+static const uint32_t kMaxDstQPCredit = 16; // # of paths/QPs for credit.
+static const uint32_t kMaxSrcQPCredit = 16;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
