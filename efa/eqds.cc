@@ -224,7 +224,7 @@ PullQuanta EQDSCC::compute_pull_target()
 
     pull_target_bytes += unquantize(pull_);
 
-    PullQuanta old_pull_target_bytes = unquantize(last_sent_pull_target_);
+    uint32_t old_pull_target_bytes = unquantize(last_sent_pull_target_);
 
     if (!in_speculating_ && credit_spec_ > 0 &&
         pull_target_bytes - old_pull_target_bytes < PULL_QUANTUM / 2) {

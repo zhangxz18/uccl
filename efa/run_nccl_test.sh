@@ -2,7 +2,7 @@
 
 source ../shared.sh
 
-# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [uccl quite] [ens32]
+# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [uccl quite] [ens32] [eqds]
 
 TEST=${1:-srd}
 UCCL_HOME="/opt/uccl_rdma"
@@ -13,6 +13,7 @@ PROG_NAME=alltoall_perf
 NUM_PROCS=${2:-4}
 UCCL_QUITE=${3:-1}
 NIC=${4:-ens32}
+EQDS=${5:-eqds}
 NODES=$(get_nodes "../nodes.txt")
 GPU=1
 
@@ -53,8 +54,11 @@ elif [ "$TEST" = "ud" ]; then
         >"output_rank_$rank.log" # Truncate or create empty file
     done
 
-    # PLUGIN_PATH="${UCCL_HOME}/efa/libnccl-net.so"
-    PLUGIN_PATH="/opt/zhongjie/uccl_rdma/efa/libnccl-net.so"
+    if [ "$EQDS" = "eqds" ] ; then
+        PLUGIN_PATH="/opt/zhongjie/uccl_rdma/efa/libnccl-net.so"
+    else
+        PLUGIN_PATH="${UCCL_HOME}/efa/libnccl-net.so"
+    fi
 
     mpirun --bind-to none -np ${NUM_PROCS} -N 1 --host ${NODES} \
         --tag-output --merge-stderr-to-stdout \
