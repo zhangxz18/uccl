@@ -11,6 +11,7 @@
 using namespace uccl;
 
 const char *PLUGIN_NAME = "EFA_Plugin";
+const int kMaxIovs = 128;
 
 enum ReqType {
     ReqTx,
@@ -21,6 +22,12 @@ enum ReqType {
 };
 
 struct UcclRequest {
+    /* Do not change the order */
+    void *iov_addrs[kMaxIovs];
+    int iov_lens[kMaxIovs];
+    int dst_offsets[kMaxIovs];
+    int iov_n;
+    /***********************/
     ReqType type;
     int n;
     int send_len = 0;
@@ -384,6 +391,7 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     req->req_pool = (void *)scomm->base.uccl_req_pool.get();
 
     *request = req;
+    // LOG(INFO) << "pluginIsend on size " << size;
 
 #ifdef POLLCTX_DEBUG
     LOG(INFO) << "pluginIsend on vdev: " << vdev << " size " << size
@@ -428,8 +436,7 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
     return ncclSuccess;
 }
 
-ncclResult_t pluginIrecvScattered(void *recvComm, int *iov_n, void **iov_addrs,
-                                  int *iov_lens, int *tags, void *mhandles,
+ncclResult_t pluginIrecvScattered(void *recvComm, int *tags, void *mhandles,
                                   void **request) {
     struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
     auto conn_id = rcomm->base.conn_id;
@@ -447,8 +454,10 @@ ncclResult_t pluginIrecvScattered(void *recvComm, int *iov_n, void **iov_addrs,
     struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
     req->type = ReqRxScattered;
     req->n = 1;
+    // Using plugin-allocated memory so nccl does not need to manage it.
     req->poll_ctx = ep->uccl_recv_scattered_async(
-        conn_id, iov_n, iov_addrs, iov_lens, &(req->recv_len[0]), mhs);
+        conn_id, &(req->iov_n), (void **)req->iov_addrs, (int *)req->iov_lens,
+        (int *)req->dst_offsets, &(req->recv_len[0]), mhs);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
 
     *request = req;
@@ -463,10 +472,16 @@ ncclResult_t pluginIrecvScattered(void *recvComm, int *iov_n, void **iov_addrs,
     return ncclSuccess;
 }
 
-ncclResult_t pluginIrecvFreePtrs(void *recvComm, int iov_n, void **iov_addrs) {
+ncclResult_t pluginIrecvFreePtrs(void *recvComm, void *request) {
+    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(request);
+
     struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
     auto conn_id = rcomm->base.conn_id;
-    ep->uccl_recv_free_ptrs(conn_id, iov_n, iov_addrs);
+    ep->uccl_recv_free_ptrs(conn_id, req->iov_n, req->iov_addrs);
+
+    auto uccl_req_pool = reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
+    uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+
     return ncclSuccess;
 }
 
@@ -503,29 +518,29 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         *done = 1;
         if (req->type == ReqTx) {
             size[0] = req->send_len;
-#ifdef POLLCTX_DEBUG
-            LOG(INFO) << "pluginTest ReqTx done: engine_id "
-                      << req->poll_ctx->engine_idx << " flow_id "
-                      << req->poll_ctx->flow_id << " req_id "
-                      << req->poll_ctx->req_id << " size " << size[0];
-#endif
         } else if (req->type == ReqRx) {
             for (int i = 0; i < req->n; i++) size[i] = req->recv_len[i];
-#ifdef POLLCTX_DEBUG
-            LOG(INFO) << "pluginTest ReqRx done: engine_id "
-                      << req->poll_ctx->engine_idx << " flow_id "
-                      << req->poll_ctx->flow_id << " req_id "
-                      << req->poll_ctx->req_id << " size " << size[0];
-#endif
         } else if (req->type == ReqFlush) {
             // Do nothing.
         } else if (req->type == ReqRxScattered) {
             size[0] = req->recv_len[0];
         }
-        auto uccl_req_pool =
-            reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
-        uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+        // request from ReqRxScattered will be freed by pluginIrecvFreePtrs
+        if (req->type != ReqRxScattered) {
+            auto uccl_req_pool =
+                reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
+            uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+        }
+
+#ifdef POLLCTX_DEBUG
+        LOG(INFO) << "pluginTest " << req->type << " done: engine_id "
+                  << req->poll_ctx->engine_idx << " flow_id "
+                  << req->poll_ctx->flow_id << " req_id "
+                  << req->poll_ctx->req_id << " size " << size[0];
+#endif
     } else {
+        *done = 0;
+
 #ifdef POLLCTX_DEBUG
         LOG_EVERY_N(INFO, 1000000)
             << "pluginTest poll NOT done: "
@@ -533,7 +548,6 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
             << req->poll_ctx->engine_idx << " flow_id "
             << req->poll_ctx->flow_id << " req_id " << req->poll_ctx->req_id;
 #endif
-        *done = 0;
     }
 
     return ncclSuccess;

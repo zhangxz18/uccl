@@ -286,6 +286,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 
         void **iov_addrs = (void **)rx_copy_done_work.data;
         int *iov_lens = (int *)rx_copy_done_work.iov_lens;
+        int *dst_offsets = (int *)rx_copy_done_work.dst_offsets;
         int recv_len = 0;
         int iov_n = 0;
 
@@ -298,6 +299,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
 
             iov_addrs[iov_n] = (void *)ready_msg->get_pkt_data_addr();
             iov_lens[iov_n] = (int)payload_len;
+            dst_offsets[iov_n] = recv_len;
             recv_len += payload_len;
             iov_n++;
 
@@ -1400,7 +1402,7 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         ctx_pool_->push(new (ctx_pool_buf_ + i * sizeof(PollCtx)) PollCtx());
     }
 
-#ifndef EMULATE_RC_ZC
+#if !defined(EMULATE_RC_ZC) && !defined(SCATTERED_MEMCPY)
     // Creating copy thread for each engine.
     for (int i = 0; i < kNumEngines; i++) {
         auto gpu_idx = get_gpu_idx_by_engine_idx(i);
@@ -1675,6 +1677,7 @@ PollCtx *Endpoint::uccl_send_async(ConnID conn_id, const void *data,
         .data = const_cast<void *>(data),
         .iov_n = nullptr,
         .iov_lens = nullptr,
+        .dst_offsets = nullptr,
         .mhandle = mhandle,
         .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
@@ -1702,6 +1705,7 @@ PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
         .data = data,
         .iov_n = nullptr,
         .iov_lens = nullptr,
+        .dst_offsets = nullptr,
         .mhandle = mhandle,
         .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
@@ -1712,7 +1716,8 @@ PollCtx *Endpoint::uccl_recv_async(ConnID conn_id, void *data, int *len_p,
 }
 PollCtx *Endpoint::uccl_recv_scattered_async(ConnID conn_id, int *iov_n,
                                              void **iov_addrs, int *iov_lens,
-                                             int *len_p, Mhandle *mhandle) {
+                                             int *dst_offsets, int *len_p,
+                                             Mhandle *mhandle) {
     PollCtx *poll_ctx = ctx_pool_->pop();
     poll_ctx->num_unfinished = 1;
     poll_ctx->engine_idx = conn_id.engine_idx;
@@ -1728,6 +1733,7 @@ PollCtx *Endpoint::uccl_recv_scattered_async(ConnID conn_id, int *iov_n,
         .data = (void *)iov_addrs,
         .iov_n = iov_n,
         .iov_lens = iov_lens,
+        .dst_offsets = dst_offsets,
         .mhandle = mhandle,
         .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
@@ -1746,6 +1752,7 @@ void Endpoint::uccl_recv_free_ptrs(ConnID conn_id, int iov_n,
         .data = (void *)iov_addrs,
         .iov_n = nullptr,
         .iov_lens = nullptr,
+        .dst_offsets = nullptr,
         .mhandle = nullptr,
         .flow_id = conn_id.flow_id,
         .deser_msgs = nullptr,
@@ -1773,6 +1780,7 @@ PollCtx *Endpoint::uccl_recv_multi_async(ConnID conn_id, void **data,
             .data = data[i],
             .iov_n = nullptr,
             .iov_lens = nullptr,
+            .dst_offsets = nullptr,
             .mhandle = mhandle[i],
             .flow_id = conn_id.flow_id,
             .deser_msgs = nullptr,

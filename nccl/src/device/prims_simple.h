@@ -58,6 +58,13 @@ class Primitives<
   void*    netDeviceHandle;
   uint64_t accSize; // Accumulated size. Used by PAT operations
 
+  // Yang: for current step, the iov buffers and lengths
+  uint64_t* tail_ptr; // Pointing to the CPU proxy thread's ncclRecvMem.tail
+  void** iov_addrs;
+  int* iov_lens;
+  int* dst_offsets;
+  int iov_n;
+
   // Don't use barrier 0 as it's used by the final sync
   __device__ void barrier() {
     if (nthreads == WARP_SIZE) __syncwarp();
@@ -137,6 +144,7 @@ class Primitives<
       if (flags & ConnFifoEnabled)
         connFifo[step%NCCL_STEPS].size = nelts*sizeof(T);
 
+      // Yang: for recv, ptrs = srcs + Src
       void **ptrs = isSendNotRecv ? (ncclShmem.groups[group].dsts + Dst)
                                   : (ncclShmem.groups[group].srcs + Src);
       if (flags & NetRegMode) {
@@ -157,6 +165,7 @@ class Primitives<
         } else if ((flags & DirectWrite) || (flags & IpcWrite)) {
           ptrs[index] = directBuff + dstIx + offset;  // send to next from my output buffer
         } else {
+          // Yang: I guess recv will go this path.
           ptrs[index] = connEltsFifo + (step%NCCL_STEPS)*connStepSize;
         }
       }
@@ -168,6 +177,10 @@ class Primitives<
       if (flags & NetDeviceUnpack) {
         ncclNetDeviceIncrementHead(group, index);
       }
+
+      if (tid == 0)
+        printf("prims_simple waitPeer step=%lu, index=%d\n", step, index);
+      
       step += StepPerSlice;
     }
   }
@@ -179,14 +192,19 @@ class Primitives<
       if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
         fence_acq_rel_sys();
       }
+      // Yang: this update CPU-side tail.
+      printf("prims_simple postPeer step=%lu\n", step);
       st_relaxed_sys_global(connStepPtr, step);
     }
   }
 
+  // Yang: for recv: <1, 0, 1, 0, -1, Output>
   template <int DirectRecv1, int DirectSend1, int Recv, int Send, int SrcBuf, int DstBuf>
   __device__ __forceinline__ void genericOp(
       intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp
     ) {
+    if (tid == 0)
+      printf("prims_simple genericOp srcIx=%ld dstIx=%ld nelem=%d\n", srcIx, dstIx, nelem);
     constexpr int DirectRecv = 1 && Direct && DirectRecv1;
     constexpr int DirectSend = 1 && Direct && DirectSend1;
     constexpr int Src = SrcBuf != -1;
@@ -234,8 +252,10 @@ class Primitives<
           T* userInput = (T*)ncclShmem.groups[group].userInput;
           T* userOutput = (T*)ncclShmem.groups[group].userOutput;
           if (Src) ncclShmem.groups[group].srcs[0] = (SrcBuf==Input ? userInput : userOutput) + srcIx + offset;
+          // Yang: recv goes this path to set dst to the app tensor buffer (userOutput).
           if (Dst) ncclShmem.groups[group].dsts[0] = (DstBuf==Input ? userInput : userOutput) + dstIx + offset;
         }
+        // Yang: srcs is filled up with RDMA GDR buffer. 
         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(srcIx, dstIx, offset, sliceSize);
         subBarrier();
         /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
@@ -246,7 +266,7 @@ class Primitives<
           // Sync here to make sure all workers are reading from the updated srcs)
           subBarrier();
         }
-
+  
         if (DirectRecv && ncclShmem.groups[group].srcs[0] == ncclShmem.groups[group].dsts[0]
             /* NVLS can have srcs[0] == dsts[0], but we cannot enter this "if branch",
              * so we need to check whether MultimemSrcs and MultimemDsts are 0. */
@@ -267,6 +287,32 @@ class Primitives<
              Dst, ncclShmem.groups[group].dsts,
              workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
+          if (DirectRecv && !DirectSend) {
+            #define kMaxIovs 128
+            #define kIovStart 328
+            iov_addrs = (void**)((char*)tail_ptr + kIovStart);
+            iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
+            dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
+            iov_n = *(int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
+            printf("prims_simple genericOp scattered tid=%d DirectRecv=%d DirectSend=%d step=%lu index=%d iov_n=%d\n", tid, DirectRecv, DirectSend, step, index, iov_n);
+
+            // Yang: Doing the scattered memcpy here? from iov_addrs to ptrs[index]
+            if (tid < iov_n) { 
+              // TODO(Yang): Do we need to always do loadStepValue/ld_volatile_global? 
+              void *src = iov_addrs[tid];
+              uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
+              void *dst = (void*)(dst_base + dst_offsets[tid]);
+              int iov_len = iov_lens[tid];
+              // Yang: doing the scattered memcpy here.
+              printf("prims_simple genericOp memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid]);
+              memcpy(dst, src, iov_len);
+              printf("prims_simple genericOp after memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid]);
+            }
+
+            // TODO(Yang): do we need it here? 
+            subBarrier();
+          }
+
           constexpr int PreOpSrcs = SrcBuf != Input ? 0 :
                                     DirectRecv*MaxRecv == NCCL_MAX_DIRECT_ARITY ? (1+NCCL_MAX_DIRECT_ARITY) : 1;
           reduceCopy<Unroll, RedOp, T,
@@ -276,6 +322,9 @@ class Primitives<
              Recv*fan.nrecv()+Src, ncclShmem.groups[group].srcs,
              Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
              workSize);
+
+          if (tid == 0)
+            printf("prims_simple reduceCopy nsrc=%d ndst=%d workSize=%d\n", Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < sliceSize);
@@ -285,6 +334,8 @@ class Primitives<
         // coverity[dead_error_line]
       } while (slice < SlicePerChunk && offset < nelem);
     }
+
+    printf("prims_simple after postPeer1 tid=%d\n", tid);
 
     // Non-workers come straight here. Workers too but only once the remaining
     // slices are all empty. Since empty slices are the uncommon case, and
@@ -302,6 +353,7 @@ class Primitives<
       offset += sliceSize;
       slice += 1;
     }
+    printf("prims_simple after postPeer2 tid=%d\n", tid);
   }
 
 public:
@@ -493,8 +545,10 @@ private:
       if ((flags & PatMode) == 0) ncclShmem.groups[group].recvConns[index] = conn; // WaitRecv role saves since that's who needs it in setDataPtrs()
       flags |= (conn->flags & NCCL_NVLS_MIN_POLL) ? NvlsMinPolling : 0;
       connStepPtr = conn->tail;
+      // Yang: this should load the tail value from CPU.
       connStepCache = loadStepValue(connStepPtr);
       connStepSize = conn->stepSize/sizeof(T);
+      // Yang: for recv, loading RDMA GDR buffer to connEltsFifo
       connEltsFifo = (T*)conn->buffs[NCCL_PROTO_SIMPLE];
       if (conn->connFifo != nullptr) {
         flags |= ConnFifoEnabled;
@@ -661,6 +715,12 @@ private:
 
     // coverity[negative_returns:FALSE]
     setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclDevWorkCollReg*)e, (uint8_t)(e ? e->regUsed : ipcReg), peer);
+
+    // Yang: this is a receive primitive.
+    if (recvPeers)
+      tail_ptr = ncclShmem.channel.peers[recvPeers[0]]->recv[connIndexRecv].tail;
+  
+    printf("prims_simple initing Primitives: tid=%d nthreads=%d nworkers=%d stepSize=%d index=%d, group=%d, peer=%d, flags=%x\n", tid, nthreads, nworkers, stepSize, index, group, peer, flags);
   }
 
   __device__ ~Primitives() {
@@ -697,7 +757,9 @@ private:
       bool sendAcceptor = (flags & RoleWaitSend) && (flags & DirectWrite || flags & IpcWrite || flags & NvlsDirectWrite);
       bool sendProvider = (flags & RoleWaitSend) && (flags & DirectRead || flags & IpcRead); // sender provides direct buffer (to be fetched)
       bool recvAcceptor = (flags & RoleWaitRecv) && (flags & DirectRead || flags & IpcRead || flags & NvlsDirectRead); // receiver accepts direct buffer
+      printf("setDataPtrs: recvProvider=%d sendAcceptor=%d sendProvider=%d recvAcceptor=%d\n", recvProvider, sendAcceptor, sendProvider, recvAcceptor);
       if (recvProvider) {
+        // Yang: we likely go this path for recv
         int spins = 0;
         void* volatile* slot = ncclShmem.groups[group].recvConns[index]->ptrExchange;
         // Wait for consumer to consume previous value before trampling it.

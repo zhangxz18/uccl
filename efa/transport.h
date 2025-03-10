@@ -125,6 +125,7 @@ class Channel {
         void *data;
         int *iov_n;
         int *iov_lens;
+        int *dst_offsets;
         Mhandle *mhandle;
         FlowID flow_id;
         // A list of FrameDesc bw deser_th and engine_th.
@@ -807,7 +808,8 @@ class Endpoint {
                              Mhandle *mhandle);
     PollCtx *uccl_recv_scattered_async(ConnID conn_id, int *iov_n,
                                        void **iov_addrs, int *iov_lens,
-                                       int *len_p, Mhandle *mhandle);
+                                       int *dst_offsets, int *len_p,
+                                       Mhandle *mhandle);
     void uccl_recv_free_ptrs(ConnID conn_id, int iov_n, void **iov_addrs);
     PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,
                                    Mhandle **mhandle, int n);

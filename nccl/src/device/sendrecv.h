@@ -39,6 +39,8 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
     size_t cursor = 0;
     do {
       int n = min(size_t(chunkSize), bytes-cursor);
+      if (tid == 0)
+        printf("sendrecv directRecv cursor=%ld n=%d\n", cursor, n);
       prims.directRecv(cursor, cursor, n);
       cursor += n;
     } while (cursor < bytes && work->recvRegistered == 0);
