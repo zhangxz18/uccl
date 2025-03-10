@@ -518,7 +518,9 @@ public:
         });
     }
 
-    ~EQDS() {}
+    ~EQDS() {
+        shutdown();
+    }
 
     // Shutdown the EQDS pacer thread.
     inline void shutdown(void) {
