@@ -1413,7 +1413,7 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
     LOG(INFO) << "Creating Pacers";
     
     // Receiver-driven CC pacer.
-    for (int i = 0; i < NUM_DEVICES; i++) eqds_[i] = new eqds::EQDS(i);
+    for (int i = 0; i < kNumVdevices; i++) eqds_[i] = new eqds::EQDS(i);
 
     LOG(INFO) << "Creating Engines";
 
@@ -1430,7 +1430,7 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         // Creating engines sequentially to have inorder QPNs.
         auto engine = std::make_unique<UcclEngine>(
             local_ip_str, gpu_idx, dev_idx, socket_idx, channel_vec_[i], 
-            eqds_[dev_idx]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)], &eqds_[dev_idx]->channel_);
+            eqds_[gpu_idx]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)], &eqds_[gpu_idx]->channel_);
 
         std::promise<std::unique_ptr<UcclEngine>> engine_promise;
         auto engine_future = engine_promise.get_future();
@@ -1501,7 +1501,7 @@ Endpoint::~Endpoint() {
 
 
     // Receiver-driven CC pacer.
-    for (int i = 0; i < NUM_DEVICES; i++) delete eqds_[i];
+    for (int i = 0; i < kNumVdevices; i++) delete eqds_[i];
 
     {
         std::lock_guard<std::mutex> lock(fd_map_mu_);

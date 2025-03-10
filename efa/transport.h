@@ -815,7 +815,7 @@ class Endpoint {
     std::unordered_map<FlowID, int> fd_map_;
 
     // Each physical device has its own EQDS pacer.
-    eqds::EQDS *eqds_[NUM_DEVICES] = {};
+    eqds::EQDS *eqds_[kNumVdevices] = {};
 
    public:
     Endpoint();
@@ -930,7 +930,7 @@ static inline uint32_t get_dev_idx_by_engine_idx(uint32_t engine_idx) {
 }
 
 static inline uint32_t get_engine_off_by_engine_idx(uint32_t engine_idx) {
-    return engine_idx % (kNumEnginesPerVdev * 2);
+    return engine_idx % (kNumEnginesPerVdev);
 }
 
 static inline uint32_t get_dev_idx_by_gpu_idx(uint32_t gpu_idx) {

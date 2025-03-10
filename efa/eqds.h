@@ -494,25 +494,25 @@ public:
 
     bool send_pull_packet(EQDSCC *eqds_cc);
 
-    EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
+    EQDS(int vdev_idx) : vdev_idx_(vdev_idx), channel_() {
 
-        DCHECK(pdev_idx_ < 4);
+        DCHECK(vdev_idx_ < 4);
 
         pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
         
-        auto *factory_dev = EFAFactory::GetEFADevice(pdev_idx_);
+        auto *factory_dev = EFAFactory::GetEFADevice(vdev_idx_ / 2);
         for (int i = 0; i < kNumEnginesPerVdev; i++)
             credit_qp_ctx_[i]= new CreditQPContext(factory_dev->context, factory_dev->pd, factory_dev->gid);
 
-        auto numa_node = pdev_idx_ / 2;
+        auto numa_node = vdev_idx_ / 2;
         DCHECK(numa_node == 0 || numa_node == 1);
-        auto pacer_cpu = PACER_CPU_START[numa_node] + pdev_idx_ % 2;
+        auto pacer_cpu = PACER_CPU_START[numa_node] + vdev_idx_ % 2;
 
         // Initialize the pacer thread.
         pacer_th_ = std::thread([this, pacer_cpu] {
             // Pin the pacer thread to a specific CPU.
             pin_thread_to_cpu(pacer_cpu);
-            LOG(INFO) << "[Pacer] thread " << pdev_idx_ << " running on CPU "<< pacer_cpu;
+            LOG(INFO) << "[Pacer] thread " << vdev_idx_ << " running on CPU "<< pacer_cpu;
             while (!shutdown_) {
                 run_pacer();
             }
@@ -535,7 +535,7 @@ public:
 
 private:
     std::thread pacer_th_;
-    int pdev_idx_;
+    int vdev_idx_;
 
     LIST_HEAD(active_senders_);
     LIST_HEAD(idle_senders_);
