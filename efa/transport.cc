@@ -889,10 +889,10 @@ void UcclFlow::transmit_pending_packets() {
         permitted_packets = std::min(hard_budget, SEND_BATCH_SIZE);
     }
     if constexpr (kCCType == CCType::kEQDS) {
-        permitted_packets = std::min(hard_budget, eqds_cc_.credit() / EFA_MTU);
+        permitted_packets = std::min(hard_budget, eqds_cc_.credit() / EFA_MAX_PAYLOAD);
         permitted_packets = std::min(permitted_packets, tx_tracking_.num_unsent_msgbufs());
         permitted_packets = std::min(permitted_packets, SEND_BATCH_SIZE);
-        if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MTU))
+        if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MAX_PAYLOAD))
             permitted_packets = 0;
     }
 
