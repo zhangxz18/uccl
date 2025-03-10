@@ -8,7 +8,7 @@
 #define REXMIT_SET_PATH
 // #define USE_SRD
 // #define USE_SRD_FOR_CTRL
-#define EMULATE_RC_ZC
+// #define EMULATE_RC_ZC
 // #define RTT_STATS
 // #define POLLCTX_DEBUG
 

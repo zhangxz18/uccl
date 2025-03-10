@@ -33,6 +33,8 @@ struct __attribute__((packed)) UcclPktHdr {
     uint64_t timestamp1;  // Filled by sender with calibration for output queue
     uint64_t timestamp2;  // Filled by recver eBPF
     be16_t pullno;    // Receiver-driven congestion control.
+    be16_t pad1;      // For GPU memory copy
+    be32_t pad2;      // For GPU memory copy
 };
 
 struct __attribute__((packed)) UcclSackHdr {
