@@ -113,7 +113,7 @@ static const uint32_t kMaxUnackedPktsPerEngine = 800;
 static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 #endif
 static const std::size_t kSackBitmapSize = 1024;
-static const std::size_t kFastRexmitDupAckThres = 30;
+static const std::size_t kFastRexmitDupAckThres = 300;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;
 static const uint32_t kSwitchPathThres = 1u;
 static const uint32_t kMaxPktsInTimingWheel = 1024;

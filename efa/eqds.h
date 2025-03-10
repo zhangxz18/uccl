@@ -213,7 +213,7 @@ public:
     }
 
 private:
-    static constexpr PullQuanta INIT_PULL_QUANTA = 50;
+    static constexpr PullQuanta INIT_PULL_QUANTA = 100;
     static constexpr uint32_t kEQDSMaxCwnd = 625000; // BDPBytes = 100Gbps * 50us RTT
 
     /********************************************************************/

@@ -1387,7 +1387,7 @@ std::string UcclEngine::status_to_string(bool abbrev) {
                     flow->remote_engine_idx_);
         s += flow->to_string();
         cnt++;
-        if (cnt == 2) break;
+        if (cnt == 4) break;
     }
     if (cnt < active_flows_map_.size())
         s += Format("\n\t\t... %d more flows", active_flows_map_.size() - cnt);
@@ -1982,7 +1982,7 @@ void Endpoint::stats_thread_fn() {
         std::string s;
         s += "\n[Uccl Engine] ";
         for (auto &engine : engine_vec_) {
-            s += engine->status_to_string(cnt >= 1);
+            s += engine->status_to_string(cnt >= 2);
             cnt++;
         }
         if (cnt < engine_vec_.size())
