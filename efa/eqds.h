@@ -463,7 +463,7 @@ private:
 class EQDS {
 public:
     // How many credits to grant per pull.
-    static const PullQuanta kCreditPerPull = 2;
+    static const PullQuanta kCreditPerPull = 3;
     // How many senders to grant credit per iteration.
     static const uint32_t kSendersPerPull = 1;
 
