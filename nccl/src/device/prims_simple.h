@@ -198,6 +198,23 @@ class Primitives<
     }
   }
 
+  __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
+    uint64_t num_full = len / sizeof(uint64_t);
+    uint64_t *src_u64 = (uint64_t *)src;
+    uint64_t *dst_u64 = (uint64_t *)dst;
+    for (uint64_t i = 0; i < num_full; i++) {
+      dst_u64[i] = src_u64[i];
+    }
+
+    uint64_t tail_start = num_full * sizeof(uint64_t);
+    char *src_char = (char *)src;
+    char *dst_char = (char *)dst;
+    // Handle the remaining tail bytes (if any)
+    for (uint64_t i = tail_start; i < len; i++) {
+      dst_char[i] = src_char[i];
+    }
+  }
+
   // Yang: for recv: <1, 0, 1, 0, -1, Output>
   template <int DirectRecv1, int DirectSend1, int Recv, int Send, int SrcBuf, int DstBuf>
   __device__ __forceinline__ void genericOp(
@@ -305,7 +322,7 @@ class Primitives<
               int iov_len = iov_lens[tid];
               // Yang: doing the scattered memcpy here.
               printf("prims_simple genericOp memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid]);
-              memcpy(dst, src, iov_len);
+              copyGlobalMemory(dst, src, iov_len);
               printf("prims_simple genericOp after memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid]);
             }
 
@@ -335,8 +352,6 @@ class Primitives<
       } while (slice < SlicePerChunk && offset < nelem);
     }
 
-    printf("prims_simple after postPeer1 tid=%d\n", tid);
-
     // Non-workers come straight here. Workers too but only once the remaining
     // slices are all empty. Since empty slices are the uncommon case, and
     // worker perf is the limiter, perf-wise this loop is effectively unentered,
@@ -353,7 +368,6 @@ class Primitives<
       offset += sliceSize;
       slice += 1;
     }
-    printf("prims_simple after postPeer2 tid=%d\n", tid);
   }
 
 public:

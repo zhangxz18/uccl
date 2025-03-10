@@ -298,6 +298,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
             auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
 
             iov_addrs[iov_n] = (void *)ready_msg->get_pkt_data_addr();
+            LOG(INFO) << "iov_addrs[" << iov_n << "]: " << std::hex << iov_addrs[iov_n];
             iov_lens[iov_n] = (int)payload_len;
             dst_offsets[iov_n] = recv_len;
             recv_len += payload_len;

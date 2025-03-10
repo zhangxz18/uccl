@@ -8,11 +8,14 @@ export NCCL_DEBUG=INFO
 export NCCL_P2P_DISABLE=1
 export NCCL_SHM_DISABLE=1
 export NCCL_NET_DISABLE=0
-export NCCL_MAX_NCHANNELS=2
-export NCCL_MIN_NCHANNELS=2
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+export NCCL_MAX_NCHANNELS=1
+export NCCL_MIN_NCHANNELS=1
+export NCCL_NET_GDR_LEVEL=SYS
 export NCCL_P2P_NET_CHUNKSIZE=524288
 export NCCL_BUFFSIZE=8388608
 export GLOG_logtostderr=1
+export NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml
 export UCCL_ENGINE_QUIET=1
 
 # sudo -E /usr/local/cuda/bin/nsys profile --trace=cuda,nvtx,osrt --output=nccl_test_report \
