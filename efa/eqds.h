@@ -511,7 +511,8 @@ public:
         // Initialize the pacer thread.
         pacer_th_ = std::thread([this, pacer_cpu] {
             // Pin the pacer thread to a specific CPU.
-            pin_thread_to_cpu(PACER_CPU_START[pacer_cpu]);
+            pin_thread_to_cpu(pacer_cpu);
+            LOG(INFO) << "[Pacer] thread " << pdev_idx_ << " running on CPU "<< pacer_cpu;
             while (!shutdown_) {
                 run_pacer();
             }

@@ -52,7 +52,8 @@ elif [ "$TEST" = "ud" ]; then
         >"output_rank_$rank.log" # Truncate or create empty file
     done
 
-    PLUGIN_PATH="${UCCL_HOME}/efa/libnccl-net.so"
+    # PLUGIN_PATH="${UCCL_HOME}/efa/libnccl-net.so"
+    PLUGIN_PATH="/opt/zhongjie/uccl_rdma/efa/libnccl-net.so"
 
     mpirun --bind-to none -np ${NUM_PROCS} -N 1 --host ${NODES} \
         --tag-output --merge-stderr-to-stdout \
