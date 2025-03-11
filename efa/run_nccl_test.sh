@@ -2,7 +2,7 @@
 
 source ../shared.sh
 
-# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [uccl quite] [ens32] [eqds]
+# Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [uccl quite] [ens32] [eqds] [gpu]
 
 TEST=${1:-srd}
 UCCL_HOME="/opt/uccl_rdma"
@@ -15,7 +15,8 @@ UCCL_QUITE=${3:-1}
 NIC=${4:-ens32}
 EQDS=${5:-eqds}
 NODES=$(get_nodes "../nodes.txt")
-GPU=4
+GPU=${6:-8}
+CHANNELS=1
 
 echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}"
 
@@ -33,8 +34,8 @@ if [ "$TEST" = "srd" ]; then
         -x NCCL_P2P_DISABLE=1 \
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
-        -x NCCL_MAX_NCHANNELS=2 \
-        -x NCCL_MIN_NCHANNELS=2 \
+        -x NCCL_MAX_NCHANNELS=${CHANNELS} \
+        -x NCCL_MIN_NCHANNELS=${CHANNELS} \
         -x NCCL_P2P_NET_CHUNKSIZE=524288 \
         -x NCCL_BUFFSIZE=8388608 \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
@@ -72,8 +73,8 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_NET_DISABLE=0 \
         -x GLOG_logtostderr=0\
         -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
-        -x NCCL_MAX_NCHANNELS=2 \
-        -x NCCL_MIN_NCHANNELS=2 \
+        -x NCCL_MAX_NCHANNELS=${CHANNELS} \
+        -x NCCL_MIN_NCHANNELS=${CHANNELS}  \
         -x NCCL_NET_GDR_LEVEL=SYS \
         -x NCCL_P2P_NET_CHUNKSIZE=524288 \
         -x NCCL_BUFFSIZE=8388608 \
@@ -81,7 +82,7 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_TOPO_FILE=${UCCL_HOME}/efa/p4d-24xl-topo.xml \
         -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 8M -e 256M -f 2 -c 0 -w 50 -n 100 -t ${GPU} -g 1 \
+        -b 1K -e 1G -f 2 -c 0 -w 50 -n 100 -t ${GPU} -g 1 \
         2>&1 | while read -r line; do
         # Extract rank from the format [1,2]
         if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then

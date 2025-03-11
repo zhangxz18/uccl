@@ -470,7 +470,7 @@ public:
     // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8,
     // kCreditPerPull = 4, kSendersPerPull = 4, kPacingIntervalUs ~= 5.3 us.
     static const uint64_t kPacingIntervalUs =
-        0.99 /* slower than line rate */ *
+        1.2 /* slower than line rate */ *
         (PULL_QUANTUM) * kCreditPerPull * 1e6 *
         kSendersPerPull / (kLinkBandwidth);
     

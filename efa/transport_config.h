@@ -23,7 +23,7 @@ static constexpr CCType kCCType = CCType::kEQDS;
 
 #define P4D
 
-static const uint32_t kNumVdevices = 4;        // # of vEFA/GPUs.
+static const uint32_t kNumVdevices = 8;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
@@ -63,7 +63,7 @@ static const uint32_t PACER_CPU_START[2] = {ENGINE_CPU_START[0] + 8 /* 2 NIC * 2
 static const uint16_t BASE_PORT = 10000;
 static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
-static const uint32_t SEND_BATCH_SIZE = 32;
+static const uint32_t SEND_BATCH_SIZE = 16;
 static const uint32_t QKEY = 0x12345;
 static const uint32_t SQ_PSN = 0x12345;
 static const uint64_t MAX_FLOW_ID = 1000000;
@@ -88,12 +88,12 @@ static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
 // Setting to 20 gives highest bimq perf (191 vs. 186G), but bad for NCCL.
-static const uint32_t kMaxDstQP = 14;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxSrcQP = 14;
-static const uint32_t kMaxDstQPCtrl = 12;  // # of paths/QPs for control.
-static const uint32_t kMaxSrcQPCtrl = 12;
-static const uint32_t kMaxDstQPCredit = 6; // # of paths/QPs for credit.
-static const uint32_t kMaxSrcQPCredit = 6;
+static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxSrcQP = 16;
+static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQPCtrl = 16;
+static const uint32_t kMaxDstQPCredit = 16; // # of paths/QPs for credit.
+static const uint32_t kMaxSrcQPCredit = 16;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
@@ -102,8 +102,8 @@ static constexpr uint32_t kMaxSrcDstQPCredit =
     std::max(kMaxSrcQPCredit, kMaxDstQPCredit);
 static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
-static_assert((kMaxDstQP + kMaxDstQPCtrl + kMaxDstQPCredit) * kNumEngines <= EFA_MAX_QPS);
-static_assert((kMaxSrcQP + kMaxSrcQPCtrl + kMaxSrcQPCredit) * kNumEngines <= EFA_MAX_QPS);
+static_assert((kMaxDstQP + kMaxDstQPCtrl) * kNumEnginesPerVdev * 2 + kMaxDstQPCredit <= EFA_MAX_QPS);
+static_assert((kMaxSrcQP + kMaxSrcQPCtrl) * kNumEnginesPerVdev * 2 + kMaxSrcQPCredit <= EFA_MAX_QPS);
 
 // CC parameters.
 static const uint32_t kMaxUnackedPktsPP = 2u;
@@ -111,10 +111,10 @@ static const uint32_t kMaxUnackedPktsPP = 2u;
 static const uint32_t kMaxUnackedPktsPerEngine = 800;
 #else
 // static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
-static const uint32_t kMaxUnackedPktsPerEngine = 64;
+static const uint32_t kMaxUnackedPktsPerEngine = 16;
 #endif
 static const std::size_t kSackBitmapSize = 1024;
-static const std::size_t kFastRexmitDupAckThres = 300;
+static const std::size_t kFastRexmitDupAckThres = 32;
 static const double kMaxBwPP = 5.0 * 1e9 / 8;
 static const uint32_t kSwitchPathThres = 1u;
 static const uint32_t kMaxPktsInTimingWheel = 1024;
