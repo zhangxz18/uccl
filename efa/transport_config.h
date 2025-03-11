@@ -90,10 +90,10 @@ static const uint32_t kMaxSrcQPCtrl = 1;
 // Setting to 20 gives highest bimq perf (191 vs. 186G), but bad for NCCL.
 static const uint32_t kMaxDstQP = 14;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxSrcQP = 14;
-static const uint32_t kMaxDstQPCtrl = 14;  // # of paths/QPs for control.
-static const uint32_t kMaxSrcQPCtrl = 14;
-static const uint32_t kMaxDstQPCredit = 8; // # of paths/QPs for credit.
-static const uint32_t kMaxSrcQPCredit = 8;
+static const uint32_t kMaxDstQPCtrl = 12;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQPCtrl = 12;
+static const uint32_t kMaxDstQPCredit = 6; // # of paths/QPs for credit.
+static const uint32_t kMaxSrcQPCredit = 6;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
@@ -102,15 +102,16 @@ static constexpr uint32_t kMaxSrcDstQPCredit =
     std::max(kMaxSrcQPCredit, kMaxDstQPCredit);
 static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
-static_assert(kMaxDstQP + kMaxDstQPCtrl <= EFA_MAX_QPS);
-static_assert(kMaxSrcQP + kMaxSrcQPCtrl <= EFA_MAX_QPS);
+static_assert((kMaxDstQP + kMaxDstQPCtrl + kMaxDstQPCredit) * kNumEngines <= EFA_MAX_QPS);
+static_assert((kMaxSrcQP + kMaxSrcQPCtrl + kMaxSrcQPCredit) * kNumEngines <= EFA_MAX_QPS);
 
 // CC parameters.
 static const uint32_t kMaxUnackedPktsPP = 2u;
 #ifdef USE_SRD
 static const uint32_t kMaxUnackedPktsPerEngine = 800;
 #else
-static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
+// static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
+static const uint32_t kMaxUnackedPktsPerEngine = 64;
 #endif
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 300;
