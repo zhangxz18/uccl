@@ -214,7 +214,7 @@ public:
 
 private:
     static constexpr PullQuanta INIT_PULL_QUANTA = 100;
-    static constexpr uint32_t kEQDSMaxCwnd = 625000; // BDPBytes = 100Gbps * 50us RTT
+    static constexpr uint32_t kEQDSMaxCwnd = 125000; // BDPBytes = 100Gbps * 50us RTT
 
     /********************************************************************/
     /************************ Sender-side states ************************/
@@ -472,9 +472,9 @@ public:
     static const uint64_t kPacingIntervalUs =
         0.99 /* slower than line rate */ *
         (PULL_QUANTUM) * kCreditPerPull * 1e6 *
-        kSendersPerPull / kLinkBandwidth;
+        kSendersPerPull / (kLinkBandwidth);
     
-    CreditQPContext *credit_qp_ctx_[kNumEnginesPerVdev];
+    CreditQPContext *credit_qp_ctx_[kNumEnginesPerVdev * 2];
 
     EQDSChannel channel_;
 
@@ -494,25 +494,22 @@ public:
 
     bool send_pull_packet(EQDSCC *eqds_cc);
 
-    EQDS(int vdev_idx) : vdev_idx_(vdev_idx), channel_() {
-
-        DCHECK(vdev_idx_ < 4);
+    EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
 
         pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
-        
-        auto *factory_dev = EFAFactory::GetEFADevice(vdev_idx_ / 2);
-        for (int i = 0; i < kNumEnginesPerVdev; i++)
+
+        auto *factory_dev = EFAFactory::GetEFADevice(pdev_idx_);
+        for (int i = 0; i < kNumEnginesPerVdev * 2; i++)
             credit_qp_ctx_[i]= new CreditQPContext(factory_dev->context, factory_dev->pd, factory_dev->gid);
 
-        auto numa_node = vdev_idx_ / 2;
-        DCHECK(numa_node == 0 || numa_node == 1);
-        auto pacer_cpu = PACER_CPU_START[numa_node] + vdev_idx_ % 2;
+        auto numa_node = pdev_idx_ / 2;
+        auto pacer_cpu = PACER_CPU_START[numa_node] + pdev_idx_ % 2;
 
         // Initialize the pacer thread.
         pacer_th_ = std::thread([this, pacer_cpu] {
             // Pin the pacer thread to a specific CPU.
             pin_thread_to_cpu(pacer_cpu);
-            LOG(INFO) << "[Pacer] thread " << vdev_idx_ << " running on CPU "<< pacer_cpu;
+            LOG(INFO) << "[Pacer] thread " << pdev_idx_ << " running on CPU "<< pacer_cpu;
             while (!shutdown_) {
                 run_pacer();
             }
@@ -530,12 +527,12 @@ public:
         
         pacer_th_.join();
 
-        for (int i = 0; i < kNumEnginesPerVdev; i++) delete credit_qp_ctx_[i];
+        for (int i = 0; i < kNumEnginesPerVdev * 2; i++) delete credit_qp_ctx_[i];
     }
 
 private:
     std::thread pacer_th_;
-    int vdev_idx_;
+    int pdev_idx_;
 
     LIST_HEAD(active_senders_);
     LIST_HEAD(idle_senders_);

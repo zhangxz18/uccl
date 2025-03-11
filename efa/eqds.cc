@@ -57,7 +57,7 @@ void EQDS::handle_pull_request(void) {
 // Handle Credit CQ TX events.
 void EQDS::handle_poll_cq(void)
 {
-    for (int i = 0; i < kNumEnginesPerVdev; i++)
+    for (int i = 0; i < kNumEnginesPerVdev * 2; i++)
         credit_qp_ctx_[i]->pacer_poll_credit_cq();
 }
 
@@ -161,7 +161,7 @@ void CreditQPContext::__post_recv_wrs_for_credit(int nb, uint32_t qpidx)
         rq_wrs_[nr_post - 1].next = nullptr;
 
         struct ibv_recv_wr *bad_wr;
-        DCHECK(ibv_post_recv(credit_qp_list_[qpidx], rq_wrs_, &bad_wr) == 0);
+        DCHECK(ibv_post_recv(credit_qp_list_[qpidx], rq_wrs_, &bad_wr) == 0) << qpidx;
         
         rq_wrs_[nr_post - 1].next = (nr_post == kMaxChainedWr) ? nullptr : &rq_wrs_[nr_post];
 
@@ -177,7 +177,7 @@ std::vector<FrameDesc *> CreditQPContext::engine_poll_credit_cq(void)
 
     for (int i = 0; i < nr_cqe; i++) {
         struct ibv_wc *wc = &wcs[i];
-        DCHECK(wc->status == IBV_WC_SUCCESS);
+        DCHECK(wc->status == IBV_WC_SUCCESS) << wc->status;
         DCHECK(wc->opcode == IBV_WC_RECV);
 
         auto *frame = (FrameDesc *)wc->wr_id;
@@ -198,7 +198,7 @@ int CreditQPContext::pacer_poll_credit_cq(void)
 
     for (int i = 0; i < nr_cqe; i++) {
         struct ibv_wc *wc = &wcs[i];
-        DCHECK(wc->status == IBV_WC_SUCCESS);
+        DCHECK(wc->status == IBV_WC_SUCCESS) << wc->status;
         DCHECK(wc->opcode == IBV_WC_SEND);
 
         auto *frame = (FrameDesc *)wc->wr_id;

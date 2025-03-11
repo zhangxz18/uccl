@@ -8,7 +8,7 @@
 #define REXMIT_SET_PATH
 // #define USE_SRD
 // #define USE_SRD_FOR_CTRL
-// #define EMULATE_RC_ZC
+#define EMULATE_RC_ZC
 // #define RTT_STATS
 // #define POLLCTX_DEBUG
 
@@ -23,7 +23,7 @@ static constexpr CCType kCCType = CCType::kEQDS;
 
 #define P4D
 
-static const uint32_t kNumVdevices = 1;        // # of vEFA/GPUs.
+static const uint32_t kNumVdevices = 4;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 
@@ -88,12 +88,12 @@ static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
 // Setting to 20 gives highest bimq perf (191 vs. 186G), but bad for NCCL.
-static const uint32_t kMaxDstQP = 16;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxSrcQP = 16;
-static const uint32_t kMaxDstQPCtrl = 16;  // # of paths/QPs for control.
-static const uint32_t kMaxSrcQPCtrl = 16;
-static const uint32_t kMaxDstQPCredit = 16; // # of paths/QPs for credit.
-static const uint32_t kMaxSrcQPCredit = 16;
+static const uint32_t kMaxDstQP = 14;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxSrcQP = 14;
+static const uint32_t kMaxDstQPCtrl = 14;  // # of paths/QPs for control.
+static const uint32_t kMaxSrcQPCtrl = 14;
+static const uint32_t kMaxDstQPCredit = 8; // # of paths/QPs for credit.
+static const uint32_t kMaxSrcQPCredit = 8;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
