@@ -11,23 +11,27 @@ if [ ! -d "$SOURCE_DIR" ]; then
 fi
 
 for MACHINE in "${TARGET_MACHINES[@]}"; do
-  echo ""
-  echo "Installing on machine: $MACHINE"
+  (
+    echo ""
+    echo "Installing on machine: $MACHINE"
 
-  rsync -avz --delete "$SOURCE_DIR/" "ubuntu@$MACHINE:$TARGET_DIR/efa" > /dev/null 2>&1
+    rsync -avz --delete "$SOURCE_DIR/" "ubuntu@$MACHINE:$TARGET_DIR/efa" > /dev/null 2>&1
 
-  if [ $? -eq 0 ]; then
-    echo "Copy done on machine: $MACHINE"
-
-    ssh "ubuntu@$MACHINE" "cd $TARGET_DIR/efa && make -j" > /dev/null 2>&1
     if [ $? -eq 0 ]; then
-      echo "Compile successfully on machine: $MACHINE"
+      echo "Copy done on machine: $MACHINE"
+
+      ssh "ubuntu@$MACHINE" "cd $TARGET_DIR/efa && make -j" > /dev/null 2>&1
+      if [ $? -eq 0 ]; then
+        echo "Compile successfully on machine: $MACHINE"
+      else
+        echo "Compile error on machine: $MACHINE"
+      fi
     else
-      echo "Compile error on machine: $MACHINE"
+      echo "Can't access machine: $MACHINE"
     fi
-  else
-    echo "Can't access machines."
-  fi
+  ) &
 done
+
+wait
 
 echo "Done."
