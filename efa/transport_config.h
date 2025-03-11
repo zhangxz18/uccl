@@ -111,7 +111,7 @@ static const uint32_t kMaxUnackedPktsPP = 2u;
 static const uint32_t kMaxUnackedPktsPerEngine = 800;
 #else
 // static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
-static const uint32_t kMaxUnackedPktsPerEngine = 16;
+static const uint32_t kMaxUnackedPktsPerEngine = 48;
 #endif
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 32;

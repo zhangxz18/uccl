@@ -16,7 +16,7 @@ NIC=${4:-ens32}
 EQDS=${5:-eqds}
 NODES=$(get_nodes "../nodes.txt")
 GPU=${6:-8}
-CHANNELS=1
+CHANNELS=2
 
 echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}"
 
