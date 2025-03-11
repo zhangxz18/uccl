@@ -66,6 +66,7 @@ struct ncclRecvMem {
       int iov_lens[kMaxIovs];
       int dst_offsets[kMaxIovs];
       int iov_n;
+      int pid; // for debugging
       /************************** */
     };
     char pad4[MEM_ALIGN];

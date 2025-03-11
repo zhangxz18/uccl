@@ -64,6 +64,7 @@ class Primitives<
   int* iov_lens;
   int* dst_offsets;
   int iov_n;
+  int pid;
 
   // Don't use barrier 0 as it's used by the final sync
   __device__ void barrier() {
@@ -199,16 +200,16 @@ class Primitives<
   }
 
   __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
-    uint64_t num_full = len / sizeof(uint64_t);
-    uint64_t *src_u64 = (uint64_t *)src;
-    uint64_t *dst_u64 = (uint64_t *)dst;
+    uint64_t num_full = len / sizeof(uint32_t);
+    uint32_t *src_u32 = (uint32_t *)src;
+    uint32_t *dst_u32 = (uint32_t *)dst;
     for (uint64_t i = 0; i < num_full; i++) {
-      dst_u64[i] = src_u64[i];
+      dst_u32[i] = src_u32[i];
     }
 
-    uint64_t tail_start = num_full * sizeof(uint64_t);
-    char *src_char = (char *)src;
-    char *dst_char = (char *)dst;
+    uint64_t tail_start = num_full * sizeof(uint32_t);
+    char *src_char = (char *)(src_u32 + num_full + 1);
+    char *dst_char = (char *)(dst_u32 + num_full + 1);
     // Handle the remaining tail bytes (if any)
     for (uint64_t i = tail_start; i < len; i++) {
       dst_char[i] = src_char[i];
@@ -311,7 +312,9 @@ class Primitives<
             iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
             dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
             iov_n = *(int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
-            printf("prims_simple genericOp scattered tid=%d DirectRecv=%d DirectSend=%d step=%lu index=%d iov_n=%d\n", tid, DirectRecv, DirectSend, step, index, iov_n);
+            pid = *(int*)((char*)dst_offsets + sizeof(int)*kMaxIovs + sizeof(int));
+
+            printf("prims_simple genericOp scattered tid=%d DirectRecv=%d DirectSend=%d step=%lu index=%d iov_n=%d pid=%d\n", tid, DirectRecv, DirectSend, step, index, iov_n, pid);
 
             // Yang: Doing the scattered memcpy here? from iov_addrs to ptrs[index]
             if (tid < iov_n) { 
@@ -321,9 +324,10 @@ class Primitives<
               void *dst = (void*)(dst_base + dst_offsets[tid]);
               int iov_len = iov_lens[tid];
               // Yang: doing the scattered memcpy here.
-              printf("prims_simple genericOp memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid]);
-              copyGlobalMemory(dst, src, iov_len);
-              printf("prims_simple genericOp after memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid]);
+              printf("prims_simple genericOp memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d pid=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid], pid);
+              // copyGlobalMemory(dst, src, iov_len);
+              memcpy(dst, src, iov_len);
+              printf("prims_simple genericOp after memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d pid=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid], pid);
             }
 
             // TODO(Yang): do we need it here? 
@@ -734,7 +738,8 @@ private:
     if (recvPeers)
       tail_ptr = ncclShmem.channel.peers[recvPeers[0]]->recv[connIndexRecv].tail;
   
-    printf("prims_simple initing Primitives: tid=%d nthreads=%d nworkers=%d stepSize=%d index=%d, group=%d, peer=%d, flags=%x\n", tid, nthreads, nworkers, stepSize, index, group, peer, flags);
+    if (tid == 0)
+      printf("prims_simple initing Primitives: tid=%d nthreads=%d nworkers=%d stepSize=%d index=%d, group=%d, peer=%d, flags=%x\n", tid, nthreads, nworkers, stepSize, index, group, peer, flags);
   }
 
   __device__ ~Primitives() {

@@ -193,6 +193,15 @@ ncclResult_t pluginGetProperties(int vdev, ncclNetProperties_v8_t *props) {
 // block, but contrary to connect and accept, listenComm should never be NULL if
 // the call succeeds.
 ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
+    int gpu_idx = 0;
+    cudaGetDevice(&gpu_idx);
+    if (vdev != gpu_idx) {
+        LOG_FIRST_N(INFO, 1)
+            << "pluginListen detects different vdev " << vdev << " vs. gpu_idx "
+            << gpu_idx << ", forcely setting vdev to gpu_idx";
+        vdev = gpu_idx;
+    }
+
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
     memset(handle, 0, sizeof(struct UcclHandle));
@@ -226,6 +235,15 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
 // again until it succeeds.
 ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
                            ncclNetDeviceHandle_v8_t ** /*sendDevComm*/) {
+    int gpu_idx = 0;
+    cudaGetDevice(&gpu_idx);
+    if (vdev != gpu_idx) {
+        LOG_FIRST_N(INFO, 1) << "pluginConnect detects different vdev " << vdev
+                             << " vs. gpu_idx " << gpu_idx
+                             << ", forcely setting vdev to gpu_idx";
+        vdev = gpu_idx;
+    }
+
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
 
@@ -236,7 +254,8 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
 
     if (handle->state == kConnInit) {
         LOG(INFO) << "pluginConnect on vdev: " << vdev << " remote_ip_str "
-                  << remote_ip_str << " dest_port " << handle->listen_port;
+                  << remote_ip_str << " dest_port " << handle->listen_port
+                  << " gpu_idx " << gpu_idx;
         handle->state = kConnConnecting;
         // Delegate connection to another thread.
         std::thread t = std::thread([vdev, handle, remote_ip_str] {
@@ -275,15 +294,19 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
 // recvComm to NULL. NCCL will call accept again until it succeeds.
 ncclResult_t pluginAccept(void *listenComm, void **recvComm,
                           ncclNetDeviceHandle_v8_t ** /*recvDevComm*/) {
+    int gpu_idx = 0;
+    cudaGetDevice(&gpu_idx);
     struct UcclListenComm *lcomm = (struct UcclListenComm *)listenComm;
 
     struct UcclRecvComm *rcomm =
         (struct UcclRecvComm *)calloc(1, sizeof(struct UcclRecvComm));
 
     if (lcomm->state == kConnInit) {
+        DCHECK(lcomm->vdev == gpu_idx) << "pluginAccept: vdev " << lcomm->vdev
+                                       << " vs. gpu_idx " << gpu_idx;
         auto vdev = lcomm->vdev;
         LOG(INFO) << "pluginAccept on vdev: " << vdev << " listen_fd "
-                  << lcomm->listen_fd;
+                  << lcomm->listen_fd << " gpu_idx " << gpu_idx;
         lcomm->state = kConnConnecting;
         // Delegate connection to another thread.
         std::thread t = std::thread([lcomm, vdev] {
@@ -329,11 +352,12 @@ ncclResult_t pluginRegMr(void *collComm, void *data, size_t size, int type,
     int ret;
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     auto dev_idx = get_dev_idx_by_engine_idx(base->conn_id.engine_idx);
-    auto vdev_idx = get_vdev(dev_idx);
+    auto vdev_idx = base->vdev;
     checkMemoryLocation(data);
 
-    LOG(INFO) << "pluginRegMr, " << size << ", " << base->conn_id.flow_id
-              << " vdev_idx " << vdev_idx << " data ptr " << std::hex << data;
+    LOG(INFO) << "pluginRegMr, size " << size << " flow_id "
+              << base->conn_id.flow_id << " vdev_idx " << vdev_idx
+              << " data ptr " << std::hex << data;
     ret = ep->uccl_regmr(dev_idx, data, size, type, (struct Mhandle **)mhandle);
     reg_cnt++;
 
@@ -346,11 +370,12 @@ ncclResult_t pluginRegMrDmaBuf(void *collComm, void *data, size_t size,
     int ret;
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     auto dev_idx = get_dev_idx_by_engine_idx(base->conn_id.engine_idx);
-    auto vdev_idx = get_vdev(dev_idx);
+    auto vdev_idx = base->vdev;
     checkMemoryLocation(data);
 
-    LOG(INFO) << "pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id
-              << " vdev_idx " << vdev_idx << " data ptr " << std::hex << data;
+    LOG(INFO) << "pluginRegMrDmaBuf, size " << size << " flow_id "
+              << base->conn_id.flow_id << " vdev_idx " << vdev_idx
+              << " data ptr " << std::hex << data;
     ret = ep->uccl_regmr_dmabuf(dev_idx, data, size, type, offset, fd,
                                 (struct Mhandle **)mhandle);
     reg_cnt++;
