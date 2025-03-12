@@ -12,7 +12,6 @@ fi
 
 for MACHINE in "${TARGET_MACHINES[@]}"; do
   (
-    echo ""
     echo "Installing on machine: $MACHINE"
 
     rsync -avz --delete "$SOURCE_DIR/" "ubuntu@$MACHINE:$TARGET_DIR/efa" > /dev/null 2>&1

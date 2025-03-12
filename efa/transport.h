@@ -526,7 +526,26 @@ class UcclFlow {
      * @brief Helper function to transmit a number of packets from the queue
      * of pending TX data.
      */
-    void transmit_pending_packets();
+    uint32_t transmit_pending_packets(uint32_t budget);
+
+    /**
+     * @brief This function is a variant of transmit_pending_packets, which
+     * work in a Deficit Round Robin manner.
+     */
+    inline void transmit_pending_packets_drr(void) {
+        if (deficit_ <= 0)
+            deficit_ += quantum_;
+
+        if (deficit_ > 0)
+            deficit_ -= transmit_pending_packets(deficit_);
+
+        if (!has_pending_packets())
+            deficit_ = 0;
+    }
+
+    inline bool has_pending_packets() {
+        return tx_tracking_.num_unsent_msgbufs();
+    }
 
     struct pending_tx_msg_t {
         Channel::Msg tx_work;
@@ -598,6 +617,10 @@ class UcclFlow {
     eqds::EQDSCC eqds_cc_;
 
     uint32_t last_received_rwnd_ = kMaxUnconsumedRxMsgbufs;
+
+    // Deficit Round Robin
+    int32_t deficit_ = 0;
+    int32_t quantum_ = SEND_BATCH_SIZE;
 
     inline std::tuple<uint16_t, uint16_t> path_id_to_src_dst_qp(
         uint32_t path_id) {

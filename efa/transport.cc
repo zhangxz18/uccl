@@ -518,7 +518,7 @@ void UcclFlow::rx_messages() {
     }
 
     deserialize_and_append_to_txtracking();
-    transmit_pending_packets();
+    transmit_pending_packets_drr();
 }
 
 void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
@@ -572,7 +572,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     VLOG(3) << "tx_prepare_messages size: " << tx_work.len << " bytes";
 
     deserialize_and_append_to_txtracking();
-    transmit_pending_packets();
+    transmit_pending_packets_drr();
 }
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
@@ -634,7 +634,7 @@ void UcclFlow::process_credit(const UcclPktHdr *ucclh)
 
     if (eqds_cc_.handle_pull(pullno)) {
         // Kick transmission.
-        transmit_pending_packets();
+        transmit_pending_packets_drr();
     }
 }
 
@@ -859,14 +859,18 @@ void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
  * @brief Helper function to transmit a number of packets from the queue
  * of pending TX data.
  */
-void UcclFlow::transmit_pending_packets() {
+uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
+    
+    uint32_t permitted_packets = 0;
 
-    if (!tx_tracking_.num_unsent_msgbufs()) return;
+    if (!has_pending_packets()) return permitted_packets;
 
-    // Avoid sending too many packets.
-    if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return;
+    // Avoid too many inflight WQEs.
+    if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return permitted_packets;
+    // Avoid too many unacked packets.
     auto num_unacked_pkts = tx_tracking_.num_unacked_msgbufs();
-    if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return;
+    if (num_unacked_pkts >= kMaxUnackedPktsPerEngine) return permitted_packets;
+    
     auto unacked_pkt_budget = kMaxUnackedPktsPerEngine - num_unacked_pkts;
     auto txq_free_entries = socket_->send_queue_free_space();
     auto hard_budget = std::min(std::min(txq_free_entries, unacked_pkt_budget),
@@ -877,21 +881,22 @@ void UcclFlow::transmit_pending_packets() {
     // if (last_received_rwnd_ == 0) last_received_rwnd_ = 1;
     hard_budget = std::min(hard_budget, last_received_rwnd_);
 
-    uint32_t permitted_packets = 0;
     if constexpr (kCCType == CCType::kTimely || kCCType == CCType::kTimelyPP) {
         permitted_packets = timely_g_.timely_ready_packets(hard_budget);
+        permitted_packets = std::min(permitted_packets, budget);
     }
     if constexpr (kCCType == CCType::kCubic) {
         permitted_packets =
             std::min(hard_budget, cubic_g_.cubic_effective_wnd());
+        permitted_packets = std::min(permitted_packets, budget);
     }
     if constexpr (kCCType == CCType::kCubicPP) {
-        permitted_packets = std::min(hard_budget, SEND_BATCH_SIZE);
+        permitted_packets = std::min(permitted_packets, budget);
     }
     if constexpr (kCCType == CCType::kEQDS) {
         permitted_packets = std::min(hard_budget, (uint32_t)std::ceil(eqds_cc_.credit() / EFA_MAX_PAYLOAD));
         permitted_packets = std::min(permitted_packets, tx_tracking_.num_unsent_msgbufs());
-        permitted_packets = std::min(permitted_packets, SEND_BATCH_SIZE);
+        permitted_packets = std::min(permitted_packets, budget);
         if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MAX_PAYLOAD))
             permitted_packets = 0;
     }
@@ -980,13 +985,15 @@ void UcclFlow::transmit_pending_packets() {
     }
 
     // TX both data and ack frames.
-    if (pending_tx_frames_.empty()) return;
+    if (pending_tx_frames_.empty()) return permitted_packets;
     VLOG(3) << "tx packets " << pending_tx_frames_.size();
     // Considering ack coalescing.
     last_received_rwnd_ -= pending_tx_frames_.size();
 
     socket_->post_send_wrs(pending_tx_frames_, src_qp_idx);
     pending_tx_frames_.clear();
+
+    return permitted_packets;
 }
 
 void UcclFlow::deserialize_and_append_to_txtracking() {
@@ -1231,9 +1238,9 @@ void UcclEngine::run() {
         for (auto &[flow_id, flow] : active_flows_map_) {
             // Driving the rx buffer matching to incoming packets.
             flow->rx_tracking_.try_copy_msgbuf_to_appbuf(nullptr);
-
             flow->deserialize_and_append_to_txtracking();
-            flow->transmit_pending_packets();
+
+            flow->transmit_pending_packets_drr();
         }
 
         auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);
