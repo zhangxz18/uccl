@@ -621,7 +621,8 @@ bool UcclFlow::periodic_check() {
         auto [msgbuf, seqno] = ready_wheel.front();
         ready_wheel.pop_front();
         if (swift::seqno_ge(seqno, pcb_.snd_una)) {
-            rto_retransmit((FrameDesc *)msgbuf, seqno);
+            if (!rto_retransmit((FrameDesc *)msgbuf, seqno))
+                pcb_.add_to_rto_wheel(msgbuf, seqno);
         }
     }
 
@@ -824,7 +825,17 @@ void UcclFlow::fast_retransmit() {
     }
 }
 
-void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
+bool UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
+
+    // Avoid too many inflight WQEs.
+    if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine / 2) return false;
+
+    // The following code has BUG.
+    // if constexpr (kCCType == CCType::kEQDS) {
+    //     if (eqds_cc_.credit() < msgbuf->get_pkt_data_len()) return false;
+    //     if (!eqds_cc_.spend_credit(msgbuf->get_pkt_data_len())) return false; 
+    // }
+
     VLOG(3) << "RTO retransmitting oldest unacked packet " << seqno;
     auto path_id = get_path_id_with_lowest_rtt();
 #ifdef REXMIT_SET_PATH
@@ -853,6 +864,8 @@ void UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
         auto path_id = get_path_id(seqno);
         cubic_pp_[path_id].cubic_on_packet_loss();
     }
+
+    return true;
 }
 
 /**
@@ -1195,6 +1208,101 @@ FrameDesc *UcclFlow::craft_ackpacket(uint32_t path_id, uint32_t seqno,
     return msgbuf;
 }
 
+void UcclEngine::sender_only_run() {
+    Channel::Msg rx_work;
+    Channel::Msg tx_work;
+
+    while (!shutdown_) {
+        // Calculate the cycles elapsed since last periodic processing.
+        auto now_tsc = rdtsc();
+        const auto elapsed_tsc = now_tsc - last_periodic_tsc_;
+
+        if (elapsed_tsc >= kSlowTimerIntervalTsc_) {
+            // Perform periodic processing.
+            periodic_process();
+            last_periodic_tsc_ = now_tsc;
+        }
+        
+        auto [frames, polled_send_acks] =
+            socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
+        
+        if constexpr (kCCType == CCType::kEQDS) {            
+            // Receive credits.
+            auto _frames = credit_qp_ctx_->engine_poll_credit_cq();
+            frames.insert(frames.end(), _frames.begin(), _frames.end());
+        }
+
+        if (frames.size()) {
+            process_rx_msg(frames);
+        }
+
+        while (Channel::dequeue_sc(channel_->tx_task_q_, &tx_work)) {
+            // Make data written by the app thread visible to the engine.
+            tx_work.poll_ctx->read_barrier();
+            active_flows_map_[tx_work.flow_id]->tx_prepare_messages(tx_work);
+        }
+
+        for (auto &[flow_id, flow] : active_flows_map_) {
+            flow->deserialize_and_append_to_txtracking();
+
+            flow->transmit_pending_packets_drr(false);
+        }
+
+        auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);
+    }
+
+    // This will reset flow pcb state.
+    for (auto [flow_id, flow] : active_flows_map_) {
+        flow->shutdown();
+        delete flow;
+    }
+    // This will flush all unpolled tx frames.
+    socket_->shutdown();
+}
+
+void UcclEngine::receiver_only_run() {
+    Channel::Msg rx_work;
+    Channel::Msg tx_work;
+
+    while (!shutdown_) {
+        // Calculate the cycles elapsed since last periodic processing.
+        auto now_tsc = rdtsc();
+        const auto elapsed_tsc = now_tsc - last_periodic_tsc_;
+
+        if (elapsed_tsc >= kSlowTimerIntervalTsc_) {
+            // Perform periodic processing.
+            periodic_process();
+            last_periodic_tsc_ = now_tsc;
+        }
+
+        while (Channel::dequeue_sc(channel_->rx_task_q_, &rx_work)) {
+            active_flows_map_[rx_work.flow_id]->rx_supply_app_buf(rx_work);
+        }
+
+        auto frames = socket_->poll_recv_cq(RECV_BATCH_SIZE);
+        auto [_frames, polled_send_acks] =
+            socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
+        frames.insert(frames.end(), _frames.begin(), _frames.end());
+
+        if (frames.size()) {
+            process_rx_msg(frames);
+        }
+
+        for (auto &[flow_id, flow] : active_flows_map_) {
+            // Driving the rx buffer matching to incoming packets.
+            flow->rx_tracking_.try_copy_msgbuf_to_appbuf(nullptr);
+        }
+    }
+
+    // This will reset flow pcb state.
+    for (auto [flow_id, flow] : active_flows_map_) {
+        flow->shutdown();
+        delete flow;
+    }
+    // This will flush all unpolled tx frames.
+    socket_->shutdown();
+}
+
 void UcclEngine::run() {
     Channel::Msg rx_work;
     Channel::Msg tx_work;
@@ -1311,8 +1419,15 @@ void UcclEngine::process_rx_msg(std::vector<FrameDesc *> &pkt_msgs) {
 void UcclEngine::periodic_process() {
     // Advance the periodic ticks counter.
     periodic_ticks_++;
-    handle_rto();
+    
     process_ctl_reqs();
+    
+    if constexpr (kSplitSendRecvEngine) {
+        if (local_engine_idx_ % 2)
+            return;
+    }
+
+    handle_rto();
 }
 
 void UcclEngine::handle_rto() {
@@ -1461,7 +1576,14 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
 
                 auto *engine_ptr = engine.get();
                 engine_promise.set_value(std::move(engine));
-                engine_ptr->run();
+
+                if constexpr (kSplitSendRecvEngine) {
+                    if (i%2 == 0)
+                        engine_ptr->sender_only_run();
+                    else
+                        engine_ptr->receiver_only_run();
+                } else
+                    engine_ptr->run();
             }));
     }
     std::vector<UcclEngine *> engines;

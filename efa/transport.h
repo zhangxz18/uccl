@@ -520,7 +520,7 @@ class UcclFlow {
     void process_credit(const UcclPktHdr *ucclh);
 
     void fast_retransmit();
-    void rto_retransmit(FrameDesc *msgbuf, uint32_t seqno);
+    bool rto_retransmit(FrameDesc *msgbuf, uint32_t seqno);
 
     /**
      * @brief Helper function to transmit a number of packets from the queue
@@ -745,6 +745,10 @@ class UcclEngine {
      * for. This method is not thread-safe.
      */
     void run();
+
+    void sender_only_run();
+
+    void receiver_only_run();
 
     /**
      * @brief Method to perform periodic processing. This is called by the
