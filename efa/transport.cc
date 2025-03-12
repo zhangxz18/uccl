@@ -518,7 +518,7 @@ void UcclFlow::rx_messages() {
     }
 
     deserialize_and_append_to_txtracking();
-    transmit_pending_packets_drr();
+    transmit_pending_packets_drr(true);
 }
 
 void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
@@ -572,7 +572,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     VLOG(3) << "tx_prepare_messages size: " << tx_work.len << " bytes";
 
     deserialize_and_append_to_txtracking();
-    transmit_pending_packets_drr();
+    transmit_pending_packets_drr(false);
 }
 
 void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
@@ -634,7 +634,7 @@ void UcclFlow::process_credit(const UcclPktHdr *ucclh)
 
     if (eqds_cc_.handle_pull(pullno)) {
         // Kick transmission.
-        transmit_pending_packets_drr();
+        transmit_pending_packets_drr(true);
     }
 }
 
@@ -1240,7 +1240,7 @@ void UcclEngine::run() {
             flow->rx_tracking_.try_copy_msgbuf_to_appbuf(nullptr);
             flow->deserialize_and_append_to_txtracking();
 
-            flow->transmit_pending_packets_drr();
+            flow->transmit_pending_packets_drr(false);
         }
 
         auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);

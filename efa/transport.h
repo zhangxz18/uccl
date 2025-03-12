@@ -532,7 +532,13 @@ class UcclFlow {
      * @brief This function is a variant of transmit_pending_packets, which
      * work in a Deficit Round Robin manner.
      */
-    inline void transmit_pending_packets_drr(void) {
+    inline void transmit_pending_packets_drr(bool bypass) {
+
+        if (bypass) {
+            transmit_pending_packets(SEND_BATCH_SIZE);
+            return;
+        }
+
         if (deficit_ <= 0)
             deficit_ += quantum_;
 
