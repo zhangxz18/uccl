@@ -1248,7 +1248,7 @@ void UcclEngine::sender_only_run() {
             flow->transmit_pending_packets_drr(false);
         }
 
-        socket_->poll_send_cq(SEND_BATCH_SIZE);
+        socket_->poll_send_cq();
     }
 
     // This will reset flow pcb state.
@@ -1351,7 +1351,7 @@ void UcclEngine::run() {
             flow->transmit_pending_packets_drr(false);
         }
 
-        socket_->poll_send_cq(SEND_BATCH_SIZE);
+        socket_->poll_send_cq();
     }
 
     // This will reset flow pcb state.

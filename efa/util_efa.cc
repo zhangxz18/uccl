@@ -641,34 +641,29 @@ void EFASocket::post_recv_wrs_for_ctrl(uint32_t budget, uint16_t qp_idx) {
 }
 
 void EFASocket::poll_send_cq() {
+    // We give a higher budget to poll_send_cq because its work is very light.
+    int ne = ibv_poll_cq(send_cq_, 1.25 * kMaxPollBatch, wc_);
+    DCHECK(ne >= 0) << "poll_send_cq ibv_poll_cq error";
+    
+    auto now = rdtsc();
+    for (int i = 0; i < ne; i++) {
+        // Check the completion status.
+        DCHECK(wc_[i].status == IBV_WC_SUCCESS)
+            << "poll_send_cq: completion error: "
+            << ibv_wc_status_str(wc_[i].status);
 
-    uint32_t total_ne = 0;
+        DCHECK(wc_[i].opcode == IBV_WC_SEND);
 
-    // We give a high budget to poll_send_cq because the work is very light.
-    while (total_ne < 2 * kMaxPollBatch) {
-        auto now = rdtsc();
-        int ne = ibv_poll_cq(send_cq_, kMaxPollBatch, wc_);
-        DCHECK(ne >= 0) << "poll_send_cq ibv_poll_cq error";
+        auto *frame = (FrameDesc *)wc_[i].wr_id;
+        auto src_qp_idx = frame->get_src_qp_idx();
+        send_queue_wrs_per_qp_[src_qp_idx]--;
+        send_queue_wrs_--;
 
-        for (int i = 0; i < ne; i++) {
-            // Check the completion status.
-            DCHECK(wc_[i].status == IBV_WC_SUCCESS)
-                << "poll_send_cq: completion error: "
-                << ibv_wc_status_str(wc_[i].status);
-
-            DCHECK(wc_[i].opcode == IBV_WC_SEND);
-
-            auto *frame = (FrameDesc *)wc_[i].wr_id;
-            auto src_qp_idx = frame->get_src_qp_idx();
-            send_queue_wrs_per_qp_[src_qp_idx]--;
-            send_queue_wrs_--;
-
-            frame->set_cpe_time_tsc(now);
-        }
-        total_ne += ne;
-        // TODO(yang): do we need to do anything smarter?
-        if (ne < kMaxPollBatch) break;
+        frame->set_cpe_time_tsc(now);
     }
+
+    // TODO(yang): do we need to do anything smarter?
+    if (ne < 1.25 * kMaxPollBatch) break;
 }
 
 std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {

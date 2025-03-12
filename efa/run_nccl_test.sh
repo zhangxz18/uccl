@@ -67,7 +67,6 @@ elif [ "$TEST" = "ud" ]; then
         --mca orte_base_help_aggregate 0 \
         --mca btl_tcp_if_include ${NIC} \
         -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
-        -x NCCL_DEBUG=INFO \
         -x NCCL_P2P_DISABLE=1 \
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
