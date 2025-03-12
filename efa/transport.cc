@@ -1963,7 +1963,7 @@ inline int Endpoint::find_dedicated_engine_idx(int vdev_idx, bool is_sender)
     auto ei = (vdev_idx + 1) * kNumEnginesPerVdev;
 
     auto minElementIter = engine_load_vec_.begin() + si;
-    if (!is_sender) minElementIter = engine_load_vec_.begin() + ei;
+    if (!is_sender) minElementIter = engine_load_vec_.begin() + ei - 1;
 
     *minElementIter += 1;
     return std::distance(engine_load_vec_.begin(), minElementIter);

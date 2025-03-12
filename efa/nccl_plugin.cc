@@ -184,6 +184,12 @@ ncclResult_t pluginGetProperties(int vdev, ncclNetProperties_v8_t *props) {
 // block, but contrary to connect and accept, listenComm should never be NULL if
 // the call succeeds.
 ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
+    int gpu_idx = 0;
+    cudaGetDevice(&gpu_idx);
+    if (vdev != gpu_idx) {
+        LOG_FIRST_N(INFO, 1) << "pluginListen: Force align vdev and gpu_idx.";
+        vdev = gpu_idx;
+    }
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
     memset(handle, 0, sizeof(struct UcclHandle));
@@ -217,6 +223,12 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
 // again until it succeeds.
 ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
                            ncclNetDeviceHandle_v8_t ** /*sendDevComm*/) {
+    int gpu_idx = 0;
+    cudaGetDevice(&gpu_idx);
+    if (vdev != gpu_idx) {
+        LOG_FIRST_N(INFO, 1) << "pluginListen: Force align vdev and gpu_idx.";
+        vdev = gpu_idx;
+    }
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
 
@@ -266,12 +278,16 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
 // recvComm to NULL. NCCL will call accept again until it succeeds.
 ncclResult_t pluginAccept(void *listenComm, void **recvComm,
                           ncclNetDeviceHandle_v8_t ** /*recvDevComm*/) {
+    int gpu_idx = 0;
+    cudaGetDevice(&gpu_idx);
+    
     struct UcclListenComm *lcomm = (struct UcclListenComm *)listenComm;
 
     struct UcclRecvComm *rcomm =
         (struct UcclRecvComm *)calloc(1, sizeof(struct UcclRecvComm));
 
     if (lcomm->state == kConnInit) {
+        DCHECK(lcomm->vdev == gpu_idx);
         auto vdev = lcomm->vdev;
         LOG(INFO) << "pluginAccept on vdev: " << vdev << " listen_fd "
                   << lcomm->listen_fd;
@@ -320,7 +336,8 @@ ncclResult_t pluginRegMr(void *collComm, void *data, size_t size, int type,
     int ret;
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     auto dev_idx = get_dev_idx_by_engine_idx(base->conn_id.engine_idx);
-    auto vdev_idx = get_vdev(dev_idx);
+    // auto vdev_idx = get_vdev(dev_idx);
+    auto vdev_idx = base->vdev;
     checkMemoryLocation(data);
 
     LOG(INFO) << "pluginRegMr, " << size << ", " << base->conn_id.flow_id
@@ -337,7 +354,8 @@ ncclResult_t pluginRegMrDmaBuf(void *collComm, void *data, size_t size,
     int ret;
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     auto dev_idx = get_dev_idx_by_engine_idx(base->conn_id.engine_idx);
-    auto vdev_idx = get_vdev(dev_idx);
+    // auto vdev_idx = get_vdev(dev_idx);
+    auto vdev_idx = base->vdev;
     checkMemoryLocation(data);
 
     LOG(INFO) << "pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id
