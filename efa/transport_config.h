@@ -26,6 +26,7 @@ static constexpr CCType kCCType = CCType::kEQDS;
 static const uint32_t kNumVdevices = 8;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
+static const bool kSplitSendRecvEngine = true; // Split sender/recevier flows to dedicated engines.
 
 /// Interface configuration.
 #ifdef P4D
@@ -88,7 +89,7 @@ static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
 // Setting to 20 gives highest bimq perf (191 vs. 186G), but bad for NCCL.
-static const uint32_t kMaxDstQP = 24;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxDstQP = 28;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxSrcQP = 8;
 static const uint32_t kMaxDstQPCtrl = 8;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQPCtrl = 8;

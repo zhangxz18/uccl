@@ -1627,8 +1627,11 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
             break;
         }
     }
-    auto local_engine_idx =
-        find_least_loaded_engine_idx_and_update(local_vdev, flow_id, is_sender);
+    uint32_t local_engine_idx;
+    if constexpr (kSplitSendRecvEngine)
+        local_engine_idx = find_dedicated_engine_idx(local_vdev, is_sender);
+    else
+        local_engine_idx = find_least_loaded_engine_idx_and_update(local_vdev, flow_id, is_sender);
     CHECK_GE(local_engine_idx, 0);
 
     install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd,
@@ -1704,8 +1707,11 @@ ConnID Endpoint::uccl_accept(int local_vdev, int *remote_vdev,
         }
     }
 
-    auto local_engine_idx =
-        find_least_loaded_engine_idx_and_update(local_vdev, flow_id, is_sender);
+    uint32_t local_engine_idx;
+    if constexpr (kSplitSendRecvEngine)
+        local_engine_idx = find_dedicated_engine_idx(local_vdev, is_sender);
+    else
+        local_engine_idx = find_least_loaded_engine_idx_and_update(local_vdev, flow_id, is_sender);
     CHECK_GE(local_engine_idx, 0);
 
     install_flow_on_engine(flow_id, remote_ip, local_engine_idx, bootstrap_fd,
@@ -1951,6 +1957,18 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     net_barrier(bootstrap_fd);
 }
 
+inline int Endpoint::find_dedicated_engine_idx(int vdev_idx, bool is_sender)
+{
+    auto si = vdev_idx * kNumEnginesPerVdev;
+    auto ei = (vdev_idx + 1) * kNumEnginesPerVdev;
+
+    auto minElementIter = engine_load_vec_.begin() + si;
+    if (!is_sender) minElementIter = engine_load_vec_.begin() + ei;
+
+    *minElementIter += 1;
+    return std::distance(engine_load_vec_.begin(), minElementIter);
+}
+
 inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx,
                                                              FlowID flow_id,
                                                              bool is_sender) {
@@ -1961,6 +1979,7 @@ inline int Endpoint::find_least_loaded_engine_idx_and_update(int vdev_idx,
 
     auto minElementIter = std::min_element(engine_load_vec_.begin() + si,
                                            engine_load_vec_.begin() + ei);
+
     *minElementIter += 1;
     return std::distance(engine_load_vec_.begin(), minElementIter);
 }

@@ -900,6 +900,7 @@ class Endpoint {
     inline int find_least_loaded_engine_idx_and_update(int vdev_idx,
                                                        FlowID flow_id,
                                                        bool is_sender);
+    inline int find_dedicated_engine_idx(int vdev_idx, bool is_sender);
     inline void fence_and_clean_ctx(PollCtx *ctx);
 
     std::mutex stats_mu_;
