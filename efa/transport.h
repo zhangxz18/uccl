@@ -522,6 +522,19 @@ class UcclFlow {
     void fast_retransmit();
     bool rto_retransmit(FrameDesc *msgbuf, uint32_t seqno);
 
+    inline bool can_rtx() {
+        // Avoid too many inflight WQEs.
+        if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return false;
+
+        // // The following code may have BUG.
+        // if constexpr (kCCType == CCType::kEQDS) {
+        //     if (eqds_cc_.credit() < msgbuf->get_pkt_data_len()) return false;
+        //     if (!eqds_cc_.spend_credit(msgbuf->get_pkt_data_len())) return false; 
+        // }
+
+        return true;
+    }
+
     /**
      * @brief Helper function to transmit a number of packets from the queue
      * of pending TX data.

@@ -689,6 +689,9 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
 
             uint32_t index = 0;
             while (sack_bitmap_count && msgbuf && index < hard_budget) {
+
+                if (!can_rtx()) break;
+
                 const size_t sack_bitmap_bucket_idx =
                     index / swift::Pcb::kSackBitmapBucketSize;
                 const size_t sack_bitmap_idx_in_bucket =
@@ -797,6 +800,9 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
 }
 
 void UcclFlow::fast_retransmit() {
+
+    if (!can_rtx()) return;
+
     // Retransmit the oldest unacknowledged message buffer.
     auto *msgbuf = tx_tracking_.get_oldest_unacked_msgbuf();
     auto seqno = pcb_.snd_una;
@@ -828,13 +834,7 @@ void UcclFlow::fast_retransmit() {
 bool UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
 
     // Avoid too many inflight WQEs.
-    if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine / 2) return false;
-
-    // The following code has BUG.
-    // if constexpr (kCCType == CCType::kEQDS) {
-    //     if (eqds_cc_.credit() < msgbuf->get_pkt_data_len()) return false;
-    //     if (!eqds_cc_.spend_credit(msgbuf->get_pkt_data_len())) return false; 
-    // }
+    if (!can_rtx()) return false;
 
     VLOG(3) << "RTO retransmitting oldest unacked packet " << seqno;
     auto path_id = get_path_id_with_lowest_rtt();
@@ -1248,7 +1248,7 @@ void UcclEngine::sender_only_run() {
             flow->transmit_pending_packets_drr(false);
         }
 
-        auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);
+        socket_->poll_send_cq(SEND_BATCH_SIZE);
     }
 
     // This will reset flow pcb state.
@@ -1351,7 +1351,7 @@ void UcclEngine::run() {
             flow->transmit_pending_packets_drr(false);
         }
 
-        auto tx_frames = socket_->poll_send_cq(SEND_BATCH_SIZE);
+        socket_->poll_send_cq(SEND_BATCH_SIZE);
     }
 
     // This will reset flow pcb state.

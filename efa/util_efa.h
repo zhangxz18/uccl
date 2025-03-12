@@ -370,7 +370,9 @@ class EFASocket {
     void post_recv_wrs_for_ctrl(uint32_t budget, uint16_t qp_idx);
 
     // This polls send_cq_ for data qps; wr_id is FrameDesc*.
-    std::vector<FrameDesc *> poll_send_cq(uint32_t bugget);
+    std::vector<FrameDesc *> poll_send_cq(uint32_t bugget); // only for test
+    void poll_send_cq();
+
     // This polls recv_cq_ for data qps; wr_id is FrameDesc*.
     std::vector<FrameDesc *> poll_recv_cq(uint32_t budget);
     // This returns 1) received acks and 2) num of polled sent acks (it
