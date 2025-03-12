@@ -57,9 +57,9 @@ static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // uses the first 24 and last 24 cores as specified in p4d-24xl-topo.xml). The
 // two numbers are for numa 0 and 1 separately. GPU 0-3 + NIC 0-1 are on numa 0,
 // and GPU 4-7 + NIC 2-3 are on numa 1.
-static const uint32_t ENGINE_CPU_START[2] = {NUM_CPUS / 4, NUM_CPUS / 2};
-static const uint32_t PACER_CPU_START[2] = {ENGINE_CPU_START[0] + 8 /* 2 NIC * 2 EnginePerNIC * 2 (plus CopyThread) */, 
-    ENGINE_CPU_START[1] + 8 /* 2 NIC * 2 EnginePerNIC * 2 (plus CopyThread) */};
+static const uint32_t ENGINE_CPU_START[2] = {NUM_CPUS / 2, NUM_CPUS / 4};
+static const uint32_t PACER_CPU_START[2] = {ENGINE_CPU_START[0] + 8 /* 4 VDEV * 2 EnginePerVdev */, 
+    ENGINE_CPU_START[1] + 8 /* 4 VDEV * 2 EnginePerVdev */};
 static const uint16_t BASE_PORT = 10000;
 static const uint64_t NUM_FRAMES = 65536;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
