@@ -54,6 +54,14 @@ struct ncclSendMem {
 
 // Yang: 128 max scattered IOVs
 #define kMaxIovs 128
+struct alignas(8) iov {
+  void* iov_addrs[kMaxIovs];
+  int iov_lens[kMaxIovs];
+  int dst_offsets[kMaxIovs];
+  int iov_n;
+  int gpu_idx; // for debugging
+};
+const uint32_t kIovSize = sizeof(struct iov);
 struct ncclRecvMem {
   union {
     struct {
@@ -62,18 +70,14 @@ struct ncclRecvMem {
       struct ncclConnFifo connFifo[NCCL_STEPS];
       int flush; // For GDRCopy-based flush
       /* Yang: add scattered IOVs */
-      void* iov_addrs[kMaxIovs];
-      int iov_lens[kMaxIovs];
-      int dst_offsets[kMaxIovs];
-      int iov_n;
-      int pid; // for debugging
+      struct iov iovFifo[NCCL_STEPS];
       /************************** */
     };
-    char pad4[MEM_ALIGN];
+    char pad4[MEM_ALIGN + MEM_ALIGN * 4];
   };
 };
-// Yang: iov_addrs is the starting address of the scattered IOVs.
-const uint32_t kIovStart = offsetof(struct ncclRecvMem, iov_addrs);
+// Yang: iovFifo is the starting address of the scattered IOVs.
+const uint32_t kIovStart = offsetof(struct ncclRecvMem, iovFifo);
 
 enum helperThreadState {ThreadStart, ThreadStop};
 

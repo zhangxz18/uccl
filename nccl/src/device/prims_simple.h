@@ -60,12 +60,7 @@ class Primitives<
 
   // Yang: for current step, the iov buffers and lengths
   uint64_t* tail_ptr; // Pointing to the CPU proxy thread's ncclRecvMem.tail
-  void** iov_addrs;
-  int* iov_lens;
-  int* dst_offsets;
-  int iov_n;
-  int pid;
-
+  
   // Don't use barrier 0 as it's used by the final sync
   __device__ void barrier() {
     if (nthreads == WARP_SIZE) __syncwarp();
@@ -208,14 +203,26 @@ class Primitives<
     }
 
     uint64_t tail_start = num_full * sizeof(uint32_t);
-    char *src_char = (char *)(src_u32 + num_full + 1);
-    char *dst_char = (char *)(dst_u32 + num_full + 1);
+    char *src_char = (char *)src;
+    char *dst_char = (char *)dst;
     // Handle the remaining tail bytes (if any)
     for (uint64_t i = tail_start; i < len; i++) {
       dst_char[i] = src_char[i];
     }
   }
 
+  __device__ __forceinline__ uint64_t ld_volatile_u64(uint64_t *ptr) {
+    uint64_t ans;
+    asm volatile("ld.volatile.global.u64 %0, [%1];" : "=l"(ans) : "l"(ptr) : "memory");
+    return ans;
+  }
+
+  __device__ __forceinline__ uint32_t ld_volatile_u32(uint32_t *ptr) {
+    uint32_t ans;
+    asm volatile("ld.volatile.global.u32 %0, [%1];" : "=r"(ans) : "l"(ptr) : "memory");
+    return ans;
+  }
+  
   // Yang: for recv: <1, 0, 1, 0, -1, Output>
   template <int DirectRecv1, int DirectSend1, int Recv, int Send, int SrcBuf, int DstBuf>
   __device__ __forceinline__ void genericOp(
@@ -305,34 +312,49 @@ class Primitives<
              Dst, ncclShmem.groups[group].dsts,
              workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
+          __threadfence();
           if (DirectRecv && !DirectSend) {
-            #define kMaxIovs 128
+            // Yang: need to keep the same as comm.h
             #define kIovStart 328
-            iov_addrs = (void**)((char*)tail_ptr + kIovStart);
-            iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
-            dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
-            iov_n = *(int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
-            pid = *(int*)((char*)dst_offsets + sizeof(int)*kMaxIovs + sizeof(int));
+            #define kMaxIovs 128
+            struct alignas(8) iov {
+              void* iov_addrs[kMaxIovs];
+              int iov_lens[kMaxIovs];
+              int dst_offsets[kMaxIovs];
+              int iov_n;
+              int gpu_idx; // for debugging
+            };
+            const uint32_t kIovSize = sizeof(struct iov);
 
-            printf("prims_simple genericOp scattered tid=%d DirectRecv=%d DirectSend=%d step=%lu index=%d iov_n=%d pid=%d\n", tid, DirectRecv, DirectSend, step, index, iov_n, pid);
+            uint64_t prevStep = step - StepPerSlice;
+            int iov_idx = prevStep % NCCL_STEPS;
+            struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+            
+            void** iov_addrs = cur_iov->iov_addrs;
+            int* iov_lens = cur_iov->iov_lens;
+            int* dst_offsets = cur_iov->dst_offsets;
+            int iov_n = ld_volatile_u32((uint32_t*)&cur_iov->iov_n);
+            int gpu_idx = ld_volatile_u32((uint32_t*)&cur_iov->gpu_idx);
+
+            if (tid == 0)
+              printf("prims_simple genericOp scattered tid=%d DirectRecv=%d DirectSend=%d step=%lu index=%d iov_n=%d gpu_idx=%d\n", tid, DirectRecv, DirectSend, step, index, iov_n, gpu_idx);
 
             // Yang: Doing the scattered memcpy here? from iov_addrs to ptrs[index]
             if (tid < iov_n) { 
               // TODO(Yang): Do we need to always do loadStepValue/ld_volatile_global? 
-              void *src = iov_addrs[tid];
+              void *src = (void*)ld_volatile_u64((uint64_t*)&iov_addrs[tid]);
               uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
-              void *dst = (void*)(dst_base + dst_offsets[tid]);
-              int iov_len = iov_lens[tid];
+              void *dst = (void*)(dst_base + ld_volatile_u32((uint32_t*)&dst_offsets[tid]));
+              int iov_len = ld_volatile_u32((uint32_t*)&iov_lens[tid]);
               // Yang: doing the scattered memcpy here.
-              printf("prims_simple genericOp memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d pid=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid], pid);
               // copyGlobalMemory(dst, src, iov_len);
               memcpy(dst, src, iov_len);
-              printf("prims_simple genericOp after memcpy tid=%d iov_n=%d addr=%p len=%d dst_base=%lx offset=%d pid=%d\n", tid, iov_n, src, iov_len, dst_base, dst_offsets[tid], pid);
             }
 
-            // TODO(Yang): do we need it here? 
             subBarrier();
           }
+          // TODO(Yang): do we need it here? 
+          __threadfence();
 
           constexpr int PreOpSrcs = SrcBuf != Input ? 0 :
                                     DirectRecv*MaxRecv == NCCL_MAX_DIRECT_ARITY ? (1+NCCL_MAX_DIRECT_ARITY) : 1;
