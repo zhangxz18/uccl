@@ -60,6 +60,7 @@ struct alignas(8) iov {
   int dst_offsets[kMaxIovs];
   int iov_n;
   int gpu_idx; // for debugging
+  int step; // for debugging
 };
 const uint32_t kIovSize = sizeof(struct iov);
 struct ncclRecvMem {

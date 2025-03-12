@@ -178,6 +178,9 @@ class Primitives<
         printf("prims_simple waitPeer step=%lu, index=%d\n", step, index);
       
       step += StepPerSlice;
+
+      // Yang: using one thread to load the step into sharemem.
+      ncclShmem.groups[group].step = step;
     }
   }
 
@@ -323,10 +326,11 @@ class Primitives<
               int dst_offsets[kMaxIovs];
               int iov_n;
               int gpu_idx; // for debugging
+              int step; // for debugging
             };
             const uint32_t kIovSize = sizeof(struct iov);
 
-            uint64_t prevStep = step - StepPerSlice;
+            uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
             int iov_idx = prevStep % NCCL_STEPS;
             struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
             
@@ -335,9 +339,7 @@ class Primitives<
             int* dst_offsets = cur_iov->dst_offsets;
             int iov_n = ld_volatile_u32((uint32_t*)&cur_iov->iov_n);
             int gpu_idx = ld_volatile_u32((uint32_t*)&cur_iov->gpu_idx);
-
-            if (tid == 0)
-              printf("prims_simple genericOp scattered tid=%d DirectRecv=%d DirectSend=%d step=%lu index=%d iov_n=%d gpu_idx=%d\n", tid, DirectRecv, DirectSend, step, index, iov_n, gpu_idx);
+            int iov_step = ld_volatile_u32((uint32_t*)&cur_iov->step);
 
             // Yang: Doing the scattered memcpy here? from iov_addrs to ptrs[index]
             if (tid < iov_n) { 
@@ -349,6 +351,7 @@ class Primitives<
               // Yang: doing the scattered memcpy here.
               // copyGlobalMemory(dst, src, iov_len);
               memcpy(dst, src, iov_len);
+              printf("prims_simple genericOp scattered tid=%d iov_n=%d iov_len=%d src=%p dst=%p prevStep=%lu iov_idx=%d iov_step=%d\n", tid, iov_n, iov_len, src, dst, prevStep, iov_idx, iov_step);
             }
 
             subBarrier();

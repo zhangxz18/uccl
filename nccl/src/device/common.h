@@ -37,6 +37,7 @@ struct ncclShmemGroup {
     unpackGroupShmem unpack;
   } devicePlugin;
   int32_t dstSizes[NCCL_MAX_ARITY+1];
+  uint64_t step;
 };
 
 struct ncclShmemData {

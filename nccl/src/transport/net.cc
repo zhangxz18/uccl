@@ -1445,11 +1445,12 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
 
                 cur_iov->iov_n = *iov_n;
                 cur_iov->gpu_idx = gpu_idx; // for debugging
+                cur_iov->step = iov_idx;
                 for (int j=0; j < cur_iov->iov_n; j++) {
                   cur_iov->iov_addrs[j] = iov_addrs[j];
                   cur_iov->iov_lens[j] = iov_lens[j];
                   cur_iov->dst_offsets[j] = dst_offsets[j];
-                  printf("recvProxyProgress3: gpu_idx=%d s=%d i=%d iov[%d] addr=%p len=%d offset=%d\n", gpu_idx, s, i, j, iov_addrs[j], iov_lens[j], dst_offsets[j]);
+                  printf("recvProxyProgress3: gpu_idx=%d s=%d i=%d iov[%d] addr=%p len=%d offset=%d iov_idx=%lu\n", gpu_idx, s, i, j, iov_addrs[j], iov_lens[j], dst_offsets[j], iov_idx);
                 }
                 *recvTail = sub->base + sub->transmitted;
                 __sync_synchronize();
