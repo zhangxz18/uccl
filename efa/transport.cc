@@ -1138,10 +1138,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     ucclh->pullno = be16_t(pullno);
 
     frame->set_dest_ah(remote_ah_);
-    frame->set_dest_qpn(remote_meta_->qpn_list_credit[credit_qpidx_rr_++]);
-
-    if (credit_qpidx_rr_ == kMaxSrcDstQPCredit)
-        credit_qpidx_rr_ = 0;
+    frame->set_dest_qpn(remote_meta_->qpn_list_credit[credit_qpidx_rr_++ % kMaxDstQPCredit]);
     
     struct ibv_sge sge = {
         .addr = frame->get_pkt_hdr_addr(),
@@ -1160,7 +1157,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     wr.wr.ud.remote_qkey = QKEY;
     wr.send_flags = IBV_SEND_SIGNALED;
 
-    DCHECK(ibv_post_send(credit_qp_ctx_->get_qp_by_idx(credit_qpidx_rr_), &wr, &bad_wr) == 0);
+    DCHECK(ibv_post_send(credit_qp_ctx_->get_qp_by_idx(credit_qpidx_rr_ % kMaxSrcQPCredit), &wr, &bad_wr) == 0);
 
     return true;
 }
