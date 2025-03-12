@@ -174,8 +174,8 @@ class Primitives<
         ncclNetDeviceIncrementHead(group, index);
       }
 
-      if (tid == 0)
-        printf("prims_simple waitPeer step=%lu, index=%d\n", step, index);
+      // if (tid == 0)
+      //   printf("prims_simple waitPeer step=%lu, index=%d\n", step, index);
       
       step += StepPerSlice;
 
@@ -192,7 +192,7 @@ class Primitives<
         fence_acq_rel_sys();
       }
       // Yang: this update CPU-side tail.
-      printf("prims_simple postPeer step=%lu\n", step);
+      // printf("prims_simple postPeer step=%lu\n", step);
       st_relaxed_sys_global(connStepPtr, step);
     }
   }
@@ -231,8 +231,8 @@ class Primitives<
   __device__ __forceinline__ void genericOp(
       intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp
     ) {
-    if (tid == 0)
-      printf("prims_simple genericOp srcIx=%ld dstIx=%ld nelem=%d\n", srcIx, dstIx, nelem);
+    // if (tid == 0)
+    //   printf("prims_simple genericOp srcIx=%ld dstIx=%ld nelem=%d\n", srcIx, dstIx, nelem);
     constexpr int DirectRecv = 1 && Direct && DirectRecv1;
     constexpr int DirectSend = 1 && Direct && DirectSend1;
     constexpr int Src = SrcBuf != -1;
@@ -351,7 +351,7 @@ class Primitives<
               // Yang: doing the scattered memcpy here.
               // copyGlobalMemory(dst, src, iov_len);
               memcpy(dst, src, iov_len);
-              printf("prims_simple genericOp scattered tid=%d iov_n=%d iov_len=%d src=%p dst=%p prevStep=%lu iov_idx=%d iov_step=%d\n", tid, iov_n, iov_len, src, dst, prevStep, iov_idx, iov_step);
+              // printf("prims_simple genericOp scattered tid=%d iov_n=%d iov_len=%d src=%p dst=%p prevStep=%lu iov_idx=%d iov_step=%d\n", tid, iov_n, iov_len, src, dst, prevStep, iov_idx, iov_step);
             }
 
             subBarrier();
@@ -369,8 +369,8 @@ class Primitives<
              Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
              workSize);
 
-          if (tid == 0)
-            printf("prims_simple reduceCopy nsrc=%d ndst=%d workSize=%d\n", Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
+          // if (tid == 0)
+            // printf("prims_simple reduceCopy nsrc=%d ndst=%d workSize=%d\n", Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < sliceSize);
@@ -763,8 +763,8 @@ private:
     if (recvPeers)
       tail_ptr = ncclShmem.channel.peers[recvPeers[0]]->recv[connIndexRecv].tail;
   
-    if (tid == 0)
-      printf("prims_simple initing Primitives: tid=%d nthreads=%d nworkers=%d stepSize=%d index=%d, group=%d, peer=%d, flags=%x\n", tid, nthreads, nworkers, stepSize, index, group, peer, flags);
+    // if (tid == 0)
+    //   printf("prims_simple initing Primitives: tid=%d nthreads=%d nworkers=%d stepSize=%d index=%d, group=%d, peer=%d, flags=%x\n", tid, nthreads, nworkers, stepSize, index, group, peer, flags);
   }
 
   __device__ ~Primitives() {
@@ -801,7 +801,7 @@ private:
       bool sendAcceptor = (flags & RoleWaitSend) && (flags & DirectWrite || flags & IpcWrite || flags & NvlsDirectWrite);
       bool sendProvider = (flags & RoleWaitSend) && (flags & DirectRead || flags & IpcRead); // sender provides direct buffer (to be fetched)
       bool recvAcceptor = (flags & RoleWaitRecv) && (flags & DirectRead || flags & IpcRead || flags & NvlsDirectRead); // receiver accepts direct buffer
-      printf("setDataPtrs: recvProvider=%d sendAcceptor=%d sendProvider=%d recvAcceptor=%d\n", recvProvider, sendAcceptor, sendProvider, recvAcceptor);
+      // printf("setDataPtrs: recvProvider=%d sendAcceptor=%d sendProvider=%d recvAcceptor=%d\n", recvProvider, sendAcceptor, sendProvider, recvAcceptor);
       if (recvProvider) {
         // Yang: we likely go this path for recv
         int spins = 0;

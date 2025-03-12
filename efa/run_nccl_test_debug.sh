@@ -14,8 +14,8 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
     -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
-    -x NCCL_MAX_NCHANNELS=2 \
-    -x NCCL_MIN_NCHANNELS=2 \
+    -x NCCL_MAX_NCHANNELS=1 \
+    -x NCCL_MIN_NCHANNELS=1 \
     -x NCCL_NET_GDR_LEVEL=SYS \
     -x NCCL_P2P_NET_CHUNKSIZE=524288 \
     -x NCCL_BUFFSIZE=8388608 \
@@ -23,7 +23,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
     /opt/uccl_rdma/nccl-tests/build/alltoall_perf \
-    -b 1M -e 1M -f 2 -w 0 -n 1 -g 1 -t 2 \
+    -b 1K -e 1M -f 2 -w 5 -n 20 -g 1 -t 2 \
     >& alltoall_debug.log
 
 # export LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}"
