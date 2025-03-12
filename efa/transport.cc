@@ -690,7 +690,7 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
             uint32_t index = 0;
             while (sack_bitmap_count && msgbuf && index < hard_budget) {
 
-                if (!can_rtx()) break;
+                if (!can_rtx(msgbuf)) break;
 
                 const size_t sack_bitmap_bucket_idx =
                     index / swift::Pcb::kSackBitmapBucketSize;
@@ -801,10 +801,10 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
 
 void UcclFlow::fast_retransmit() {
 
-    if (!can_rtx()) return;
-
+    
     // Retransmit the oldest unacknowledged message buffer.
     auto *msgbuf = tx_tracking_.get_oldest_unacked_msgbuf();
+    if (!msgbuf || !can_rtx(msgbuf)) return;
     auto seqno = pcb_.snd_una;
     VLOG(3) << "Fast retransmitting oldest unacked packet " << pcb_.snd_una;
 
@@ -834,7 +834,7 @@ void UcclFlow::fast_retransmit() {
 bool UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
 
     // Avoid too many inflight WQEs.
-    if (!can_rtx()) return false;
+    if (!can_rtx(msgbuf)) return false;
 
     VLOG(3) << "RTO retransmitting oldest unacked packet " << seqno;
     auto path_id = get_path_id_with_lowest_rtt();

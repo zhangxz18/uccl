@@ -661,9 +661,6 @@ void EFASocket::poll_send_cq() {
 
         frame->set_cpe_time_tsc(now);
     }
-
-    // TODO(yang): do we need to do anything smarter?
-    if (ne < 1.25 * kMaxPollBatch) break;
 }
 
 std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
