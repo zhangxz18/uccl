@@ -84,6 +84,39 @@ void TXTracking::append(FrameDesc *msgbuf_head, FrameDesc *msgbuf_tail,
     num_tracked_msgbufs_ += num_frames;
 }
 
+uint32_t TXTracking::convert_permitted_packets_to_bytes(uint32_t permitted_packets)
+{
+    uint32_t total_packets = 0;
+    uint32_t permitted_bytes = 0;
+
+    auto msgbuf = oldest_unsent_msgbuf_;
+    while (msgbuf != nullptr) {
+        total_packets++;
+        permitted_bytes += msgbuf->get_pkt_data_len();
+        if (total_packets >= permitted_packets) break;
+        msgbuf = msgbuf->next();
+    }
+
+    return permitted_bytes;
+}
+
+// Traverse the chain of frames to figure out how many packets are permitted to be sent.
+uint32_t TXTracking::convert_permitted_bytes_to_packets(uint32_t permitted_bytes)
+{
+    uint32_t total_bytes = 0;
+    uint32_t permitted_packets = 0;
+    
+    auto msgbuf = oldest_unsent_msgbuf_;
+    while (msgbuf != nullptr) {
+        total_bytes += msgbuf->get_pkt_data_len();
+        permitted_packets++;
+        if (total_bytes >= permitted_bytes) break;
+        msgbuf = msgbuf->next();
+    }
+
+    return permitted_packets;
+}
+
 std::optional<FrameDesc *> TXTracking::get_and_update_oldest_unsent() {
     if (num_unsent_msgbufs_)
         VLOG(3) << "Getting: num_unsent_msgbufs_ " << num_unsent_msgbufs_
@@ -893,7 +926,10 @@ uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
                            socket_->send_queue_free_space_per_qp(src_qp_idx));
     // if (last_received_rwnd_ == 0) last_received_rwnd_ = 1;
     hard_budget = std::min(hard_budget, last_received_rwnd_);
+    hard_budget = std::min(hard_budget, tx_tracking_.num_unsent_msgbufs());
     hard_budget = std::min(hard_budget, budget);
+
+    if (hard_budget == 0) return permitted_packets;
 
     permitted_packets = hard_budget;
 
@@ -913,13 +949,14 @@ uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
         permitted_packets = hard_budget;
     }
     if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
-       
-        permitted_packets = std::min(permitted_packets, (uint32_t)std::ceil(eqds_cc_.credit() / EFA_MAX_PAYLOAD));
-        permitted_packets = std::min(permitted_packets, tx_tracking_.num_unsent_msgbufs());
+        permitted_packets = std::min(permitted_packets, 
+            tx_tracking_.convert_permitted_bytes_to_packets(eqds_cc_.credit()));
         
-        if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MAX_PAYLOAD))
+        if (permitted_packets && 
+                !eqds_cc_.spend_credit(tx_tracking_.convert_permitted_packets_to_bytes(permitted_packets))) {
             permitted_packets = 0;
-
+        }
+        
         if constexpr (kSenderCCType == SenderCCType::kTimely || kSenderCCType == SenderCCType::kTimelyPP) {
             if (permitted_packets) {
                 auto old_check_v = permitted_packets;

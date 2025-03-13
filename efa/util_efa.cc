@@ -641,6 +641,10 @@ void EFASocket::post_recv_wrs_for_ctrl(uint32_t budget, uint16_t qp_idx) {
 }
 
 void EFASocket::poll_send_cq() {
+
+    // Don't bother polling CQ.
+    if (send_queue_wrs_ == 0) return;
+
     // We give a higher budget to poll_send_cq because its work is very light.
     int ne = ibv_poll_cq(send_cq_, 1.25 * kMaxPollBatch, wc_);
     DCHECK(ne >= 0) << "poll_send_cq ibv_poll_cq error";
@@ -665,6 +669,9 @@ void EFASocket::poll_send_cq() {
 
 std::vector<FrameDesc *> EFASocket::poll_send_cq(uint32_t budget) {
     std::vector<FrameDesc *> frames;
+
+    // Don't bother polling CQ.
+    if (send_queue_wrs_ == 0) return frames;
 
     while (frames.size() < budget) {
         auto now = rdtsc();

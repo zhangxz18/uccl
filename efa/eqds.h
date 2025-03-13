@@ -463,14 +463,14 @@ private:
 class EQDS {
 public:
     // How many credits to grant per pull.
-    static const PullQuanta kCreditPerPull = 3;
+    static const PullQuanta kCreditPerPull = 4;
     // How many senders to grant credit per iteration.
     static const uint32_t kSendersPerPull = 1;
 
     // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8,
     // kCreditPerPull = 4, kSendersPerPull = 4, kPacingIntervalUs ~= 5.3 us.
     static const uint64_t kPacingIntervalUs =
-        1.2 /* slower than line rate */ *
+        1.1 /* slower than line rate */ *
         (PULL_QUANTUM) * kCreditPerPull * 1e6 *
         kSendersPerPull / (kLinkBandwidth);
     

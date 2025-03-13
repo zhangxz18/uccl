@@ -222,6 +222,10 @@ class TXTracking {
                 uint32_t num_frames);
     std::optional<FrameDesc *> get_and_update_oldest_unsent();
 
+    uint32_t convert_permitted_bytes_to_packets(uint32_t permitted_bytes);
+    
+    uint32_t convert_permitted_packets_to_bytes(uint32_t permitted_packets);
+
     inline const uint32_t num_unacked_msgbufs() const {
         return num_unacked_msgbufs_;
     }
@@ -724,7 +728,7 @@ class UcclFlow {
 class UcclEngine {
    public:
     // Slow timer (periodic processing) interval in microseconds.
-    const size_t kSlowTimerIntervalUs = 1000;  // 1ms
+    const size_t kSlowTimerIntervalUs = 1000;
     UcclEngine() = delete;
     UcclEngine(UcclEngine const &) = delete;
 
