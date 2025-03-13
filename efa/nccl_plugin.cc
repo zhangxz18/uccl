@@ -393,7 +393,7 @@ ncclResult_t pluginDeregMr(void *collComm, void *mhandle) {
 
 ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
                          void *mhandle, void **request) {
-    CHECK(size > 0);
+    DCHECK(size > 0 && size <= 524288) << "size " << size;
 
     struct UcclSendComm *scomm = (struct UcclSendComm *)sendComm;
     auto conn_id = scomm->base.conn_id;

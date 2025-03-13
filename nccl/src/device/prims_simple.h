@@ -198,14 +198,14 @@ class Primitives<
   }
 
   __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
-    uint64_t num_full = len / sizeof(uint32_t);
-    uint32_t *src_u32 = (uint32_t *)src;
-    uint32_t *dst_u32 = (uint32_t *)dst;
+    uint64_t num_full = len / sizeof(uint64_t);
+    uint64_t *src_u64 = (uint64_t *)src;
+    uint64_t *dst_u64 = (uint64_t *)dst;
     for (uint64_t i = 0; i < num_full; i++) {
-      dst_u32[i] = src_u32[i];
+      dst_u64[i] = src_u64[i];
     }
 
-    uint64_t tail_start = num_full * sizeof(uint32_t);
+    uint64_t tail_start = num_full * sizeof(uint64_t);
     char *src_char = (char *)src;
     char *dst_char = (char *)dst;
     // Handle the remaining tail bytes (if any)
@@ -315,8 +315,11 @@ class Primitives<
              Dst, ncclShmem.groups[group].dsts,
              workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
-          __threadfence();
+          // if (tid == 0)
+          //   printf("prims_simple genericOp tid=%d group=%d arrives code point 1\n", tid, group);
           if (DirectRecv && !DirectSend) {
+            // if (tid == 0)
+            //   printf("prims_simple genericOp tid=%d group=%d arrives code point 2\n", tid, group);
             // Yang: need to keep the same as comm.h
             #define kIovStart 328
             #define kMaxIovs 128
@@ -337,27 +340,32 @@ class Primitives<
             void** iov_addrs = cur_iov->iov_addrs;
             int* iov_lens = cur_iov->iov_lens;
             int* dst_offsets = cur_iov->dst_offsets;
-            int iov_n = ld_volatile_u32((uint32_t*)&cur_iov->iov_n);
-            int gpu_idx = ld_volatile_u32((uint32_t*)&cur_iov->gpu_idx);
-            int iov_step = ld_volatile_u32((uint32_t*)&cur_iov->step);
+            int iov_n = cur_iov->iov_n;
+
+            // int gpu_idx = cur_iov->gpu_idx;
+            // int iov_step = cur_iov->step;
+            // int copy_size = dst_offsets[iov_n - 1] + iov_lens[iov_n - 1];
+            // printf("prims_simple genericOp tid=%d iov_n=%d nworkers=%d gpu_idx=%d prevStep=%lu iov_idx=%d iov_step=%d copy_size=%d workSize=%d\n", tid, iov_n, nworkers, gpu_idx, prevStep, iov_idx, iov_step, copy_size, workSize);
 
             // Yang: Doing the scattered memcpy here? from iov_addrs to ptrs[index]
-            if (tid < iov_n) { 
-              // TODO(Yang): Do we need to always do loadStepValue/ld_volatile_global? 
-              void *src = (void*)ld_volatile_u64((uint64_t*)&iov_addrs[tid]);
-              uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
-              void *dst = (void*)(dst_base + ld_volatile_u32((uint32_t*)&dst_offsets[tid]));
-              int iov_len = ld_volatile_u32((uint32_t*)&iov_lens[tid]);
-              // Yang: doing the scattered memcpy here.
-              // copyGlobalMemory(dst, src, iov_len);
-              memcpy(dst, src, iov_len);
-              // printf("prims_simple genericOp scattered tid=%d iov_n=%d iov_len=%d src=%p dst=%p prevStep=%lu iov_idx=%d iov_step=%d\n", tid, iov_n, iov_len, src, dst, prevStep, iov_idx, iov_step);
+            uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
+            for (int i = 0; i < iov_n; i++) {
+              char *src = (char*)iov_addrs[i];
+              char *dst = (char*)(dst_base + dst_offsets[i]);
+              int iov_len = iov_lens[i];
+
+              // Make it 8-byte aligned to avoid GPU SEGV.
+              int num_u64 = iov_len / sizeof(uint64_t);
+              int len_per_th = (num_u64 + nworkers - 1) / nworkers * sizeof(uint64_t);
+              int start = len_per_th * tid;
+              int end = min(start + len_per_th, iov_len);
+              int len = end - start;
+              if (len > 0) copyGlobalMemory(dst + start, src + start, len);
             }
 
             subBarrier();
           }
-          // TODO(Yang): do we need it here? 
-          __threadfence();
+          // __threadfence();
 
           constexpr int PreOpSrcs = SrcBuf != Input ? 0 :
                                     DirectRecv*MaxRecv == NCCL_MAX_DIRECT_ARITY ? (1+NCCL_MAX_DIRECT_ARITY) : 1;
