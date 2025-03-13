@@ -17,7 +17,7 @@ NODES=$(get_nodes "../nodes.txt")
 GPU=${5:-8}
 CHANNELS=2
 
-echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}"
+echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}, ${CHANNELS} channels."
 
 if [ "$TEST" = "srd" ]; then
 
@@ -29,7 +29,6 @@ if [ "$TEST" = "srd" ]; then
         --mca orte_base_help_aggregate 0 \
         --mca btl_tcp_if_include ${NIC} \
         -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
-        -x NCCL_DEBUG=INFO \
         -x NCCL_P2P_DISABLE=1 \
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
@@ -95,6 +94,9 @@ elif [ "$TEST" = "ud" ]; then
         # -x NCCL_NSOCKS_PERTHREAD=2 \
         # -x NCCL_MAX_NCHANNELS=8 \
         # -x NCCL_MIN_NCHANNELS=8 \
+
+        # -x NCCL_DEBUG=INFO \
+        # -x NCCL_DEBUG_SUBSYS=INIT \
     done
 else
     echo "Invalid test: ${TEST}"

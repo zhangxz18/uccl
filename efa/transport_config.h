@@ -23,8 +23,8 @@ enum class ReceiverCCType {
     kNone,
     kEQDS,
 };
-static constexpr SenderCCType kSenderCCType = SenderCCType::kNone;
-static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kEQDS;
+static constexpr SenderCCType kSenderCCType = SenderCCType::kCubic;
+static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kNone;
 static_assert(kSenderCCType != SenderCCType::kNone || kReceiverCCType != ReceiverCCType::kNone,
               "kSenderCCType and kReceiverCCType can not be kNone at the same time.");
 
@@ -78,7 +78,7 @@ static const uint64_t MAX_FLOW_ID = 1000000;
 
 // libibverbs configuration.
 static const uint32_t kMaxSendWr = 1024;
-static const uint32_t kMaxRecvWr = 128;
+static const uint32_t kMaxRecvWr = 256;
 static const uint32_t kMaxSendRecvWrForCtrl = 1024;
 static const uint32_t kMaxSendRecvWrForCredit = 1024;
 static const uint32_t kMaxCqeTotal = 16384;
@@ -110,16 +110,16 @@ static constexpr uint32_t kMaxSrcDstQPCredit =
     std::max(kMaxSrcQPCredit, kMaxDstQPCredit);
 static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
+// This check is not enough as the kMaxSendWr/kMaxRecvWr also affects the number of QPs.
 static_assert((kMaxDstQP + kMaxDstQPCtrl) * kNumEnginesPerVdev * 2 + kMaxDstQPCredit <= EFA_MAX_QPS);
 static_assert((kMaxSrcQP + kMaxSrcQPCtrl) * kNumEnginesPerVdev * 2 + kMaxSrcQPCredit <= EFA_MAX_QPS);
 
 // CC parameters.
-static const uint32_t kMaxUnackedPktsPP = 2u;
+static const double kMaxUnackedPktsPP = 1u;
 #ifdef USE_SRD
 static const uint32_t kMaxUnackedPktsPerEngine = 800;
 #else
-static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
-// static const uint32_t kMaxUnackedPktsPerEngine = kMaxPath;
+static const uint32_t kMaxUnackedPktsPerEngine =  kMaxUnackedPktsPP * kMaxPath;
 #endif
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 128;
