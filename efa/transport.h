@@ -521,7 +521,7 @@ class UcclFlow {
    private:
     void process_ack(const UcclPktHdr *ucclh);
 
-    void process_credit(const UcclPktHdr *ucclh);
+    void process_credit(const UcclPullHdr *ucclh);
 
     void fast_retransmit();
     bool rto_retransmit(FrameDesc *msgbuf, uint32_t seqno);

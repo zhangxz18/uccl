@@ -50,6 +50,7 @@ static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
 static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_UD_ADDITION.
 static const uint32_t EFA_HDR_OVERHEAD = EFA_MTU - EFA_MAX_PAYLOAD;
 static const uint32_t EFA_MAX_QPS = 256;  // Max QPs per EFA device.
+static const uint32_t EFA_MAX_INLINE_SIZE = 32; // Max inline data size.
 #ifdef USE_SRD
 static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
 #else

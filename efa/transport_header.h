@@ -37,6 +37,18 @@ struct __attribute__((packed)) UcclPktHdr {
     be32_t pad2;      // For GPU memory copy
 };
 
+struct __attribute__((packed)) UcclPullHdr {
+    be16_t magic;  // Magic value tagged after initialization for the flow.
+    uint16_t engine_id : 4;  // remote UcclEngine ID to process this packet.
+    uint16_t path_id : 12;   // path_id of this dst port.
+    UcclPktHdr::UcclFlags net_flags;  // Network flags.
+    uint8_t msg_flags;    // Field to reflect the `FrameDesc' flags.
+    be16_t frame_len;     // Length of the frame.
+    be64_t flow_id;       // Flow ID to denote the connection.
+    be16_t pullno;    // Receiver-driven congestion control.
+    be16_t pad1;
+};
+
 struct __attribute__((packed)) UcclSackHdr {
     uint64_t timestamp3;  // Filled by recer with calibration for output queue
     be64_t sack_bitmap[kSackBitmapSize /
@@ -47,6 +59,8 @@ struct __attribute__((packed)) UcclSackHdr {
 };
 
 static const size_t kUcclPktHdrLen = sizeof(UcclPktHdr);
+static const size_t kUcclPullHdrLen = sizeof(UcclPullHdr);
+static_assert(kUcclPullHdrLen <= EFA_MAX_INLINE_SIZE, "PullHdr too large for inline");
 static const size_t kUcclPktDataMaxLen = EFA_MAX_PAYLOAD - kUcclPktHdrLen;
 static const size_t kUcclSackHdrLen = sizeof(UcclSackHdr);
 

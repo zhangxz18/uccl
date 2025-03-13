@@ -2,6 +2,7 @@
 #include "transport_config.h"
 #include "transport_header.h"
 #include <glog/logging.h>
+#include <infiniband/verbs.h>
 
 namespace uccl {
 
@@ -485,7 +486,7 @@ void UcclFlow::rx_messages() {
 
         switch (ucclh->net_flags) {
             case UcclPktHdr::UcclFlags::kCredit:
-                process_credit(ucclh);
+                process_credit(reinterpret_cast<UcclPullHdr *>(ucclh));
                 credit_qp_ctx_->engine_push_pkt_hdr(msgbuf->get_pkt_hdr_addr());
                 credit_qp_ctx_->engine_push_frame_desc((uint64_t)msgbuf);
                 break;
@@ -662,7 +663,7 @@ bool UcclFlow::periodic_check() {
     return true;
 }
 
-void UcclFlow::process_credit(const UcclPktHdr *ucclh)
+void UcclFlow::process_credit(const UcclPullHdr *ucclh)
 {
     auto pullno = ucclh->pullno.value();
 
@@ -1173,7 +1174,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
 
 bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
 {
-    const size_t kControlPayloadBytes = kUcclPktHdrLen;
+    const size_t kControlPayloadBytes = kUcclPullHdrLen;
 
     auto frame_desc_buff = credit_qp_ctx_->pacer_pop_frame_desc();
     auto pkt_hdr_buff = credit_qp_ctx_->pacer_pop_pkt_hdr();
@@ -1181,7 +1182,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
         0, 0, 0, 0);
 
     uint8_t *pkt_addr = (uint8_t *)pkt_hdr_buff;
-    auto *ucclh = (UcclPktHdr *)(pkt_addr);
+    auto *ucclh = (UcclPullHdr *)(pkt_addr);
     ucclh->magic = be16_t(UcclPktHdr::kMagic);
     ucclh->net_flags = UcclPktHdr::UcclFlags::kCredit;
     ucclh->frame_len = be16_t(kControlPayloadBytes);
@@ -1207,7 +1208,7 @@ bool UcclFlow::send_pullpacket(const PullQuanta &pullno)
     wr.wr.ud.ah = frame->get_dest_ah();
     wr.wr.ud.remote_qpn = frame->get_dest_qpn();
     wr.wr.ud.remote_qkey = QKEY;
-    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
 
     DCHECK(ibv_post_send(credit_qp_ctx_->get_qp_by_idx(credit_qpidx_rr_ % kMaxSrcQPCredit), &wr, &bad_wr) == 0);
 

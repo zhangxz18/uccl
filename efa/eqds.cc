@@ -147,12 +147,12 @@ void CreditQPContext::__post_recv_wrs_for_credit(int nb, uint32_t qpidx)
 
             auto *frame_desc = FrameDesc::Create(
                 frame_desc_buf, pkt_hdr_buf,
-                    EFA_UD_ADDITION + kUcclPktHdrLen, 0, 0, 0, 0);
+                    EFA_UD_ADDITION + kUcclPullHdrLen, 0, 0, 0, 0);
             
             frame_desc->set_src_qp_idx(qpidx);
 
             rq_sges_[i].addr = pkt_hdr_buf;
-            rq_sges_[i].length = EFA_UD_ADDITION + kUcclPktHdrLen;
+            rq_sges_[i].length = EFA_UD_ADDITION + kUcclPullHdrLen;
             rq_sges_[i].lkey = engine_hdr_pool_->get_lkey();
 
             rq_wrs_[i].wr_id = (uint64_t)frame_desc;

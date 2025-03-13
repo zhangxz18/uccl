@@ -277,21 +277,21 @@ public:
         }
         
         // Allocate memory for credit headers on engine/pacer.
-        void *pacer_hdr_addr = mmap(nullptr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *pacer_hdr_addr = mmap(nullptr, PullHdrBuffPool::kNumPktHdr * PullHdrBuffPool::kPullHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         DCHECK(pacer_hdr_addr != MAP_FAILED);
 
-        pacer_hdr_mr_ = ibv_reg_mr(pd_, pacer_hdr_addr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, IBV_ACCESS_LOCAL_WRITE);
+        pacer_hdr_mr_ = ibv_reg_mr(pd_, pacer_hdr_addr, PullHdrBuffPool::kNumPktHdr * PullHdrBuffPool::kPullHdrSize, IBV_ACCESS_LOCAL_WRITE);
         DCHECK(pacer_hdr_mr_ != nullptr);
 
-        pacer_hdr_pool_ = new PktHdrBuffPool(pacer_hdr_mr_);
+        pacer_hdr_pool_ = new PullHdrBuffPool(pacer_hdr_mr_);
 
-        void *engine_hdr_addr = mmap(nullptr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *engine_hdr_addr = mmap(nullptr, PullHdrBuffPool::kNumPktHdr * PullHdrBuffPool::kPullHdrSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         DCHECK(engine_hdr_addr != MAP_FAILED);
 
-        engine_hdr_mr_ = ibv_reg_mr(pd_, engine_hdr_addr, PktHdrBuffPool::kNumPktHdr * PktHdrBuffPool::kPktHdrSize, IBV_ACCESS_LOCAL_WRITE);
+        engine_hdr_mr_ = ibv_reg_mr(pd_, engine_hdr_addr, PullHdrBuffPool::kNumPktHdr * PullHdrBuffPool::kPullHdrSize, IBV_ACCESS_LOCAL_WRITE);
         DCHECK(engine_hdr_mr_ != nullptr);
 
-        engine_hdr_pool_ = new PktHdrBuffPool(engine_hdr_mr_);
+        engine_hdr_pool_ = new PullHdrBuffPool(engine_hdr_mr_);
 
         // Allocate memory for frame desc on engine/pacer.
         pacer_frame_desc_pool_ = new FrameDescBuffPool();
@@ -406,6 +406,7 @@ private:
         qp_attr.cap.max_recv_wr = kMaxSendRecvWrForCredit;
         qp_attr.cap.max_send_sge = 1;
         qp_attr.cap.max_recv_sge = 1;
+        qp_attr.cap.max_inline_data = EFA_MAX_INLINE_SIZE;
 
         qp_attr.qp_type = IBV_QPT_UD;
         struct ibv_qp *qp = ibv_create_qp(pd_, &qp_attr);
@@ -438,7 +439,7 @@ private:
     struct ibv_cq *pacer_credit_cq_;
 
     struct ibv_mr *pacer_hdr_mr_;
-    PktHdrBuffPool *pacer_hdr_pool_;
+    PullHdrBuffPool *pacer_hdr_pool_;
     FrameDescBuffPool *pacer_frame_desc_pool_;
 
     /////////// Data touched by UCCL Engine ///////////
@@ -446,7 +447,7 @@ private:
     struct ibv_cq *engine_credit_cq_;
 
     struct ibv_mr *engine_hdr_mr_;
-    PktHdrBuffPool *engine_hdr_pool_;
+    PullHdrBuffPool *engine_hdr_pool_;
     FrameDescBuffPool *engine_frame_desc_pool_;
     uint32_t post_rq_cnt_[kMaxSrcDstQPCredit] = {};
 

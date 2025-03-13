@@ -69,6 +69,18 @@ class PktDataBuffPool : public BuffPool {
     ~PktDataBuffPool() = default;
 };
 
+class PullHdrBuffPool : public BuffPool {
+    public:
+     static constexpr uint32_t kPullHdrSize = EFA_UD_ADDITION + kUcclPullHdrLen;
+     static constexpr uint32_t kNumPktHdr = NUM_FRAMES;
+     static_assert((kNumPktHdr & (kNumPktHdr - 1)) == 0,
+                   "kNumPktHdr must be power of 2");
+ 
+    PullHdrBuffPool(struct ibv_mr *mr) : BuffPool(kNumPktHdr, kPullHdrSize, mr) {}
+ 
+     ~PullHdrBuffPool() = default;
+ };
+
 class FrameDesc {
     uint64_t pkt_hdr_addr_;      // in CPU memory.
     uint32_t pkt_hdr_len_;       // the length of packet hdr.
