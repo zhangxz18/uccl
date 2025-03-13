@@ -893,18 +893,17 @@ uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
                            socket_->send_queue_free_space_per_qp(src_qp_idx));
     // if (last_received_rwnd_ == 0) last_received_rwnd_ = 1;
     hard_budget = std::min(hard_budget, last_received_rwnd_);
+    hard_budget = std::min(hard_budget, budget);
 
     if constexpr (kCCType == CCType::kTimely || kCCType == CCType::kTimelyPP) {
         permitted_packets = timely_g_.timely_ready_packets(hard_budget);
-        permitted_packets = std::min(permitted_packets, budget);
     }
     if constexpr (kCCType == CCType::kCubic) {
         permitted_packets =
             std::min(hard_budget, cubic_g_.cubic_effective_wnd());
-        permitted_packets = std::min(permitted_packets, budget);
     }
     if constexpr (kCCType == CCType::kCubicPP) {
-        permitted_packets = std::min(permitted_packets, budget);
+        permitted_packets = std::min(permitted_packets, hard_budget);
     }
     if constexpr (kCCType == CCType::kEQDS) {
         permitted_packets = std::min(hard_budget, (uint32_t)std::ceil(eqds_cc_.credit() / EFA_MAX_PAYLOAD));
