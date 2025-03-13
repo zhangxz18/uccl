@@ -12,14 +12,21 @@
 // #define RTT_STATS
 // #define POLLCTX_DEBUG
 
-enum class CCType {
+enum class SenderCCType {
+    kNone,
     kTimely,
     kTimelyPP,
     kCubic,
     kCubicPP,
+};
+enum class ReceiverCCType {
+    kNone,
     kEQDS,
 };
-static constexpr CCType kCCType = CCType::kEQDS;
+static constexpr SenderCCType kSenderCCType = SenderCCType::kNone;
+static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kEQDS;
+static_assert(kSenderCCType != SenderCCType::kNone || kReceiverCCType != ReceiverCCType::kNone,
+              "kSenderCCType and kReceiverCCType can not be kNone at the same time.");
 
 #define P4D
 

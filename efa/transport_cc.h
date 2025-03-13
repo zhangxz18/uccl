@@ -220,7 +220,14 @@ struct TimelyCtl {
         wheel_.insert(wheel_ent_t{msgbuf, pkt_size}, ref_tsc, desired_tx_tsc);
     }
 
-    inline uint32_t timely_ready_packets(uint32_t budget) {
+    inline uint32_t timely_check_ready_packets(uint32_t budget) {
+        size_t cur_tsc = rdtsc();
+        wheel_.reap(cur_tsc);
+
+        return std::min(wheel_.ready_entries_, (uint64_t)budget);
+    }
+
+    inline uint32_t timely_pop_ready_packets(uint32_t budget) {
         size_t cur_tsc = rdtsc();
         wheel_.reap(cur_tsc);
 

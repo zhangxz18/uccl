@@ -177,7 +177,7 @@ RXTracking::ConsumeRet RXTracking::consume(UcclFlow *flow, FrameDesc *msgbuf) {
     // These frames will be freed when the message is delivered to the app.
     push_inorder_msgbuf_to_app(pcb);
 
-    if constexpr (kCCType == CCType::kEQDS) {
+    if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         if (eqds_cc->handle_pull_target(ucclh->pullno.value())) {
             flow->request_pull();
         }
@@ -416,7 +416,7 @@ void RXTracking::copy_thread_func(uint32_t engine_idx, UcclEngine *engine) {
 std::string UcclFlow::to_string() const {
     std::string s;
     s += "\n\t\t\t[CC] pcb:         " + pcb_.to_string() +
-         (kCCType == CCType::kCubicPP
+         (kSenderCCType == SenderCCType::kCubicPP
               ? "\n\t\t\t     cubic_pp[0]: " + cubic_pp_[0].to_string()
               : "\n\t\t\t     cubic:       " + cubic_g_.to_string()) +
          "\n\t\t\t     timely:      " + timely_g_.to_string() +
@@ -532,7 +532,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
     auto *app_mr = tx_work.mhandle->mr;
     auto *poll_ctx = tx_work.poll_ctx;
 
-    if constexpr (kCCType == CCType::kEQDS) {
+    if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         eqds_cc_.inc_backlog(tx_work.len);
     }
 
@@ -585,10 +585,10 @@ void UcclFlow::process_rttprobe_rsp(uint64_t ts1, uint64_t ts2, uint64_t ts3,
     auto sample_rtt_tsc = sender_latency - receiver_latency;
     port_path_rtt_[path_id] = sample_rtt_tsc;
 
-    if constexpr (kCCType == CCType::kTimely) {
+    if constexpr (kSenderCCType == SenderCCType::kTimely) {
         timely_g_.timely_update_rate(rdtsc(), sample_rtt_tsc);
     }
-    if constexpr (kCCType == CCType::kTimelyPP) {
+    if constexpr (kSenderCCType == SenderCCType::kTimelyPP) {
         timely_pp_[path_id].timely_update_rate(rdtsc(), sample_rtt_tsc);
     }
 
@@ -760,10 +760,10 @@ void UcclFlow::process_ack(const UcclPktHdr *ucclh) {
         size_t num_acked_packets = ackno - pcb_.snd_una;
         tx_tracking_.receive_acks(num_acked_packets);
 
-        if constexpr (kCCType == CCType::kCubic) {
+        if constexpr (kSenderCCType == SenderCCType::kCubic) {
             cubic_g_.cubic_on_recv_ack(num_acked_packets);
         }
-        if constexpr (kCCType == CCType::kCubicPP) {
+        if constexpr (kSenderCCType == SenderCCType::kCubicPP) {
             uint32_t accumu_acks = 0;
             auto last_path_id = kMaxPath;
             uint32_t seqno = pcb_.snd_una;
@@ -854,13 +854,13 @@ bool UcclFlow::rto_retransmit(FrameDesc *msgbuf, uint32_t seqno) {
     pcb_.rto_rexmits++;
     pcb_.rto_rexmits_consectutive++;
 
-    if constexpr (kCCType == CCType::kCubic) {
+    if constexpr (kSenderCCType == SenderCCType::kCubic) {
         cubic_g_.cubic_on_packet_loss();
         VLOG(2) << "rto " << cubic_g_.to_string() << " inflight "
                 << pcb_.snd_nxt - pcb_.snd_una << " "
                 << tx_tracking_.num_unacked_msgbufs();
     }
-    if constexpr (kCCType == CCType::kCubicPP) {
+    if constexpr (kSenderCCType == SenderCCType::kCubicPP) {
         auto path_id = get_path_id(seqno);
         cubic_pp_[path_id].cubic_on_packet_loss();
     }
@@ -895,22 +895,38 @@ uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
     hard_budget = std::min(hard_budget, last_received_rwnd_);
     hard_budget = std::min(hard_budget, budget);
 
-    if constexpr (kCCType == CCType::kTimely || kCCType == CCType::kTimelyPP) {
-        permitted_packets = timely_g_.timely_ready_packets(hard_budget);
+    permitted_packets = hard_budget;
+
+    if constexpr (kSenderCCType == SenderCCType::kTimely || kSenderCCType == SenderCCType::kTimelyPP) {
+        if constexpr (kReceiverCCType != ReceiverCCType::kNone) {
+            // Just check, don't pop.
+            permitted_packets = timely_g_.timely_check_ready_packets(hard_budget);
+        }
+        else
+            permitted_packets = timely_g_.timely_pop_ready_packets(hard_budget);
     }
-    if constexpr (kCCType == CCType::kCubic) {
+    if constexpr (kSenderCCType == SenderCCType::kCubic) {
         permitted_packets =
-            std::min(hard_budget, cubic_g_.cubic_effective_wnd());
+            std::min(permitted_packets, cubic_g_.cubic_effective_wnd());
     }
-    if constexpr (kCCType == CCType::kCubicPP) {
-        permitted_packets = std::min(permitted_packets, hard_budget);
+    if constexpr (kSenderCCType == SenderCCType::kCubicPP) {
+        permitted_packets = hard_budget;
     }
-    if constexpr (kCCType == CCType::kEQDS) {
-        permitted_packets = std::min(hard_budget, (uint32_t)std::ceil(eqds_cc_.credit() / EFA_MAX_PAYLOAD));
+    if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
+       
+        permitted_packets = std::min(permitted_packets, (uint32_t)std::ceil(eqds_cc_.credit() / EFA_MAX_PAYLOAD));
         permitted_packets = std::min(permitted_packets, tx_tracking_.num_unsent_msgbufs());
-        permitted_packets = std::min(permitted_packets, budget);
+        
         if (permitted_packets && !eqds_cc_.spend_credit(permitted_packets * EFA_MAX_PAYLOAD))
             permitted_packets = 0;
+
+        if constexpr (kSenderCCType == SenderCCType::kTimely || kSenderCCType == SenderCCType::kTimelyPP) {
+            if (permitted_packets) {
+                auto old_check_v = permitted_packets;
+                permitted_packets = timely_g_.timely_pop_ready_packets(permitted_packets);
+                DCHECK(old_check_v == permitted_packets);
+            }
+        }
     }
 
     // static uint64_t transmit_tries = 0;
@@ -937,7 +953,7 @@ uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
         uint32_t path_unacked = 0;
         bool found_path = false;
 
-        if constexpr (kCCType == CCType::kCubicPP) {
+        if constexpr (kSenderCCType == SenderCCType::kCubicPP) {
             // Avoiding sending too many packets on the same path.
             if (i % kSwitchPathThres == 0) {
                 int tries = 0;
@@ -989,7 +1005,7 @@ uint32_t UcclFlow::transmit_pending_packets(uint32_t budget) {
         msgbuf->set_dest_qpn(remote_meta_->qpn_list[dst_qp_idx]);
         pending_tx_frames_.push_back(msgbuf);
 
-        if constexpr (kCCType == CCType::kEQDS) {
+        if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
             eqds_cc_.dec_backlog(msgbuf->get_pkt_data_len());
         }
 
@@ -1022,7 +1038,7 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
     size_t remaining_bytes = tx_work.len - cur_offset;
 
     uint32_t path_id = kMaxPath;
-    if constexpr (kCCType == CCType::kTimelyPP) {
+    if constexpr (kSenderCCType == SenderCCType::kTimelyPP) {
         path_id = get_path_id_with_lowest_rtt();
     }
 
@@ -1036,11 +1052,11 @@ void UcclFlow::deserialize_and_append_to_txtracking() {
         auto payload_len = cur_msgbuf->get_pkt_data_len();
 
         // Both queue on one timing wheel.
-        if constexpr (kCCType == CCType::kTimely) {
+        if constexpr (kSenderCCType == SenderCCType::kTimely) {
             timely_g_.timely_pace_packet(now_tsc, payload_len + kUcclPktHdrLen,
                                          cur_msgbuf);
         }
-        if constexpr (kCCType == CCType::kTimelyPP) {
+        if constexpr (kSenderCCType == SenderCCType::kTimelyPP) {
             // TODO(yang): consider per-path rate limiting? If so, we need to
             // maintain prev_desired_tx_tsc_ for each path, calculate two
             // timestamps (one from timely_g_, one from
@@ -1113,7 +1129,7 @@ void UcclFlow::prepare_datapacket(FrameDesc *msgbuf, uint32_t path_id,
     // let the receiver fill this in when receiving this data packet.
     ucclh->timestamp2 = 0;
 
-    if constexpr (kCCType == CCType::kEQDS) {
+    if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         ucclh->pullno = be16_t(eqds_cc_.compute_pull_target());
     }
 }
@@ -1222,7 +1238,7 @@ void UcclEngine::sender_only_run() {
         auto [frames, polled_send_acks] =
             socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
         
-        if constexpr (kCCType == CCType::kEQDS) {            
+        if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {            
             // Receive credits.
             auto _frames = credit_qp_ctx_->engine_poll_credit_cq();
             frames.insert(frames.end(), _frames.begin(), _frames.end());
@@ -1323,7 +1339,7 @@ void UcclEngine::run() {
             socket_->poll_ctrl_cq(RECV_BATCH_SIZE);
         frames.insert(frames.end(), _frames.begin(), _frames.end());
         
-        if constexpr (kCCType == CCType::kEQDS) {            
+        if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {            
             // Receive credits.
             _frames = credit_qp_ctx_->engine_poll_credit_cq();
             frames.insert(frames.end(), _frames.begin(), _frames.end());
@@ -1476,7 +1492,7 @@ void UcclEngine::handle_install_flow_on_engine(Channel::CtrlMsg &ctrl_work) {
               << Format("(%d)", local_engine_idx_) << arrow << remote_ip_str
               << Format("(%d)", remote_engine_idx);
     
-    if constexpr (kCCType == CCType::kEQDS) {
+    if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         if (!is_sender) flow->request_pull();
     }
 
@@ -2031,7 +2047,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
         str << local_meta->qpn_list_ctrl[i] << " ";
     }
 
-    if constexpr (kCCType == CCType::kEQDS) {
+    if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         for (int i = 0; i < kMaxSrcDstQPCredit; i++) {
             local_meta->qpn_list_credit[i] = 
                 engine_vec_[local_engine_idx]->credit_qp_ctx_->get_qpn(i);

@@ -425,13 +425,13 @@ class UcclFlow {
           eqds_cc_() {
         // Initing per-flow CC states.
         timely_g_.init(&pcb_);
-        if constexpr (kCCType == CCType::kTimelyPP) {
+        if constexpr (kSenderCCType == SenderCCType::kTimelyPP) {
             timely_pp_ = new swift::TimelyCtl[kMaxPath];
             for (uint32_t i = 0; i < kMaxPath; i++) timely_pp_[i].init(&pcb_);
         }
 
         cubic_g_.init(&pcb_, kMaxUnackedPktsPerEngine);
-        if constexpr (kCCType == CCType::kCubicPP) {
+        if constexpr (kSenderCCType == SenderCCType::kCubicPP) {
             cubic_pp_ = new swift::CubicCtl[kMaxPath];
             for (uint32_t i = 0; i < kMaxPath; i++)
                 cubic_pp_[i].init(&pcb_, kMaxUnackedPktsPP);
@@ -439,7 +439,7 @@ class UcclFlow {
 
         peer_flow_id_ = get_peer_flow_id(flow_id);
 
-        if constexpr (kCCType == CCType::kEQDS) {
+        if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
             eqds_cc_.send_pullpacket = [this](const PullQuanta &pullno) -> bool {
                 return this->send_pullpacket(pullno);
             };
@@ -449,8 +449,8 @@ class UcclFlow {
     ~UcclFlow() {
         delete local_meta_;
         delete remote_meta_;
-        if constexpr (kCCType == CCType::kTimelyPP) delete[] timely_pp_;
-        if constexpr (kCCType == CCType::kCubicPP) delete[] cubic_pp_;
+        if constexpr (kSenderCCType == SenderCCType::kTimelyPP) delete[] timely_pp_;
+        if constexpr (kSenderCCType == SenderCCType::kCubicPP) delete[] cubic_pp_;
     }
 
     friend class UcclEngine;
@@ -527,7 +527,7 @@ class UcclFlow {
         if (socket_->send_queue_wrs() >= kMaxUnackedPktsPerEngine) return false;
 
         // // The following code may have BUG.
-        // if constexpr (kCCType == CCType::kEQDS) {
+        // if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         //     if (eqds_cc_.credit() < msgbuf->get_pkt_data_len()) return false;
         //     if (!eqds_cc_.spend_credit(msgbuf->get_pkt_data_len())) return false; 
         // }
