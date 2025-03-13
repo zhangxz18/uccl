@@ -23,8 +23,8 @@ enum class ReceiverCCType {
     kNone,
     kEQDS,
 };
-static constexpr SenderCCType kSenderCCType = SenderCCType::kCubic;
-static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kNone;
+static constexpr SenderCCType kSenderCCType = SenderCCType::kNone;
+static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kEQDS;
 static_assert(kSenderCCType != SenderCCType::kNone || kReceiverCCType != ReceiverCCType::kNone,
               "kSenderCCType and kReceiverCCType can not be kNone at the same time.");
 
