@@ -491,7 +491,7 @@ public:
     // Grant credits to senders.
     void handle_grant_credit(void);
 
-    bool grant_credit(EQDSCC *eqds_cc, bool idle);
+    bool grant_credit(EQDSCC *eqds_cc, bool idle, uint32_t *total_inc);
 
     bool send_pull_packet(EQDSCC *eqds_cc);
 

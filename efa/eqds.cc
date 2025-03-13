@@ -67,7 +67,7 @@ bool EQDS::send_pull_packet(EQDSCC *eqds_cc)
 }
 
 // Grant credit to the sender of this flow.
-bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) {
+bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle, uint32_t *total_inc) {
     uint32_t increment;
 
     if (!idle)
@@ -76,6 +76,8 @@ bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) {
         increment = kCreditPerPull;
 
     if (!increment) return true;
+
+    *total_inc += increment;
 
     eqds_cc->inc_lastest_pull(increment);
 
@@ -91,6 +93,7 @@ bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) {
 void EQDS::handle_grant_credit(void)
 {
     struct list_head *pos, *n;
+    uint32_t total_inc = 0;
     uint32_t budget = 0;
 
     if (!list_empty(&active_senders_)) {
@@ -100,7 +103,7 @@ void EQDS::handle_grant_credit(void)
                 auto *sink = item->eqds_cc;
                 list_del(pos);
 
-                if (grant_credit(sink, false)) {
+                if (grant_credit(sink, false, &total_inc)) {
                     // Grant done, add it to idle sender list.
                     DCHECK(!sink->in_idle_list());
                     sink->add_to_idle_list(&idle_senders_);
@@ -110,8 +113,13 @@ void EQDS::handle_grant_credit(void)
                     sink->add_to_active_list(&active_senders_);
                 }
 
-                if (++budget >= kSendersPerPull)
+                if (++budget >= kSendersPerPull) {
+                    if (total_inc < kCreditPerPull * kSendersPerPull) {
+                        // We have unutilized credits, try to grant more.
+                        continue;
+                    }
                     break;
+                }
             }
         }
     } else {
@@ -121,7 +129,7 @@ void EQDS::handle_grant_credit(void)
             auto *sink = item->eqds_cc;
             list_del(pos);
 
-            if (grant_credit(sink, true) && !sink->idle_credit_enough()) {
+            if (grant_credit(sink, true, &total_inc) && !sink->idle_credit_enough()) {
                 // Grant done but we can still grant more credit for this
                 // sender.
                 sink->add_to_idle_list(&idle_senders_);
