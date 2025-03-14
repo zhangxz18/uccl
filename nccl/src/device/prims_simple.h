@@ -197,20 +197,28 @@ class Primitives<
     }
   }
 
+  template<int BytePerPack>
   __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
-    uint64_t num_full = len / sizeof(uint64_t);
-    uint64_t *src_u64 = (uint64_t *)src;
-    uint64_t *dst_u64 = (uint64_t *)dst;
-    for (uint64_t i = 0; i < num_full; i++) {
-      dst_u64[i] = src_u64[i];
+    uintptr_t src_addr = (uintptr_t)src;
+    uintptr_t dst_addr = (uintptr_t)dst;
+    int i = 0;
+
+    // BytePack<BytePerPack> acc;
+    for (; i + BytePerPack <= len; i += BytePerPack) {
+      // acc = ld_global<BytePerPack>(src_addr + i);
+      // st_global<BytePerPack>(dst_addr + i, acc);
+      *(BytePack<BytePerPack>*)(dst_addr+i) = *(BytePack<BytePerPack>*)(src_addr+i);
     }
 
-    uint64_t tail_start = num_full * sizeof(uint64_t);
-    char *src_char = (char *)src;
-    char *dst_char = (char *)dst;
     // Handle the remaining tail bytes (if any)
-    for (uint64_t i = tail_start; i < len; i++) {
-      dst_char[i] = src_char[i];
+    if (i > len) {
+      i -= BytePerPack;
+      // BytePack<1> acc2;
+      for (; i < len; i++) {
+        // acc2 = ld_global<1>(src_addr + i);
+        // st_global<1>(dst_addr + i, acc2);
+        *(BytePack<1>*)(dst_addr+i) = *(BytePack<1>*)(src_addr+i);
+      }
     }
   }
 
@@ -315,11 +323,7 @@ class Primitives<
              Dst, ncclShmem.groups[group].dsts,
              workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
-          // if (tid == 0)
-          //   printf("prims_simple genericOp tid=%d group=%d arrives code point 1\n", tid, group);
           if (DirectRecv && !DirectSend) {
-            // if (tid == 0)
-            //   printf("prims_simple genericOp tid=%d group=%d arrives code point 2\n", tid, group);
             // Yang: need to keep the same as comm.h
             #define kIovStart 328
             #define kMaxIovs 128
@@ -347,20 +351,20 @@ class Primitives<
             // int copy_size = dst_offsets[iov_n - 1] + iov_lens[iov_n - 1];
             // printf("prims_simple genericOp tid=%d iov_n=%d nworkers=%d gpu_idx=%d prevStep=%lu iov_idx=%d iov_step=%d copy_size=%d workSize=%d\n", tid, iov_n, nworkers, gpu_idx, prevStep, iov_idx, iov_step, copy_size, workSize);
 
-            // Yang: Doing the scattered memcpy here? from iov_addrs to ptrs[index]
+            // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
             uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
             for (int i = 0; i < iov_n; i++) {
               char *src = (char*)iov_addrs[i];
               char *dst = (char*)(dst_base + dst_offsets[i]);
               int iov_len = iov_lens[i];
 
-              // Make it 8-byte aligned to avoid GPU SEGV.
-              int num_u64 = iov_len / sizeof(uint64_t);
-              int len_per_th = (num_u64 + nworkers - 1) / nworkers * sizeof(uint64_t);
+              // Make it t-byte aligned to avoid GPU SEGV.
+              int num_packs = iov_len / 8;
+              int len_per_th = divUp(num_packs, nworkers) * 8;
               int start = len_per_th * tid;
               int end = min(start + len_per_th, iov_len);
               int len = end - start;
-              if (len > 0) copyGlobalMemory(dst + start, src + start, len);
+              if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
             }
 
             subBarrier();
@@ -378,7 +382,7 @@ class Primitives<
              workSize);
 
           // if (tid == 0)
-            // printf("prims_simple reduceCopy nsrc=%d ndst=%d workSize=%d\n", Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
+          //   printf("prims_simple reduceCopy nsrc=%d ndst=%d workSize=%d\n", Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < sliceSize);

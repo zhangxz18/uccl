@@ -101,6 +101,32 @@ class PollCtxPool : public BuffPool {
     ~PollCtxPool() = default;
 };
 
+const int kMaxIovs = 128;
+
+enum ReqType {
+    ReqTx,
+    ReqRx,
+    ReqRxScattered,
+    ReqRxFreePtrs,
+    ReqFlush,
+};
+
+struct UcclRequest {
+    ReqType type;
+    int n;
+    int send_len = 0;
+    int recv_len[kMaxMultiRecv] = {0};
+    PollCtx *poll_ctx = nullptr;
+    void *req_pool = nullptr;
+    /* Do not change the order */
+    void *iov_addrs[kMaxIovs];
+    int iov_lens[kMaxIovs];
+    int dst_offsets[kMaxIovs];
+    int iov_n;
+    /***********************/
+};
+static const uint32_t kIovStart = offsetof(struct UcclRequest, iov_addrs);
+
 /**
  * @class Channel
  * @brief A channel is a command queue for application threads to submit rx and
@@ -122,10 +148,10 @@ class Channel {
         uint8_t unused_bytes[3];
         int len;
         int *len_p;
-        void *data;
-        int *iov_n;
-        int *iov_lens;
-        int *dst_offsets;
+        union {
+            void *data;
+            UcclRequest* req;
+        };
         Mhandle *mhandle;
         FlowID flow_id;
         // A list of FrameDesc bw deser_th and engine_th.
@@ -134,7 +160,8 @@ class Channel {
         PollCtx *poll_ctx;
         uint64_t reserved;
     };
-    static_assert(sizeof(Msg) % 4 == 0, "Msg must be 32-bit aligned");
+    const static uint32_t kMsgSize = sizeof(Msg);
+    static_assert(kMsgSize % 4 == 0, "Msg must be 32-bit aligned");
 
     struct CtrlMsg {
         enum Op : uint8_t {
@@ -150,7 +177,8 @@ class Channel {
         // Wakeup handler
         PollCtx *poll_ctx;
     };
-    static_assert(sizeof(CtrlMsg) % 4 == 0, "CtrlMsg must be 32-bit aligned");
+    const static uint32_t kCtrlMsgSize = sizeof(CtrlMsg);
+    static_assert(sizeof(kCtrlMsgSize) % 4 == 0, "CtrlMsg must be 32-bit aligned");
 
     Channel() {
         tx_task_q_ = create_ring(sizeof(Msg), kChannelSize);
@@ -368,6 +396,7 @@ class RXTracking {
     FrameDesc *deser_msgs_head_ = nullptr;
     FrameDesc *deser_msgs_tail_ = nullptr;
     size_t deser_msg_len_ = 0;
+    int iov_n_ = 0;
 
     friend class Endpoint;
 };
@@ -806,9 +835,7 @@ class Endpoint {
     // Receiving the data by leveraging multiple port combinations.
     PollCtx *uccl_recv_async(ConnID conn_id, void *data, int *len_p,
                              Mhandle *mhandle);
-    PollCtx *uccl_recv_scattered_async(ConnID conn_id, int *iov_n,
-                                       void **iov_addrs, int *iov_lens,
-                                       int *dst_offsets, int *len_p,
+    PollCtx *uccl_recv_scattered_async(ConnID conn_id, UcclRequest *req,
                                        Mhandle *mhandle);
     void uccl_recv_free_ptrs(ConnID conn_id, int iov_n, void **iov_addrs);
     PollCtx *uccl_recv_multi_async(ConnID conn_id, void **data, int *len_p,

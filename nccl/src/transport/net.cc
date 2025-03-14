@@ -1199,8 +1199,8 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 }
 
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
-  int gpu_idx;
-  cudaGetDevice(&gpu_idx);
+  // int gpu_idx;
+  // cudaGetDevice(&gpu_idx);
 
   if (args->state == ncclProxyOpReady) {
     // Initialize subs and group them by same recvComm.
@@ -1412,9 +1412,11 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup + i;
 
+            // Yang: need to keep the same as transport.h
+            #define kIovStart 64
             // Yang: Getting the scattered GDR IOV buffers from the plugin-managered request.
             void* requestPtr = subGroup->recvRequestsCache[step%NCCL_STEPS];
-            void** iov_addrs = (void**)requestPtr;
+            void** iov_addrs = (void**)((char*)requestPtr + kIovStart);
             int* iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
             int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
             int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
@@ -1443,7 +1445,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                 volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);
 
                 cur_iov->iov_n = *iov_n;
-                cur_iov->gpu_idx = gpu_idx; // for debugging
+                // cur_iov->gpu_idx = gpu_idx; // for debugging
                 cur_iov->step = iov_idx;
                 for (int j=0; j < cur_iov->iov_n; j++) {
                   cur_iov->iov_addrs[j] = iov_addrs[j];

@@ -11,30 +11,6 @@
 using namespace uccl;
 
 const char *PLUGIN_NAME = "EFA_Plugin";
-const int kMaxIovs = 128;
-
-enum ReqType {
-    ReqTx,
-    ReqRx,
-    ReqRxScattered,
-    ReqRxFreePtrs,
-    ReqFlush,
-};
-
-struct UcclRequest {
-    /* Do not change the order */
-    void *iov_addrs[kMaxIovs];
-    int iov_lens[kMaxIovs];
-    int dst_offsets[kMaxIovs];
-    int iov_n;
-    /***********************/
-    ReqType type;
-    int n;
-    int send_len = 0;
-    int recv_len[kMaxMultiRecv] = {0};
-    PollCtx *poll_ctx = nullptr;
-    void *req_pool = nullptr;
-};
 
 class UcclRequestBuffPool : public BuffPool {
     static constexpr size_t num_elements =
@@ -480,9 +456,7 @@ ncclResult_t pluginIrecvScattered(void *recvComm, int *tags, void *mhandles,
     req->type = ReqRxScattered;
     req->n = 1;
     // Using plugin-allocated memory so nccl does not need to manage it.
-    req->poll_ctx = ep->uccl_recv_scattered_async(
-        conn_id, &(req->iov_n), (void **)req->iov_addrs, (int *)req->iov_lens,
-        (int *)req->dst_offsets, &(req->recv_len[0]), mhs);
+    req->poll_ctx = ep->uccl_recv_scattered_async(conn_id, req, mhs);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
 
     *request = req;

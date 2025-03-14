@@ -18,8 +18,9 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
     -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
-    -x NCCL_MAX_NCHANNELS=2 \
-    -x NCCL_MIN_NCHANNELS=2 \
+    -x NCCL_MAX_NCHANNELS=8 \
+    -x NCCL_MIN_NCHANNELS=8 \
+    -x NCCL_NCHANNELS_PER_NET_PEER=4 \
     -x NCCL_NET_GDR_LEVEL=SYS \
     -x NCCL_P2P_NET_CHUNKSIZE=524288 \
     -x NCCL_BUFFSIZE=8388608 \
@@ -27,8 +28,13 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
     ${BIN_PATH} \
-    -b 1K -e 1G -f 2 -w 5 -n 20 -g 1 -t 8 \
+    -b 1K -e 1G -f 2 -w 5 -n 100 -g 1 -t 2 \
     >& alltoall_debug.log
+
+
+    # Test for ZC
+    # -x NCCL_MAX_NCHANNELS=8 \
+    # -x NCCL_MIN_NCHANNELS=8 \
 
     # Only for uccl_rdma_zc + extra_launch
     # -x CUDA_MODULE_LOADING=EAGER \
@@ -47,8 +53,8 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
 # export GLOG_logtostderr=1
 # export NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml
 # export UCCL_ENGINE_QUIET=1
-# ${BIN_PATH} -b 1M -e 1M -f 2 -w 0 -n 1 -g 1 -t 2
 
+# ${BIN_PATH} -b 1M -e 1M -f 2 -w 0 -n 1 -g 1 -t 8
 
 # sudo -E /usr/local/cuda/bin/nsys profile --trace=cuda,nvtx,osrt --output=nccl_test_report \
 #     --gpu-metrics-device=0 

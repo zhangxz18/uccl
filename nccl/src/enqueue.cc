@@ -1623,7 +1623,12 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   struct ncclKernelPlanner* planner = &comm->planner;
   int nChannels = countOneBits(plan->channelMask);
   void* sym = plan->kernelFn;
+  // Yang: allocate more thread blocks for scattered memcpy.
+  // #define UCCL_THREAD_BLOCKS 4
+  // auto thread_blocks = std::max(nChannels, UCCL_THREAD_BLOCKS);
+  // dim3 grid = {(unsigned)thread_blocks, 1, 1};
   dim3 grid = {(unsigned)nChannels, 1, 1};
+  // printf("ncclLaunchKernel thread_blocks %d\n", nChannels);
   dim3 block = {(unsigned)plan->threadPerBlock, 1, 1};
   int smem = ncclShmemDynamicSize(comm->cudaArch);
   cudaStream_t launchStream = planner->streams->stream;

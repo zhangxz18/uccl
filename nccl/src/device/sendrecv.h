@@ -53,6 +53,9 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
     const int nWarps = tn/WARP_SIZE;
     const int lane = tid%WARP_SIZE;
 
+    // const int bid = gridDim.x;
+    // printf("run: bid=%d tid=%d tn=%d\n", bid, tid, tn);
+
     struct Shared {
       uint32_t workSendMask; // bitmasks of which work indices have send/recv
       uint32_t workRecvMask;
