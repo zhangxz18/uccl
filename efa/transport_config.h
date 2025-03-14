@@ -23,8 +23,8 @@ enum class ReceiverCCType {
     kNone,
     kEQDS,
 };
-static constexpr SenderCCType kSenderCCType = SenderCCType::kNone;
-static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kEQDS;
+static constexpr SenderCCType kSenderCCType = SenderCCType::kCubic;
+static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kNone;
 static_assert(kSenderCCType != SenderCCType::kNone || kReceiverCCType != ReceiverCCType::kNone,
               "kSenderCCType and kReceiverCCType can not be kNone at the same time.");
 
@@ -97,8 +97,8 @@ static const uint32_t kMaxSrcQP = 1;
 static const uint32_t kMaxSrcQPCtrl = 1;
 #else
 // Setting to 20 gives highest bimq perf (191 vs. 186G), but bad for NCCL.
-static const uint32_t kMaxDstQP = 28;  // # of paths/QPs for data per src qp.
-static const uint32_t kMaxSrcQP = 8;
+static const uint32_t kMaxDstQP = 26;  // # of paths/QPs for data per src qp.
+static const uint32_t kMaxSrcQP = 10;
 static const uint32_t kMaxDstQPCtrl = 8;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQPCtrl = 8;
 static const uint32_t kMaxDstQPCredit = 8; // # of paths/QPs for credit.
