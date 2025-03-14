@@ -1,11 +1,12 @@
 # !/bin/bash
 
-# TEST="uccl_rdma"
-TEST="uccl_rdma_zc"
+TEST="uccl_rdma"
+# TEST="uccl_rdma_zc"
 
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 BIN_PATH="/opt/${TEST}/nccl-tests/build/alltoall_perf"
+# BIN_PATH="/opt/${TEST}/nccl-tests/build/all_reduce_perf"
 
 COPY_CHANNELS=8
 if [ "$TEST" = "uccl_rdma_zc" ]; then
@@ -32,11 +33,12 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x GLOG_logtostderr=1 \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
-    -x CUDA_MODULE_LOADING=EAGER \
     ${BIN_PATH} \
     -b 1K -e 1G -f 2 -w 5 -n 100 -g 1 -t 8 \
     >& alltoall_debug.log
 
+    # For ZC
+    # -x CUDA_MODULE_LOADING=EAGER \
 
 # export LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}"
 # export NCCL_DEBUG=INFO

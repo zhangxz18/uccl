@@ -39,8 +39,6 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
     size_t cursor = 0;
     do {
       int n = min(size_t(chunkSize), bytes-cursor);
-      // if (tid == 0)
-      //   printf("sendrecv directRecv cursor=%ld n=%d\n", cursor, n);
       prims.directRecv(cursor, cursor, n);
       cursor += n;
     } while (cursor < bytes && work->recvRegistered == 0);
@@ -52,9 +50,6 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
     const int wid = tid/WARP_SIZE;
     const int nWarps = tn/WARP_SIZE;
     const int lane = tid%WARP_SIZE;
-
-    // const int bid = gridDim.x;
-    // printf("run: bid=%d tid=%d tn=%d\n", bid, tid, tn);
 
     struct Shared {
       uint32_t workSendMask; // bitmasks of which work indices have send/recv
@@ -169,10 +164,8 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
       if (work->recvProtoLL) {
         runRecv<ProtoLL>(subtid, subtn, group, work);
       } else {
-        // nWorks=6 + workIx={1,2,3,4,5,6} or nWorks=5 + workIx={0,1,2,3,4}
-        // printf("sendrecv run tid=%d subtid=%d subtn=%d group=%d workIx=%d nWorks=%d arrives code point 1\n", tid, subtid, subtn, group, workIx, nWorks);
-        // subtid: 0-31, subtn: 32, group: {3, 5, 7, 9, 11}, workIx: {0, 1, 2, 3, 4}.
-        // Sometimes, group: {3, 5, 7, 9}, workIx: {0, 1, 2, 3}
+        // Yang: subtid: 0-31, subtn: 32, group: {3, 5, 7, 9, 11}, workIx: {0, 1, 2, 3, 4}; sometimes, group: {3, 5, 7, 9}, workIx: {0, 1, 2, 3}
+        // Yang: nWorks=6 + workIx={1,2,3,4,5,6} or nWorks=5 + workIx={0,1,2,3,4}
         runRecv<ProtoSimple<1,1>>(subtid, subtn, group, work);
       }
     }

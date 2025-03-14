@@ -274,7 +274,6 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         FrameDesc *ready_msg = ready_msg_queue_.front();
         ready_msg_queue_.pop_front();
         DCHECK(ready_msg) << ready_msg->print_chain();
-        auto &[rx_copy_work] = app_buf_queue_.front();
 
 #ifdef EMULATE_RC_ZC
         const auto *ucclh = reinterpret_cast<const UcclPktHdr *>(
@@ -294,6 +293,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         if (ready_msg->is_last()) {
             ready_msg->set_next(nullptr);
 
+            auto &[rx_copy_work] = app_buf_queue_.front();
             rx_copy_work.deser_msgs = deser_msgs_head_;
 
             // The len field is not used in RX, we reuse it to pass counter
@@ -329,7 +329,6 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
             deser_msgs_head_ = nullptr;
             deser_msgs_tail_ = nullptr;
             deser_msg_len_ = 0;
-            iov_n_ = 0;
         }
     }
 

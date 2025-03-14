@@ -1199,9 +1199,6 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 }
 
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
-  // int gpu_idx;
-  // cudaGetDevice(&gpu_idx);
-
   if (args->state == ncclProxyOpReady) {
     // Initialize subs and group them by same recvComm.
     void* recvComm;
@@ -1250,7 +1247,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
   if (args->state == ncclProxyOpProgress) {
     int p = args->protocol;
     int maxDepth = std::min(NCCL_STEPS, NCCL_SHARED_STEPS/args->nsubs);
-    // Yang: using 1 to avoid iov being overwritten.
+    // Yang: one can use 1 to avoid iov being overwritten.
     // int maxDepth = 1;
     for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
       struct ncclProxySubArgs* subGroup = args->subs+s;
@@ -1262,7 +1259,6 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       for (int i=0; i<subGroup->groupSize; i++) {
         struct ncclProxySubArgs* sub = subGroup + i;
         if (sub->posted < sub->nsteps) {
-          // printf("recvProxyProgress1: gpu_idx=%d s=%d i=%d subGroup->posted=%ld, subGroup->done=%ld, maxDepth=%d\n", gpu_idx, s, i, subGroup->posted, subGroup->done, maxDepth);
           if (sub->posted >= sub->done + maxDepth) { subCount = 0; break; }
           ncclProfilerStartRecvProxyStepEvents(s+i, args, sub->posted, sub->posted+args->sliceSteps);
           struct recvNetResources* resources = (struct recvNetResources*) (sub->connection->transportResources);
@@ -1286,7 +1282,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               ptrs[subCount] = localBuff+offset;
             }
           } else {
-            // Yang: for network, it is generally not shared
+            // Yang: for network, it is generally not shared.
             ptrs[subCount] = localBuff+buffSlot*stepSize;
             sizes[subCount] = stepSize*args->sliceSteps;
           }
@@ -1300,12 +1296,11 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         uint64_t step = subGroup->posted;
         struct recvNetResources* resources = (struct recvNetResources*) (subGroup->connection->transportResources);
         void** requestPtr = subGroup->requests+(step%NCCL_STEPS);
-        // NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
-        // Yang: adding scattered irecv.
+        // Yang: replacing to scattered irecv.
         NCCLCHECK(proxyState->ncclNet->irecv_scattered(resources->netRecvComm, tags, mhandles, requestPtr));
+        // NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
         if (*requestPtr) {
           subGroup->recvRequestsCache[step%NCCL_STEPS] = *requestPtr;
-          // printf("recvProxyProgress1: gpu_idx=%d step=%ld subGroup=%p requestPtr=%p &requestPtr=%p \n", gpu_idx, step, subGroup, *requestPtr, subGroup->recvRequestsCache + step%NCCL_STEPS);
           subGroup->recvRequestsSubCount = subCount;
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup+i;
@@ -1337,7 +1332,6 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup + i;
             if (sub->received < sub->nsteps) {
-              // printf("recvProxyProgress2: gpu_idx=%d s=%d i=%d subGroup->posted=%ld, subGroup->received=%ld\n", gpu_idx, s, i, subGroup->posted, subGroup->received);
               int size = sizes[subIndex++];
               if (sub->reg) {
                 if (size < sub->nbytes) {
@@ -1421,8 +1415,6 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
             int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
             int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
 
-            // printf("recvProxyProgress3: gpu_idx=%d s=%d i=%d args->nsubs=%d subGroup->groupSize=%d transmitted=%ld step=%ld nsteps=%d done\n", gpu_idx, s, i, args->nsubs, subGroup->groupSize, sub->transmitted, step%NCCL_STEPS, sub->nsteps);
-
             sub->transmitted += args->sliceSteps;
             ncclProfilerRecordProxyOpEventState(s+i, args, sub->transmitted, sub->transSize, ncclProfilerProxyOpRecvTransmitted);
             ncclProfilerRecordProxyStepEventStates(s+i, args, sub->transmitted-args->sliceSteps, sub->transmitted, ncclProfilerProxyStepRecvGPUWait);
@@ -1437,7 +1429,6 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                   *recvTail = sub->base + args->sliceSteps;
                 } 
               } else {
-                // printf("recvProxyProgress3: gdcSync=%p gpu_idx=%d s=%d i=%d recvTail=%ld base=%ld sliceSteps=%d\n", resources->gdcSync, gpu_idx, s, i, *recvTail, sub->base, args->sliceSteps);
                 // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
                 auto* recv_mem = resources->recvMem;
                 // Yang: recvTail might get overwritten, the same for the iov_addrs.
@@ -1445,13 +1436,14 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                 volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);
 
                 cur_iov->iov_n = *iov_n;
+                // int gpu_idx;
+                // cudaGetDevice(&gpu_idx);
                 // cur_iov->gpu_idx = gpu_idx; // for debugging
                 cur_iov->step = iov_idx;
                 for (int j=0; j < cur_iov->iov_n; j++) {
                   cur_iov->iov_addrs[j] = iov_addrs[j];
                   cur_iov->iov_lens[j] = iov_lens[j];
                   cur_iov->dst_offsets[j] = dst_offsets[j];
-                  // printf("recvProxyProgress3: gpu_idx=%d s=%d i=%d iov[%d] addr=%p len=%d offset=%d iov_idx=%lu\n", gpu_idx, s, i, j, iov_addrs[j], iov_lens[j], dst_offsets[j], iov_idx);
                 }
                 *recvTail = sub->base + sub->transmitted;
                 __sync_synchronize();
@@ -1478,7 +1470,6 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               // LL and LL128 can acknowledge 0-bytes send before they even happen. Don't go past what we transmitted.
               sub->transmitted > sub->done) {
             if (subGroup->recvRequestsCache[sub->done%NCCL_STEPS]) {
-              // printf("recvProxyProgress4: gpu_idx=%d s=%d i=%d sendHead=%ld done=%ld, base=%ld, nsteps=%d\n", gpu_idx, s, i, *sendHead, done, sub->base, sub->nsteps);
               // the multirecv requests are only cached in the first sub.
               if (proxyState->ncclNet->irecvConsumed)
                 NCCLCHECK(proxyState->ncclNet->irecvConsumed(resources->netRecvComm, subGroup->recvRequestsSubCount, subGroup->recvRequestsCache[sub->done%NCCL_STEPS]));

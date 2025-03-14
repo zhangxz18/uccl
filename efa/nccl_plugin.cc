@@ -199,7 +199,8 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
     *listenComm = lcomm;
 
     LOG(INFO) << "pluginListen on vdev: " << vdev << " listen_port "
-              << listen_port << " listen_fd " << listen_fd;
+              << listen_port << " listen_fd " << listen_fd << " gpu_idx "
+              << gpu_idx;
 
     return ncclSuccess;
 }
