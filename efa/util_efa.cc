@@ -768,8 +768,8 @@ std::tuple<std::vector<FrameDesc *>, uint32_t> EFASocket::poll_ctrl_cq(
             } else if (wc_[i].opcode == IBV_WC_SEND) {
                 auto pkt_hdr_addr = frame->get_pkt_hdr_addr();
 
-                pkt_hdr_pool_->free_buff(pkt_hdr_addr);
-                frame_desc_pool_->free_buff((uint64_t)frame);
+                push_pkt_hdr(pkt_hdr_addr);
+                push_frame_desc((uint64_t)frame);
 
                 polled_send_acks++;
                 ctrl_send_queue_wrs_--;
