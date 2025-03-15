@@ -58,7 +58,7 @@ UCCL currently supports AWS ENA NICs; support for Azure and GCP NICs and RDMA is
         * Install dependency: 
             ```
             sudo apt update
-            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake -y
+            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake libopenmpi-dev -y
 
              # re-login to use conda
             ./setup_extra.sh

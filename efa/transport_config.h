@@ -8,7 +8,8 @@
 #define REXMIT_SET_PATH
 // #define USE_SRD
 // #define USE_SRD_FOR_CTRL
-#define EMULATE_RC_ZC
+// #define EMULATE_RC_ZC
+#define SCATTERED_MEMCPY
 // #define RTT_STATS
 // #define POLLCTX_DEBUG
 
@@ -25,15 +26,18 @@ enum class ReceiverCCType {
 };
 static constexpr SenderCCType kSenderCCType = SenderCCType::kCubic;
 static constexpr ReceiverCCType kReceiverCCType = ReceiverCCType::kNone;
-static_assert(kSenderCCType != SenderCCType::kNone || kReceiverCCType != ReceiverCCType::kNone,
-              "kSenderCCType and kReceiverCCType can not be kNone at the same time.");
+static_assert(
+    kSenderCCType != SenderCCType::kNone ||
+        kReceiverCCType != ReceiverCCType::kNone,
+    "kSenderCCType and kReceiverCCType can not be kNone at the same time.");
 
 #define P4D
 
 static const uint32_t kNumVdevices = 8;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
-static const bool kSplitSendRecvEngine = true; // Split sender/recevier flows to dedicated engines.
+static const bool kSplitSendRecvEngine =
+    true;  // Split sender/recevier flows to dedicated engines.
 
 /// Interface configuration.
 #ifdef P4D
@@ -49,8 +53,8 @@ static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.
 static const uint32_t EFA_MTU = 9000;  // Max frame on fabric, includng headers.
 static const uint32_t EFA_MAX_PAYLOAD = 8928;  // this excludes EFA_UD_ADDITION.
 static const uint32_t EFA_HDR_OVERHEAD = EFA_MTU - EFA_MAX_PAYLOAD;
-static const uint32_t EFA_MAX_QPS = 256;  // Max QPs per EFA device.
-static const uint32_t EFA_MAX_INLINE_SIZE = 32; // Max inline data size.
+static const uint32_t EFA_MAX_QPS = 256;         // Max QPs per EFA device.
+static const uint32_t EFA_MAX_INLINE_SIZE = 32;  // Max inline data size.
 #ifdef USE_SRD
 static const uint32_t EFA_UD_ADDITION = 0;  // Auto-added by EFA during recv.
 #else
@@ -67,7 +71,8 @@ static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // two numbers are for numa 0 and 1 separately. GPU 0-3 + NIC 0-1 are on numa 0,
 // and GPU 4-7 + NIC 2-3 are on numa 1.
 static const uint32_t ENGINE_CPU_START[2] = {NUM_CPUS / 2, NUM_CPUS / 4};
-static const uint32_t PACER_CPU_START[2] = {ENGINE_CPU_START[0] + 8 /* 4 VDEV * 2 EnginePerVdev */, 
+static const uint32_t PACER_CPU_START[2] = {
+    ENGINE_CPU_START[0] + 8 /* 4 VDEV * 2 EnginePerVdev */,
     ENGINE_CPU_START[1] + 8 /* 4 VDEV * 2 EnginePerVdev */};
 static const uint16_t BASE_PORT = 10000;
 static const uint64_t NUM_FRAMES = 65536;  // # of frames.
@@ -101,26 +106,31 @@ static const uint32_t kMaxDstQP = 26;  // # of paths/QPs for data per src qp.
 static const uint32_t kMaxSrcQP = 10;
 static const uint32_t kMaxDstQPCtrl = 8;  // # of paths/QPs for control.
 static const uint32_t kMaxSrcQPCtrl = 8;
-static const uint32_t kMaxDstQPCredit = 8; // # of paths/QPs for credit.
+static const uint32_t kMaxDstQPCredit = 8;  // # of paths/QPs for credit.
 static const uint32_t kMaxSrcQPCredit = 8;
 #endif
 static constexpr uint32_t kMaxSrcDstQP = std::max(kMaxSrcQP, kMaxDstQP);
 static constexpr uint32_t kMaxSrcDstQPCtrl =
     std::max(kMaxSrcQPCtrl, kMaxDstQPCtrl);
-static constexpr uint32_t kMaxSrcDstQPCredit = 
+static constexpr uint32_t kMaxSrcDstQPCredit =
     std::max(kMaxSrcQPCredit, kMaxDstQPCredit);
 static const uint32_t kMaxPath = kMaxDstQP * kMaxSrcQP;
 static const uint32_t kMaxPathCtrl = kMaxDstQPCtrl * kMaxSrcQPCtrl;
-// This check is not enough as the kMaxSendWr/kMaxRecvWr also affects the number of QPs.
-static_assert((kMaxDstQP + kMaxDstQPCtrl) * kNumEnginesPerVdev * 2 + kMaxDstQPCredit <= EFA_MAX_QPS);
-static_assert((kMaxSrcQP + kMaxSrcQPCtrl) * kNumEnginesPerVdev * 2 + kMaxSrcQPCredit <= EFA_MAX_QPS);
+// This check is not enough as the kMaxSendWr/kMaxRecvWr also affects the number
+// of QPs.
+static_assert((kMaxDstQP + kMaxDstQPCtrl) * kNumEnginesPerVdev * 2 +
+                  kMaxDstQPCredit <=
+              EFA_MAX_QPS);
+static_assert((kMaxSrcQP + kMaxSrcQPCtrl) * kNumEnginesPerVdev * 2 +
+                  kMaxSrcQPCredit <=
+              EFA_MAX_QPS);
 
 // CC parameters.
 static const double kMaxUnackedPktsPP = 1u;
 #ifdef USE_SRD
 static const uint32_t kMaxUnackedPktsPerEngine = 800;
 #else
-static const uint32_t kMaxUnackedPktsPerEngine =  kMaxUnackedPktsPP * kMaxPath;
+static const uint32_t kMaxUnackedPktsPerEngine = kMaxUnackedPktsPP * kMaxPath;
 #endif
 static const std::size_t kSackBitmapSize = 1024;
 static const std::size_t kFastRexmitDupAckThres = 128;

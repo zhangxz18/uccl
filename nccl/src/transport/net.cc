@@ -1247,6 +1247,8 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
   if (args->state == ncclProxyOpProgress) {
     int p = args->protocol;
     int maxDepth = std::min(NCCL_STEPS, NCCL_SHARED_STEPS/args->nsubs);
+    // Yang: one can use 1 to avoid iov being overwritten.
+    // int maxDepth = 1;
     for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
       struct ncclProxySubArgs* subGroup = args->subs+s;
       int subCount = 0;
@@ -1262,6 +1264,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           struct recvNetResources* resources = (struct recvNetResources*) (sub->connection->transportResources);
           if (sub->reg) maxDepth = 1;
           int stepSize = resources->buffSizes[p] / NCCL_STEPS;
+          // Yang: localBuff should be the GPU buffer to receive the data from RDMA.
           char* localBuff = NCCL_NET_MAP_GET_POINTER(&resources->map, cpu, buffs[p]);
           int buffSlot = (sub->base+sub->posted)%NCCL_STEPS;
           volatile struct ncclConnFifo* connFifo = (volatile struct ncclConnFifo*)resources->recvMem->connFifo;
@@ -1279,6 +1282,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               ptrs[subCount] = localBuff+offset;
             }
           } else {
+            // Yang: for network, it is generally not shared.
             ptrs[subCount] = localBuff+buffSlot*stepSize;
             sizes[subCount] = stepSize*args->sliceSteps;
           }
@@ -1292,7 +1296,9 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         uint64_t step = subGroup->posted;
         struct recvNetResources* resources = (struct recvNetResources*) (subGroup->connection->transportResources);
         void** requestPtr = subGroup->requests+(step%NCCL_STEPS);
-        NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
+        // Yang: replacing to scattered irecv.
+        NCCLCHECK(proxyState->ncclNet->irecv_scattered(resources->netRecvComm, tags, mhandles, requestPtr));
+        // NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
         if (*requestPtr) {
           subGroup->recvRequestsCache[step%NCCL_STEPS] = *requestPtr;
           subGroup->recvRequestsSubCount = subCount;
@@ -1400,18 +1406,48 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup + i;
 
+            // Yang: need to keep the same as transport.h
+            #define kIovStart 64
+            // Yang: Getting the scattered GDR IOV buffers from the plugin-managered request.
+            void* requestPtr = subGroup->recvRequestsCache[step%NCCL_STEPS];
+            void** iov_addrs = (void**)((char*)requestPtr + kIovStart);
+            int* iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
+            int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
+            int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
+
             sub->transmitted += args->sliceSteps;
             ncclProfilerRecordProxyOpEventState(s+i, args, sub->transmitted, sub->transSize, ncclProfilerProxyOpRecvTransmitted);
             ncclProfilerRecordProxyStepEventStates(s+i, args, sub->transmitted-args->sliceSteps, sub->transmitted, ncclProfilerProxyStepRecvGPUWait);
             if (step < sub->nsteps) {
               __sync_synchronize();
               struct recvNetResources* resources = (struct recvNetResources*) (sub->connection->transportResources);
+              // Yang: GDRCOPY support is off by default. 
               volatile uint64_t* recvTail = resources->gdcSync ? resources->gdcSync : &resources->recvMem->tail;
               if (sub->reg) {
                 // We may have added more net steps, but reg operations only have a single step w.r.t. the GPU.
-                if (sub->transmitted == sub->nsteps) *recvTail = sub->base + args->sliceSteps;
-              } else
+                if (sub->transmitted == sub->nsteps) {
+                  *recvTail = sub->base + args->sliceSteps;
+                } 
+              } else {
+                // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
+                auto* recv_mem = resources->recvMem;
+                // Yang: recvTail might get overwritten, the same for the iov_addrs.
+                auto iov_idx = (*recvTail) % NCCL_STEPS;
+                volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);
+
+                cur_iov->iov_n = *iov_n;
+                // int gpu_idx;
+                // cudaGetDevice(&gpu_idx);
+                // cur_iov->gpu_idx = gpu_idx; // for debugging
+                cur_iov->step = iov_idx;
+                for (int j=0; j < cur_iov->iov_n; j++) {
+                  cur_iov->iov_addrs[j] = iov_addrs[j];
+                  cur_iov->iov_lens[j] = iov_lens[j];
+                  cur_iov->dst_offsets[j] = dst_offsets[j];
+                }
                 *recvTail = sub->base + sub->transmitted;
+                __sync_synchronize();
+              }
               if (resources->gdcSync) wc_store_fence(); // Flush out WC write
             }
           }
@@ -1437,6 +1473,11 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               // the multirecv requests are only cached in the first sub.
               if (proxyState->ncclNet->irecvConsumed)
                 NCCLCHECK(proxyState->ncclNet->irecvConsumed(resources->netRecvComm, subGroup->recvRequestsSubCount, subGroup->recvRequestsCache[sub->done%NCCL_STEPS]));
+              
+              // Yang: free the scattered GDR IOV buffers and request.
+              auto* request = subGroup->recvRequestsCache[sub->done%NCCL_STEPS];
+              proxyState->ncclNet->irecv_free_ptrs(resources->netRecvComm, request);
+              
               subGroup->recvRequestsCache[sub->done%NCCL_STEPS] = NULL;
             }
             sub->done += args->sliceSteps;

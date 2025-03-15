@@ -58,6 +58,9 @@ class Primitives<
   void*    netDeviceHandle;
   uint64_t accSize; // Accumulated size. Used by PAT operations
 
+  // Yang: for current step, the iov buffers and lengths
+  uint64_t* tail_ptr; // Pointing to the CPU proxy thread's ncclRecvMem.tail
+  
   // Don't use barrier 0 as it's used by the final sync
   __device__ void barrier() {
     if (nthreads == WARP_SIZE) __syncwarp();
@@ -137,6 +140,7 @@ class Primitives<
       if (flags & ConnFifoEnabled)
         connFifo[step%NCCL_STEPS].size = nelts*sizeof(T);
 
+      // Yang: for recv, ptrs = srcs + Src
       void **ptrs = isSendNotRecv ? (ncclShmem.groups[group].dsts + Dst)
                                   : (ncclShmem.groups[group].srcs + Src);
       if (flags & NetRegMode) {
@@ -157,6 +161,7 @@ class Primitives<
         } else if ((flags & DirectWrite) || (flags & IpcWrite)) {
           ptrs[index] = directBuff + dstIx + offset;  // send to next from my output buffer
         } else {
+          // Yang: alltoall recv will go this path.
           ptrs[index] = connEltsFifo + (step%NCCL_STEPS)*connStepSize;
         }
       }
@@ -168,7 +173,11 @@ class Primitives<
       if (flags & NetDeviceUnpack) {
         ncclNetDeviceIncrementHead(group, index);
       }
+      
       step += StepPerSlice;
+
+      // Yang: using one thread to load the step into sharemem.
+      ncclShmem.groups[group].step = step;
     }
   }
 
@@ -179,14 +188,43 @@ class Primitives<
       if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
         fence_acq_rel_sys();
       }
+      // Yang: this update CPU-side tail.
       st_relaxed_sys_global(connStepPtr, step);
     }
   }
 
+  template<int BytePerPack>
+  __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
+    uintptr_t src_addr = (uintptr_t)src;
+    uintptr_t dst_addr = (uintptr_t)dst;
+    int i = 0;
+
+    // BytePack<BytePerPack> acc;
+    for (; i + BytePerPack <= len; i += BytePerPack) {
+      // acc = ld_global<BytePerPack>(src_addr + i);
+      // st_global<BytePerPack>(dst_addr + i, acc);
+      *(BytePack<BytePerPack>*)(dst_addr+i) = *(BytePack<BytePerPack>*)(src_addr+i);
+    }
+
+    // Handle the remaining tail bytes (if any)
+    if (i > len) {
+      i -= BytePerPack;
+      // BytePack<1> acc2;
+      for (; i < len; i++) {
+        // acc2 = ld_global<1>(src_addr + i);
+        // st_global<1>(dst_addr + i, acc2);
+        *(BytePack<1>*)(dst_addr+i) = *(BytePack<1>*)(src_addr+i);
+      }
+    }
+  }
+
+  // Yang: for alltoall recv: <1, 0, 1, 0, -1, Output>
   template <int DirectRecv1, int DirectSend1, int Recv, int Send, int SrcBuf, int DstBuf>
   __device__ __forceinline__ void genericOp(
       intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp
     ) {
+    // if (tid == 0)
+    //   printf("prims_simple genericOp srcIx=%ld dstIx=%ld nelem=%d\n", srcIx, dstIx, nelem);
     constexpr int DirectRecv = 1 && Direct && DirectRecv1;
     constexpr int DirectSend = 1 && Direct && DirectSend1;
     constexpr int Src = SrcBuf != -1;
@@ -234,8 +272,10 @@ class Primitives<
           T* userInput = (T*)ncclShmem.groups[group].userInput;
           T* userOutput = (T*)ncclShmem.groups[group].userOutput;
           if (Src) ncclShmem.groups[group].srcs[0] = (SrcBuf==Input ? userInput : userOutput) + srcIx + offset;
+          // Yang: recv goes this path to set dst to the app tensor buffer (userOutput).
           if (Dst) ncclShmem.groups[group].dsts[0] = (DstBuf==Input ? userInput : userOutput) + dstIx + offset;
         }
+        // Yang: srcs is filled up with RDMA GDR buffer. 
         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(srcIx, dstIx, offset, sliceSize);
         subBarrier();
         /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
@@ -246,7 +286,6 @@ class Primitives<
           // Sync here to make sure all workers are reading from the updated srcs)
           subBarrier();
         }
-
         if (DirectRecv && ncclShmem.groups[group].srcs[0] == ncclShmem.groups[group].dsts[0]
             /* NVLS can have srcs[0] == dsts[0], but we cannot enter this "if branch",
              * so we need to check whether MultimemSrcs and MultimemDsts are 0. */
@@ -267,6 +306,50 @@ class Primitives<
              Dst, ncclShmem.groups[group].dsts,
              workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
+          if (DirectRecv && !DirectSend) {
+            // Yang: need to keep the same as comm.h
+            #define kIovStart 328
+            #define kMaxIovs 128
+            struct alignas(8) iov {
+              void* iov_addrs[kMaxIovs];
+              int iov_lens[kMaxIovs];
+              int dst_offsets[kMaxIovs];
+              int iov_n;
+              int gpu_idx; // for debugging
+              int step; // for debugging
+            };
+            const uint32_t kIovSize = sizeof(struct iov);
+
+            uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
+            int iov_idx = prevStep % NCCL_STEPS;
+            struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+            
+            void** iov_addrs = cur_iov->iov_addrs;
+            int* iov_lens = cur_iov->iov_lens;
+            int* dst_offsets = cur_iov->dst_offsets;
+            int iov_n = cur_iov->iov_n;
+
+            // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+            uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
+            for (int i = 0; i < iov_n; i++) {
+              char *src = (char*)iov_addrs[i];
+              char *dst = (char*)(dst_base + dst_offsets[i]);
+              int iov_len = iov_lens[i];
+
+              // Make it t-byte aligned to avoid GPU SEGV.
+              int num_packs = iov_len / 8;
+              int len_per_th = divUp(num_packs, nworkers) * 8;
+              int start = len_per_th * tid;
+              int end = min(start + len_per_th, iov_len);
+              int len = end - start;
+              if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
+            }
+
+            subBarrier();
+          }
+          // Yang: no need from my tests, as reduceCopy uses volitile.
+          // __threadfence();
+
           constexpr int PreOpSrcs = SrcBuf != Input ? 0 :
                                     DirectRecv*MaxRecv == NCCL_MAX_DIRECT_ARITY ? (1+NCCL_MAX_DIRECT_ARITY) : 1;
           reduceCopy<Unroll, RedOp, T,
@@ -276,6 +359,7 @@ class Primitives<
              Recv*fan.nrecv()+Src, ncclShmem.groups[group].srcs,
              Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
              workSize);
+
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < sliceSize);
@@ -493,8 +577,10 @@ private:
       if ((flags & PatMode) == 0) ncclShmem.groups[group].recvConns[index] = conn; // WaitRecv role saves since that's who needs it in setDataPtrs()
       flags |= (conn->flags & NCCL_NVLS_MIN_POLL) ? NvlsMinPolling : 0;
       connStepPtr = conn->tail;
+      // Yang: this should load the tail value from CPU.
       connStepCache = loadStepValue(connStepPtr);
       connStepSize = conn->stepSize/sizeof(T);
+      // Yang: for recv, loading RDMA GDR buffer to connEltsFifo
       connEltsFifo = (T*)conn->buffs[NCCL_PROTO_SIMPLE];
       if (conn->connFifo != nullptr) {
         flags |= ConnFifoEnabled;
@@ -661,6 +747,10 @@ private:
 
     // coverity[negative_returns:FALSE]
     setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclDevWorkCollReg*)e, (uint8_t)(e ? e->regUsed : ipcReg), peer);
+
+    // Yang: only for receive primitives.
+    if (recvPeers)
+      tail_ptr = ncclShmem.channel.peers[recvPeers[0]]->recv[connIndexRecv].tail;
   }
 
   __device__ ~Primitives() {
@@ -698,6 +788,7 @@ private:
       bool sendProvider = (flags & RoleWaitSend) && (flags & DirectRead || flags & IpcRead); // sender provides direct buffer (to be fetched)
       bool recvAcceptor = (flags & RoleWaitRecv) && (flags & DirectRead || flags & IpcRead || flags & NvlsDirectRead); // receiver accepts direct buffer
       if (recvProvider) {
+        // Yang: we likely go this path for recv
         int spins = 0;
         void* volatile* slot = ncclShmem.groups[group].recvConns[index]->ptrExchange;
         // Wait for consumer to consume previous value before trampling it.

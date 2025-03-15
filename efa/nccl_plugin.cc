@@ -4,28 +4,13 @@
 #include <mutex>
 #include <thread>
 
-#include "nccl_net.h"
+#include "../nccl/src/include/nccl_net.h"
 #include "transport.h"
 #include "transport_config.h"
 
 using namespace uccl;
 
 const char *PLUGIN_NAME = "EFA_Plugin";
-
-enum ReqType {
-    ReqTx,
-    ReqRx,
-    ReqFlush,
-};
-
-struct UcclRequest {
-    ReqType type;
-    int n;
-    int send_len = 0;
-    int recv_len[kMaxMultiRecv] = {0};
-    PollCtx *poll_ctx = nullptr;
-    void *req_pool = nullptr;
-};
 
 class UcclRequestBuffPool : public BuffPool {
     static constexpr size_t num_elements =
@@ -187,9 +172,12 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
     int gpu_idx = 0;
     cudaGetDevice(&gpu_idx);
     if (vdev != gpu_idx) {
-        LOG_FIRST_N(INFO, 1) << "pluginListen: Force align vdev and gpu_idx.";
+        LOG_FIRST_N(INFO, 1)
+            << "pluginListen detects different vdev " << vdev << " vs. gpu_idx "
+            << gpu_idx << ", forcely setting vdev to gpu_idx";
         vdev = gpu_idx;
     }
+
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
     memset(handle, 0, sizeof(struct UcclHandle));
@@ -211,7 +199,8 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
     *listenComm = lcomm;
 
     LOG(INFO) << "pluginListen on vdev: " << vdev << " listen_port "
-              << listen_port << " listen_fd " << listen_fd;
+              << listen_port << " listen_fd " << listen_fd << " gpu_idx "
+              << gpu_idx;
 
     return ncclSuccess;
 }
@@ -226,9 +215,12 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
     int gpu_idx = 0;
     cudaGetDevice(&gpu_idx);
     if (vdev != gpu_idx) {
-        LOG_FIRST_N(INFO, 1) << "pluginListen: Force align vdev and gpu_idx.";
+        LOG_FIRST_N(INFO, 1) << "pluginConnect detects different vdev " << vdev
+                             << " vs. gpu_idx " << gpu_idx
+                             << ", forcely setting vdev to gpu_idx";
         vdev = gpu_idx;
     }
+
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
 
@@ -239,7 +231,8 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
 
     if (handle->state == kConnInit) {
         LOG(INFO) << "pluginConnect on vdev: " << vdev << " remote_ip_str "
-                  << remote_ip_str << " dest_port " << handle->listen_port;
+                  << remote_ip_str << " dest_port " << handle->listen_port
+                  << " gpu_idx " << gpu_idx;
         handle->state = kConnConnecting;
         // Delegate connection to another thread.
         std::thread t = std::thread([vdev, handle, remote_ip_str] {
@@ -280,17 +273,17 @@ ncclResult_t pluginAccept(void *listenComm, void **recvComm,
                           ncclNetDeviceHandle_v8_t ** /*recvDevComm*/) {
     int gpu_idx = 0;
     cudaGetDevice(&gpu_idx);
-    
     struct UcclListenComm *lcomm = (struct UcclListenComm *)listenComm;
 
     struct UcclRecvComm *rcomm =
         (struct UcclRecvComm *)calloc(1, sizeof(struct UcclRecvComm));
 
     if (lcomm->state == kConnInit) {
-        DCHECK(lcomm->vdev == gpu_idx);
+        DCHECK(lcomm->vdev == gpu_idx) << "pluginAccept: vdev " << lcomm->vdev
+                                       << " vs. gpu_idx " << gpu_idx;
         auto vdev = lcomm->vdev;
         LOG(INFO) << "pluginAccept on vdev: " << vdev << " listen_fd "
-                  << lcomm->listen_fd;
+                  << lcomm->listen_fd << " gpu_idx " << gpu_idx;
         lcomm->state = kConnConnecting;
         // Delegate connection to another thread.
         std::thread t = std::thread([lcomm, vdev] {
@@ -336,12 +329,12 @@ ncclResult_t pluginRegMr(void *collComm, void *data, size_t size, int type,
     int ret;
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     auto dev_idx = get_dev_idx_by_engine_idx(base->conn_id.engine_idx);
-    // auto vdev_idx = get_vdev(dev_idx);
     auto vdev_idx = base->vdev;
     checkMemoryLocation(data);
 
-    LOG(INFO) << "pluginRegMr, " << size << ", " << base->conn_id.flow_id
-              << " vdev_idx " << vdev_idx << " data ptr " << std::hex << data;
+    LOG(INFO) << "pluginRegMr, size " << size << " flow_id "
+              << base->conn_id.flow_id << " vdev_idx " << vdev_idx
+              << " data ptr " << std::hex << data;
     ret = ep->uccl_regmr(dev_idx, data, size, type, (struct Mhandle **)mhandle);
     reg_cnt++;
 
@@ -354,12 +347,12 @@ ncclResult_t pluginRegMrDmaBuf(void *collComm, void *data, size_t size,
     int ret;
     struct UcclBaseComm *base = (struct UcclBaseComm *)collComm;
     auto dev_idx = get_dev_idx_by_engine_idx(base->conn_id.engine_idx);
-    // auto vdev_idx = get_vdev(dev_idx);
     auto vdev_idx = base->vdev;
     checkMemoryLocation(data);
 
-    LOG(INFO) << "pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id
-              << " vdev_idx " << vdev_idx << " data ptr " << std::hex << data;
+    LOG(INFO) << "pluginRegMrDmaBuf, size " << size << " flow_id "
+              << base->conn_id.flow_id << " vdev_idx " << vdev_idx
+              << " data ptr " << std::hex << data;
     ret = ep->uccl_regmr_dmabuf(dev_idx, data, size, type, offset, fd,
                                 (struct Mhandle **)mhandle);
     reg_cnt++;
@@ -377,7 +370,7 @@ ncclResult_t pluginDeregMr(void *collComm, void *mhandle) {
 
 ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
                          void *mhandle, void **request) {
-    CHECK(size > 0);
+    DCHECK(size > 0 && size <= 524288) << "size " << size;
 
     struct UcclSendComm *scomm = (struct UcclSendComm *)sendComm;
     auto conn_id = scomm->base.conn_id;
@@ -400,6 +393,7 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     req->req_pool = (void *)scomm->base.uccl_req_pool.get();
 
     *request = req;
+    // LOG(INFO) << "pluginIsend on size " << size;
 
 #ifdef POLLCTX_DEBUG
     LOG(INFO) << "pluginIsend on vdev: " << vdev << " size " << size
@@ -409,9 +403,6 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
 #endif
     return ncclSuccess;
 }
-
-thread_local void *last_recv_data = nullptr;
-thread_local int last_recv_size = 0;
 
 ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
                          int *tags, void **mhandles, void **request) {
@@ -435,8 +426,6 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
         ep->uccl_recv_multi_async(conn_id, data, req->recv_len, mhs, n);
     req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
 
-    last_recv_data = (void *)data;
-
     *request = req;
 
 #ifdef POLLCTX_DEBUG
@@ -445,6 +434,53 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
               << conn_id.flow_id << " n " << n << " req_id "
               << req->poll_ctx->req_id << " data ptr " << std::hex << data;
 #endif
+
+    return ncclSuccess;
+}
+
+ncclResult_t pluginIrecvScattered(void *recvComm, int *tags, void *mhandles,
+                                  void **request) {
+    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
+    auto conn_id = rcomm->base.conn_id;
+    struct Mhandle *mhs = (struct Mhandle *)mhandles;
+    // checkMemoryLocation(data[0]);
+
+    uint64_t addr;
+    auto vdev = rcomm->base.vdev;
+    if (rcomm->base.uccl_req_pool->alloc_buff(&addr)) {
+        CHECK(false);
+        *request = nullptr;
+        return ncclSuccess;
+    }
+
+    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(addr);
+    req->type = ReqRxScattered;
+    req->n = 1;
+    // Using plugin-allocated memory so nccl does not need to manage it.
+    req->poll_ctx = ep->uccl_recv_scattered_async(conn_id, req, mhs);
+    req->req_pool = (void *)rcomm->base.uccl_req_pool.get();
+
+    *request = req;
+
+#ifdef POLLCTX_DEBUG
+    LOG(INFO) << "pluginIrecvScattered on vdev: " << vdev << " size "
+              << sizes[0] << " engine_id " << req->poll_ctx->engine_idx
+              << " flow_id " << conn_id.flow_id << " n " << 1 << " req_id "
+              << req->poll_ctx->req_id << " data ptr " << std::hex << data;
+#endif
+
+    return ncclSuccess;
+}
+
+ncclResult_t pluginIrecvFreePtrs(void *recvComm, void *request) {
+    struct UcclRequest *req = reinterpret_cast<struct UcclRequest *>(request);
+
+    struct UcclRecvComm *rcomm = (struct UcclRecvComm *)recvComm;
+    auto conn_id = rcomm->base.conn_id;
+    ep->uccl_recv_free_ptrs(conn_id, req->iov_n, req->iov_addrs);
+
+    auto uccl_req_pool = reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
+    uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
 
     return ncclSuccess;
 }
@@ -482,27 +518,29 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         *done = 1;
         if (req->type == ReqTx) {
             size[0] = req->send_len;
-#ifdef POLLCTX_DEBUG
-            LOG(INFO) << "pluginTest ReqTx done: engine_id "
-                      << req->poll_ctx->engine_idx << " flow_id "
-                      << req->poll_ctx->flow_id << " req_id "
-                      << req->poll_ctx->req_id << " size " << size[0];
-#endif
         } else if (req->type == ReqRx) {
             for (int i = 0; i < req->n; i++) size[i] = req->recv_len[i];
-#ifdef POLLCTX_DEBUG
-            LOG(INFO) << "pluginTest ReqRx done: engine_id "
-                      << req->poll_ctx->engine_idx << " flow_id "
-                      << req->poll_ctx->flow_id << " req_id "
-                      << req->poll_ctx->req_id << " size " << size[0];
-#endif
         } else if (req->type == ReqFlush) {
             // Do nothing.
+        } else if (req->type == ReqRxScattered) {
+            size[0] = req->recv_len[0];
         }
-        auto uccl_req_pool =
-            reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
-        uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+        // request from ReqRxScattered will be freed by pluginIrecvFreePtrs
+        if (req->type != ReqRxScattered) {
+            auto uccl_req_pool =
+                reinterpret_cast<UcclRequestBuffPool *>(req->req_pool);
+            uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
+        }
+
+#ifdef POLLCTX_DEBUG
+        LOG(INFO) << "pluginTest " << req->type << " done: engine_id "
+                  << req->poll_ctx->engine_idx << " flow_id "
+                  << req->poll_ctx->flow_id << " req_id "
+                  << req->poll_ctx->req_id << " size " << size[0];
+#endif
     } else {
+        *done = 0;
+
 #ifdef POLLCTX_DEBUG
         LOG_EVERY_N(INFO, 1000000)
             << "pluginTest poll NOT done: "
@@ -510,7 +548,6 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
             << req->poll_ctx->engine_idx << " flow_id "
             << req->poll_ctx->flow_id << " req_id " << req->poll_ctx->req_id;
 #endif
-        *done = 0;
     }
 
     return ncclSuccess;
@@ -545,6 +582,8 @@ volatile ncclNet_v8_t ncclNetPlugin_v8 = {
     .deregMr = pluginDeregMr,
     .isend = pluginIsend,
     .irecv = pluginIrecv,
+    .irecv_scattered = pluginIrecvScattered,
+    .irecv_free_ptrs = pluginIrecvFreePtrs,
     .iflush = pluginIflush,
     .test = pluginTest,
     .closeSend = pluginCloseSend,

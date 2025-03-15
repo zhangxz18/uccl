@@ -218,6 +218,10 @@ EFASocket::EFASocket(int gpu_idx, int dev_idx, int socket_idx)
         cudaMalloc(&pkt_data_buf_, PktDataBuffPool::kNumPktData *
                                        PktDataBuffPool::kPktDataSize);
     DCHECK(cuda_ret == cudaSuccess) << "cudaMalloc failed";
+    LOG(INFO) << "[EFA] gpu_idx " << gpu_idx << " pkt_data_buf_ " << std::hex
+              << pkt_data_buf_ << " to "
+              << pkt_data_buf_ + PktDataBuffPool::kNumPktData *
+                                     PktDataBuffPool::kPktDataSize;
     auto *pkt_data_mr_ =
         ibv_reg_mr(pd_, pkt_data_buf_,
                    PktDataBuffPool::kNumPktData * PktDataBuffPool::kPktDataSize,
