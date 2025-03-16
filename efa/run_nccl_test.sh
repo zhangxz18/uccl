@@ -16,7 +16,7 @@ NIC=${4:-ens32}
 NODES=$(get_nodes "../nodes.txt")
 GPU=${5:-8}
 CHANNELS=8 # for GPU scatter-gather copy
-CHANNELS_NET_PEER=6 # 2/4/6/8 is okay, but 1 doesn't work
+CHANNELS_NET_PEER=4 # 2/4/6/8 is okay, but 1 doesn't work
 CHUNK_SIZE=131072 # best for UCCL
 # CHUNK_SIZE=524288 # best for SRD
 
@@ -68,7 +68,7 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_P2P_DISABLE=1 \
         -x NCCL_SHM_DISABLE=1 \
         -x NCCL_NET_DISABLE=0 \
-        -x GLOG_logtostderr=0\
+        -x GLOG_logtostderr=0 \
         -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
         -x NCCL_MAX_NCHANNELS=${CHANNELS} \
         -x NCCL_MIN_NCHANNELS=${CHANNELS}  \

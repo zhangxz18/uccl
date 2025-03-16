@@ -370,13 +370,11 @@ ncclResult_t pluginDeregMr(void *collComm, void *mhandle) {
 
 ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
                          void *mhandle, void **request) {
-    DCHECK(size > 0 && size <= 524288) << "size " << size;
-
+    // DCHECK(size > 0 && size <= 524288) << "size " << size;
     struct UcclSendComm *scomm = (struct UcclSendComm *)sendComm;
     auto conn_id = scomm->base.conn_id;
     struct Mhandle *mh = (struct Mhandle *)mhandle;
     // checkMemoryLocation(data);
-
     uint64_t addr;
     auto vdev = scomm->base.vdev;
     if (scomm->base.uccl_req_pool->alloc_buff(&addr)) {
@@ -463,10 +461,9 @@ ncclResult_t pluginIrecvScattered(void *recvComm, int *tags, void *mhandles,
     *request = req;
 
 #ifdef POLLCTX_DEBUG
-    LOG(INFO) << "pluginIrecvScattered on vdev: " << vdev << " size "
-              << sizes[0] << " engine_id " << req->poll_ctx->engine_idx
+    LOG(INFO) << "pluginIrecvScattered on vdev: " << vdev << " engine_id " << req->poll_ctx->engine_idx
               << " flow_id " << conn_id.flow_id << " n " << 1 << " req_id "
-              << req->poll_ctx->req_id << " data ptr " << std::hex << data;
+              << req->poll_ctx->req_id;
 #endif
 
     return ncclSuccess;

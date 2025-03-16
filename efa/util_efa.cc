@@ -430,7 +430,6 @@ uint32_t EFASocket::post_send_wrs(std::vector<FrameDesc *> &frames,
     for (auto *frame : frames) {
         auto dest_ah = frame->get_dest_ah();
         auto dest_qpn = frame->get_dest_qpn();
-        DCHECK(frame->get_pkt_data_len() != 0);
         DCHECK(frame->get_src_qp_idx() == UINT16_MAX);
         frame->set_src_qp_idx(src_qp_idx);
         VLOG(3) << "post_send_wrs i " << i << " src_qp_idx " << src_qp_idx;

@@ -116,7 +116,7 @@ struct UcclRequest {
     ReqType type;
     int n;
     int send_len = 0;
-    int recv_len[kMaxMultiRecv] = {0};
+    int recv_len[kMaxMultiRecv] = {};
     PollCtx *poll_ctx = nullptr;
     void *req_pool = nullptr;
     /* Do not change the order */

@@ -623,7 +623,6 @@ void UcclFlow::rx_messages() {
 }
 
 void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
-    CHECK(tx_work.len != 0);
 
     // deser tx_work into a FrameDesc chain, then pass to deser_th.
     FrameDesc *deser_msgs_head = nullptr;
@@ -637,7 +636,7 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
         eqds_cc_.inc_backlog(tx_work.len);
     }
 
-    while (remaining_bytes > 0) {
+    while (remaining_bytes > 0 || tx_work.len == 0) {
         auto payload_len = std::min(remaining_bytes, (int)kUcclPktDataMaxLen);
         auto frame_desc = socket_->pop_frame_desc();
         auto pkt_hdr = socket_->pop_pkt_hdr();
@@ -662,6 +661,8 @@ void UcclFlow::tx_prepare_messages(Channel::Msg &tx_work) {
             deser_msgs_tail->set_next(msgbuf);
             deser_msgs_tail = msgbuf;
         }
+
+        if (tx_work.len == 0) break;
     }
     deser_msgs_head->mark_first();
     deser_msgs_tail->mark_last();
