@@ -9,7 +9,7 @@ UCCL_HOME="/opt/zhongjie/uccl_rdma"
 LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=alltoall_perf
+PROG_NAME=all_reduce_perf
 NUM_PROCS=${2:-4}
 UCCL_QUITE=${3:-1}
 NIC=${4:-ens32}
@@ -70,17 +70,18 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_NET_DISABLE=0 \
         -x GLOG_logtostderr=0 \
         -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
+        -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
         -x NCCL_MAX_NCHANNELS=${CHANNELS} \
         -x NCCL_MIN_NCHANNELS=${CHANNELS}  \
         -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
         -x NCCL_NET_GDR_LEVEL=SYS \
         -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
-        -x NCCL_BUFFSIZE=8388608 \
+        -x NCCL_BUFFSIZE=1048576 \
         -x CUDA_MODULE_LOADING=EAGER \
         -x NCCL_TOPO_FILE=${UCCL_HOME}/efa/p4d-24xl-topo.xml \
         -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 1K -e 1G -f 2 -c 0 -w 50 -n 100 -t ${GPU} -g 1 \
+        -b 512K -e 1M -f 2 -c 1 -w 50 -n 100 -t ${GPU} -g 1 \
         2>&1 | while read -r line; do
         # Extract rank from the format [1,2]
         if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
@@ -99,6 +100,8 @@ elif [ "$TEST" = "ud" ]; then
         # -x NCCL_NSOCKS_PERTHREAD=2 \
         # -x NCCL_MAX_NCHANNELS=8 \
         # -x NCCL_MIN_NCHANNELS=8 \
+        # -x NCCL_BUFFSIZE=8388608 \
+        # -x NCCL_BUFFSIZE=1048576 \
 
         # -x NCCL_DEBUG=INFO \
         # -x NCCL_DEBUG_SUBSYS=INIT \

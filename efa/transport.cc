@@ -262,6 +262,7 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
         auto payload_len = ucclh->frame_len.value() - kUcclPktHdrLen;
 
         auto *req = rx_copy_work.req;
+        DCHECK(iov_n_ < kMaxIovs);
         req->iov_addrs[iov_n_] = (void *)ready_msg->get_pkt_data_addr();
         VLOG(3) << "gpu_idx " << socket_->gpu_idx() << " iov_addrs[" << iov_n_
                 << "]: " << std::hex << req->iov_addrs[iov_n_];
@@ -285,6 +286,14 @@ void RXTracking::try_copy_msgbuf_to_appbuf(Channel::Msg *rx_work) {
                 std::lock_guard<std::mutex> lock(poll_ctx->mu);
                 poll_ctx->done = true;
                 poll_ctx->cv.notify_one();
+                
+                #ifdef POLLCTX_DEBUG
+                LOG(INFO) << "Received a complete message engine_id: "
+                          << poll_ctx->engine_idx << " rx flow_id "
+                          << poll_ctx->flow_id << " req_id " << poll_ctx->req_id
+                          << " size " << deser_msg_len_ << " req ptr " << req << " req type " << req->type; 
+                #endif
+
             }
 
             app_buf_queue_.pop_front();
@@ -1650,9 +1659,8 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
     // let the endpoint communicate with.
     for (int i = 0; i < kNumEngines; i++) channel_vec_[i] = new Channel();
 
-    LOG(INFO) << "Creating Pacers";
-    
     // Receiver-driven CC pacer.
+    LOG(INFO) << "Creating Pacers";
     for (int i = 0; i < NUM_DEVICES; i++) eqds_[i] = new eqds::EQDS(i);
 
     LOG(INFO) << "Creating Engines";

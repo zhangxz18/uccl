@@ -497,6 +497,10 @@ public:
 
     EQDS(int pdev_idx) : pdev_idx_(pdev_idx), channel_() {
 
+        if constexpr (kReceiverCCType != ReceiverCCType::kEQDS) {
+            return;
+        }
+
         pacing_interval_tsc_ = us_to_cycles(kPacingIntervalUs, freq_ghz);
 
         auto *factory_dev = EFAFactory::GetEFADevice(pdev_idx_);
@@ -525,6 +529,10 @@ public:
     inline void shutdown(void) {
 
         shutdown_ = true;
+
+        if constexpr (kReceiverCCType != ReceiverCCType::kEQDS) {
+            return;
+        }
         
         pacer_th_.join();
 
