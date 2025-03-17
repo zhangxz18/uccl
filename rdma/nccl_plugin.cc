@@ -82,6 +82,7 @@ struct ucclSendComm {
 };
 
 ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
+    std::cout << "Hello UCCL!" << std::endl;
     ep = std::make_shared<RDMAEndpoint>(DEVNAME_SUFFIX_LIST, NUM_DEVICES,
                                         NUM_ENGINES, ENGINE_CPU_START);
     return ncclSuccess;
