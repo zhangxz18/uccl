@@ -218,13 +218,19 @@ class Primitives<
     }
   }
 
-  // Yang: for alltoall recv: <1, 0, 1, 0, -1, Output>
+  // Yang: "static constexpr int Input=0, Output=1"
+  // Yang: for directRecv (alltoall recv): <1, 0, 1, 0, -1, Output>
+  // Yang: for directSend: <0, 1, 0, 1, Input, -1>
+  // Yang: for directRecvReduceDirectSend: <1, 1, 1, 1, Input, -1>
+  // Yang: for directRecvReduceCopyDirectSend: <1, 1, 1, 1, Input, Output>
+  // Yang: for directRecvCopyDirectSend: <1, 1, 1, 1, -1, Output>
+  // Yang: AllReduce: Recv=1 means you have received data from last peer
   template <int DirectRecv1, int DirectSend1, int Recv, int Send, int SrcBuf, int DstBuf>
   __device__ __forceinline__ void genericOp(
       intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp
     ) {
-    // if (tid == 0)
-    //   printf("prims_simple genericOp srcIx=%ld dstIx=%ld nelem=%d\n", srcIx, dstIx, nelem);
+    if (tid == 0)
+      printf("genericOp Recv %d Send %d SrcBuf %d DstBuf %d\n", Recv, Send, SrcBuf, DstBuf);
     constexpr int DirectRecv = 1 && Direct && DirectRecv1;
     constexpr int DirectSend = 1 && Direct && DirectSend1;
     constexpr int Src = SrcBuf != -1;
@@ -306,7 +312,8 @@ class Primitives<
              Dst, ncclShmem.groups[group].dsts,
              workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
-          if (DirectRecv && !DirectSend) {
+          // if (DirectRecv && !DirectSend) {
+          if (Recv) {
             // Yang: need to keep the same as comm.h
             #define kIovStart 328
             #define kMaxIovs 128
@@ -322,15 +329,20 @@ class Primitives<
 
             uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
             int iov_idx = prevStep % NCCL_STEPS;
+            // printf("genericOp: tid %d prevStep %lu iov_idx %d\n", tid, prevStep, iov_idx);
             struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
             
             void** iov_addrs = cur_iov->iov_addrs;
             int* iov_lens = cur_iov->iov_lens;
             int* dst_offsets = cur_iov->dst_offsets;
             int iov_n = cur_iov->iov_n;
+            // if (tid == 0)
+            //   printf("genericOp: tid %d Recv %d Send %d SrcBuf %d DstBuf %d iov_n %d\n", Recv, Send, SrcBuf, DstBuf, tid, iov_n);
+            // int iov_datasize = dst_offsets[iov_n - 1] + iov_lens[iov_n - 1];
+            // printf("genericOp: tid %d iov_datasize %d\n", tid, iov_datasize);
 
             // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-            uintptr_t dst_base = cvta_to_global(ncclShmem.groups[group].srcs[0]);
+            uintptr_t dst_base = cvta_to_global(Src ? ncclShmem.groups[group].srcs[1] : ncclShmem.groups[group].srcs[0]);
             for (int i = 0; i < iov_n; i++) {
               char *src = (char*)iov_addrs[i];
               char *dst = (char*)(dst_base + dst_offsets[i]);
@@ -359,7 +371,8 @@ class Primitives<
              Recv*fan.nrecv()+Src, ncclShmem.groups[group].srcs,
              Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
              workSize);
-
+          
+          // printf("genericOp: tid %d branch 4 nSrcs %d nDsts %d workSize %d \n", tid, Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < sliceSize);
@@ -548,7 +561,9 @@ private:
             void* dst0 = (T*)ncclShmem.groups[group].dsts[0] + pOffset;
             ssize_t realPeerSize = min(realSize, totalElem-pOffset);
             if (DirectRecv && ncclShmem.groups[group].srcs[i] == dst0) realPeerSize = 0;
-            if (realPeerSize > 0) reduceCopy<Unroll, RedOp, T, 0,1,1, 0,1,1, /*PreOpSrcs=*/0>(tid, nworkers, ncclShmem.redOpArgs[0], ncclShmem.redOpArgs, postOp, 1, ncclShmem.groups[group].srcs+i, 1, &dst0, realPeerSize);
+            if (realPeerSize > 0) { 
+              reduceCopy<Unroll, RedOp, T, 0,1,1, 0,1,1, /*PreOpSrcs=*/0>(tid, nworkers, ncclShmem.redOpArgs[0], ncclShmem.redOpArgs, postOp, 1, ncclShmem.groups[group].srcs+i, 1, &dst0, realPeerSize);
+            }
           }
         }
       }
