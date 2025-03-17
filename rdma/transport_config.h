@@ -85,7 +85,7 @@ static_assert(kSenderCCA != SENDER_CCA_NONE ||
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 
 // Use RC rather than UC.
-static constexpr bool kUSERC = false;
+static constexpr bool kUSERC = true;
 constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
                                 (kUSERC ? 0 : 1) /* Ctrl QP */;
 // Per-path cwnd or global cwnd.

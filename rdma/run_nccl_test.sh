@@ -9,7 +9,8 @@ NUM_GPUS_PER_NODE=${3:-8}
 ROOT="/home/aleria/uccl_rdma"
 
 # IP of Nodes.
-NODES="87.120.213.6,87.120.213.5"
+# NODES="87.120.213.6,87.120.213.5"
+NODES="87.120.213.6"
 # Names of HCAs.
 HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
 # Name of Control NIC.
@@ -38,10 +39,11 @@ SPLIT_DATA_ON_QPS=1
 
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=all_reduce_perf
+PROG_NAME=alltoall_perf
 
 if [ "$UCCL" -ne 1 ]; then
     PLUGIN_PATH=""
+    rm -rf ${PLUGIN_PATH}
 fi
 
 echo "Running test: ${PROG_NAME}, $([ "${UCCL}" -eq 1 ] && echo "UCCL" || echo "NCCL"), ${NUM_PROCS} nodes, ${NUM_GPUS_PER_NODE} GPUs per node, $((NUM_PROCS * NUM_GPUS_PER_NODE)) GPUs in total."
