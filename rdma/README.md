@@ -21,9 +21,14 @@ sudo apt-get install libibverbs-dev -y
 
 6. If each NIC has already been configured with its own IP address, nothing needs to be done. Otherwise, set the SINGLE_IP to the used IP address (IPv4 only for now).
 
-### For run.sh:
-1. set NCCL_PATH and PLUGIN_PATH
-2. modify -np and set your machine's IP address.
+### For run_nccl_test.sh:
+1. Modify ROOT to the root directory of the workspace.
+2. Modify NODES to the actual IPs of all nodes.
+3. Modify CTRL_NIC to the actual name of control NIC.
+
+```
+Usage: ./run_nccl_test.sh [UCCL, default:1] [# of Nodes, default:2] [# of GPUs per node, default:8] 
+```
 
 ## Build
 ```

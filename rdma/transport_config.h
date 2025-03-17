@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 
-#define CLOUDLAB_DEV
+// #define CLOUDLAB_DEV
 
 // #define STATS
 
@@ -18,13 +18,13 @@ static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 #ifdef CLOUDLAB_DEV
 static constexpr bool USE_ROCE = true;
 // If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("");
+static std::string SINGLE_IP("87.120.213.6");
 static constexpr uint8_t NUM_DEVICES = 2;
 static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2, 3};
 #else
 static constexpr bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("");
+static std::string SINGLE_IP("87.120.213.6");
 static constexpr uint8_t NUM_DEVICES = 8;
 static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0, 1, 2, 3,
                                                              4, 5, 6, 7};
@@ -176,12 +176,12 @@ static constexpr size_t kSlowTimerIntervalUs = 1000; // 1ms
 // Disable hardware timestamp.
 static constexpr bool kTestNoHWTimestamp = false;
 // Bypass the timing wheel.
-static constexpr bool kTestNoTimingWheel = false;
+static constexpr bool kTestNoTimingWheel = true;
 // Use constant(maximum) rate for transmission.
 static constexpr bool kTestConstantRate = false;
 // Test lossy network.
 static constexpr bool kTestLoss = false;
 static constexpr double kTestLossRate = 0.0;
 // Disable RTO.
-static constexpr bool kTestNoRTO = false;
+static constexpr bool kTestNoRTO = USE_ROCE ? false : true; // Infiniband is lossless, disable RTO even for UC.
 /// Debugging and testing.
