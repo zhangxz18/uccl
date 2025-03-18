@@ -1,9 +1,6 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
-
-#define ITERS 4
-#define DSIZE 65536
-#define nTPB 256
 
 #define cudaCheckErrors(msg)                                        \
     do {                                                            \
@@ -16,154 +13,152 @@
         }                                                           \
     } while (0)
 
-__device__ uint __smid(void) {
-    uint ret;
-    asm("mov.u32 %0, %smid;" : "=r"(ret));
-    return ret;
+__device__ __forceinline__ uint64_t ld_volatile(uint64_t* ptr) {
+    uint64_t ans;
+    asm volatile("ld.volatile.global.u64 %0, [%1];"
+                 : "=l"(ans)
+                 : "l"(ptr)
+                 : "memory");
+    return ans;
 }
 
-__device__ volatile int blkcnt1 = 0;
-__device__ volatile int blkcnt2 = 0;
-__device__ volatile int itercnt = 0;
-
-__device__ void my_compute_function(int *buf, int idx, int data) {
-    buf[idx] = data;  // put your work code here
+__device__ __forceinline__ void fence_acq_rel_sys() {
+#if __CUDA_ARCH__ >= 700
+    asm volatile("fence.acq_rel.sys;" ::: "memory");
+#else
+    asm volatile("membar.sys;" ::: "memory");
+#endif
 }
 
-__global__ void testkernel(int *buffer1, int *buffer2,
-                           volatile int *buffer1_ready,
-                           volatile int *buffer2_ready, const int buffersize,
-                           const int iterations) {
-    // assumption of persistent block-limited kernel launch
-    int idx = threadIdx.x + blockDim.x * blockIdx.x;
-    int iter_count = 0;
-    // persistent until iterations complete
-    // while (iter_count < iterations) {
-    while (true) {  // persistent
-        int *buf =
-            (iter_count & 1) ? buffer2 : buffer1;  // ping pong between buffers
-        volatile int *bufrdy =
-            (iter_count & 1) ? (buffer2_ready) : (buffer1_ready);
-        volatile int *blkcnt = (iter_count & 1) ? (&blkcnt2) : (&blkcnt1);
-        int my_idx = idx;
-        while (iter_count - itercnt > 1);  // don't overrun buffers on device
-        while (*bufrdy == 2);              // wait for buffer to be consumed
-        printf("SM %d, block %d, thread %d\n", __smid(), blockIdx.x,
-               threadIdx.x);
-        while (my_idx < buffersize) {  // perform the "work"
-            my_compute_function(buf, my_idx, iter_count);
-            my_idx += gridDim.x * blockDim.x;  // grid-striding loop
+__device__ __forceinline__ void st_relaxed_sys(uint64_t* ptr, uint64_t val) {
+#if __CUDA_ARCH__ >= 700
+    asm volatile("st.relaxed.sys.global.u64 [%0], %1;" ::"l"(ptr), "l"(val)
+                 : "memory");
+#else
+    asm volatile("st.volatile.global.u64 [%0], %1;" ::"l"(ptr), "l"(val)
+                 : "memory");
+#endif
+}
+
+// Yang: 128 max scattered IOVs
+#define kMaxIovs 128
+struct alignas(8) Iov {
+    void* iov_addrs[kMaxIovs];
+    int iov_lens[kMaxIovs];
+    int dst_offsets[kMaxIovs];
+    int iov_n;
+    int gpu_idx;  // for debugging
+    int step;     // for debugging
+};
+
+#define kMaxFifoDepth 1024
+struct IovFifo {
+    uint64_t head;  // GPU writes finished index
+    uint64_t tail;  // CPU posts working index
+    struct Iov iovs[kMaxFifoDepth];
+};
+
+__global__ void persistKernel(struct IovFifo* fifo, int steps) {
+    __shared__ uint64_t cached_tail;
+    __shared__ struct Iov cached_iov;
+
+    int tid = threadIdx.x;
+    int bid = blockIdx.x;
+    int global_tid = bid * blockDim.x + tid;
+
+    // Initing per-threadblock variables
+    if (tid == 0) cached_tail = (uint64_t)-1;
+    __syncthreads();
+
+    int i = 0;
+    while (i++ < steps) {
+        // Each thread block loads new work from CPU.
+        if (tid == 0) {
+            uint64_t cur_tail;
+            do {
+                cur_tail = ld_volatile(&fifo->tail);
+            } while (cur_tail != cached_tail + 1);
+
+            cached_tail = cur_tail;
+            cached_iov = fifo->iovs[cached_tail % kMaxFifoDepth];
+            // TODO: using volatile load?
         }
-        __syncthreads();  // wait for my block to finish
-        __threadfence();  // make sure global buffer writes are "visible"
-        if (!threadIdx.x) atomicAdd((int *)blkcnt, 1);  // mark my block done
-        if (!idx) {                       // am I the master block/thread?
-            while (*blkcnt < gridDim.x);  // wait for all blocks to finish
-            *blkcnt = 0;
-            *bufrdy = 2;             // indicate that buffer is ready
-            __threadfence_system();  // push it out to mapped memory
-            itercnt++;
+        __syncthreads();
+
+        // do something with cached_iov
+        if (global_tid == 0) {
+            if (cached_tail % 1000 == 0) {
+                printf(
+                    "PersistKernel: block %d, thread %d, cached_tail %lu, "
+                    "iov_n %d\n",
+                    bid, tid, cached_tail, cached_iov.iov_n);
+            }
         }
-        iter_count++;
+
+        __syncthreads();
+
+        // Post the finished work to the GPU
+        if (global_tid == 0) {
+            fence_acq_rel_sys();
+            st_relaxed_sys(&fifo->head, cached_tail);
+        }
     }
 }
 
 __global__ void emptykernel() {
-    // do nothing
-    printf("Emptykernel: SM %d, block %d, thread %d\n", __smid(), blockIdx.x,
-           threadIdx.x);
+    if (threadIdx.x == 0)
+        printf("Emptykernel: block %d, thread %d\n", blockIdx.x, threadIdx.x);
 }
 
-int validate(const int *data, const int dsize, const int val) {
-    for (int i = 0; i < dsize; i++)
-        if (data[i] != val) {
-            printf("mismatch at %d, was: %d, should be: %d\n", i, data[i], val);
-            return 0;
-        }
-    return 1;
-}
+static constexpr int kTestIters = 10000;
 
-// code from:
-// https://stackoverflow.com/questions/33150040/doubling-buffering-in-cuda-so-the-cpu-can-operate-on-data-produced-by-a-persiste
-
+// make cuda_persist_kernel
+// CUDA_MODULE_LOADING=EAGER ./cuda_persist_kernel
 int main() {
-    int device;
-    cudaGetDevice(&device);
+    cudaStream_t stream1, stream2;
+    cudaStreamCreate(&stream1);
+    cudaCheckErrors("cudaStreamCreate failed");
+    cudaStreamCreate(&stream2);
+    cudaCheckErrors("cudaStreamCreate failed");
 
-    int concurrentKernels;
-    cudaDeviceGetAttribute(&concurrentKernels, cudaDevAttrConcurrentKernels,
-                           device);
+    struct IovFifo* __fifo;
+    cudaHostAlloc(&__fifo, sizeof(struct IovFifo), cudaHostAllocMapped);
+    cudaCheckErrors("cudaMallocManaged failed");
 
-    if (concurrentKernels) {
-        printf("✅ GPU supports concurrent kernel execution!\n");
-    } else {
-        printf("❌ GPU does NOT support concurrent kernel execution.\n");
+    volatile struct IovFifo* fifo = (volatile struct IovFifo*)__fifo;
+
+    // Initialize the fifo
+    fifo->head = (uint64_t)-1;
+    fifo->tail = (uint64_t)-1;
+    for (int i = 0; i < kMaxFifoDepth; i++) {
+        fifo->iovs[i].iov_n = -1;
     }
 
-    int *h_buf1, *d_buf1, *h_buf2, *d_buf2;
-    volatile int *m_bufrdy1, *m_bufrdy2;
-    // buffer and "mailbox" setup
-    cudaHostAlloc(&h_buf1, DSIZE * sizeof(int), cudaHostAllocDefault);
-    cudaHostAlloc(&h_buf2, DSIZE * sizeof(int), cudaHostAllocDefault);
-    cudaHostAlloc(&m_bufrdy1, sizeof(int), cudaHostAllocMapped);
-    cudaHostAlloc(&m_bufrdy2, sizeof(int), cudaHostAllocMapped);
-    cudaCheckErrors("cudaHostAlloc fail");
-    cudaMalloc(&d_buf1, DSIZE * sizeof(int));
-    cudaMalloc(&d_buf2, DSIZE * sizeof(int));
-    cudaCheckErrors("cudaMalloc fail");
-    cudaStream_t streamk, streamc;
-    cudaStreamCreate(&streamk);
-    cudaStreamCreate(&streamc);
-    cudaCheckErrors("cudaStreamCreate fail");
-    *m_bufrdy1 = 0;
-    *m_bufrdy2 = 0;
-    cudaMemset(d_buf1, 0xFF, DSIZE * sizeof(int));
-    cudaMemset(d_buf2, 0xFF, DSIZE * sizeof(int));
-    cudaCheckErrors("cudaMemset fail");
-    // inefficient crutch for choosing number of blocks
-    // int nblock = 0;
-    // cudaDeviceGetAttribute(&nblock, cudaDevAttrMultiProcessorCount, 0);
-    // cudaCheckErrors("get multiprocessor count fail");
-    int nblock = 1;
-    testkernel<<<nblock, nTPB, 0, streamk>>>(d_buf1, d_buf2, m_bufrdy1,
-                                             m_bufrdy2, DSIZE, ITERS);
-    cudaCheckErrors("kernel launch fail");
+    persistKernel<<<4, 512, 0, stream1>>>(__fifo, kTestIters);
+    cudaCheckErrors("persistKernel failed");
 
-    cudaStream_t streame;
-    cudaStreamCreate(&streame);
-    cudaCheckErrors("cudaStreamCreate fail");
-    int cnt = 0;
-    while (cnt++ < 1000) emptykernel<<<nblock, nTPB, 0, streame>>>();
-    cudaCheckErrors("kernel launch fail");
-    cudaStreamSynchronize(streame);
-    cudaCheckErrors("cudaStreamSync fail");
+    // Test concurrent kernel launch.
+    emptykernel<<<4, 512, 0, stream2>>>();
+    cudaCheckErrors("emptykernel failed");
+    cudaStreamSynchronize(stream2);
+    cudaCheckErrors("cudaStreamSynchronize failed");
 
-    volatile int *bufrdy;
-    int *hbuf, *dbuf;
-    for (int i = 0; i < ITERS; i++) {
-        if (i & 1) {  // ping pong on the host side
-            bufrdy = m_bufrdy2;
-            hbuf = h_buf2;
-            dbuf = d_buf2;
-        } else {
-            bufrdy = m_bufrdy1;
-            hbuf = h_buf1;
-            dbuf = d_buf1;
-        }
-        // int qq = 0; // add for failsafe - otherwise a machine failure can
-        // hang
-        while ((*bufrdy) != 2);  // use this for a failsafe:  if (++qq >
-                                 // 1000000) {printf("bufrdy = %d\n", *bufrdy);
-                                 // return 0;} // wait for buffer to be full;
-        cudaMemcpyAsync(hbuf, dbuf, DSIZE * sizeof(int), cudaMemcpyDeviceToHost,
-                        streamc);
-        cudaStreamSynchronize(streamc);
-        cudaCheckErrors("cudaMemcpyAsync fail");
-        *bufrdy = 0;  // release buffer back to device
-        if (!validate(hbuf, DSIZE, i)) {
-            printf("validation failure at iter %d\n", i);
-            exit(1);
+    for (int i = 0; i < kTestIters; i++) {
+        fifo->iovs[i % kMaxFifoDepth].iov_n = i;
+        fifo->tail = i;
+        __sync_synchronize();
+
+        // CPU side work.
+
+        while (fifo->head != i) {
         }
     }
-    printf("Completed %d iterations successfully\n", ITERS);
+
+    cudaStreamSynchronize(stream1);
+    cudaCheckErrors("cudaStreamSynchronize failed");
+
+    cudaFreeHost(__fifo);
+    cudaCheckErrors("cudaFreeHost failed");
+
+    return 0;
 }
