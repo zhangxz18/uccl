@@ -102,7 +102,7 @@ class PollCtxPool : public BuffPool {
     ~PollCtxPool() = default;
 };
 
-const int kMaxIovs = 128;
+const int kMaxIovs = 256;
 
 enum ReqType {
     ReqTx,

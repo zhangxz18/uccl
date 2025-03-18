@@ -309,7 +309,7 @@ class Primitives<
           if (DirectRecv && !DirectSend) {
             // Yang: need to keep the same as comm.h
             #define kIovStart 328
-            #define kMaxIovs 128
+            #define kMaxIovs 256
             struct alignas(8) iov {
               void* iov_addrs[kMaxIovs];
               int iov_lens[kMaxIovs];

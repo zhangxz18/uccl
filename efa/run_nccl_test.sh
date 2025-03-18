@@ -5,11 +5,13 @@ source ../shared.sh
 # Usage: ./run_nccl_test.sh [srd|ud] [num of processes] [uccl quite] [ens32] [gpu]
 
 TEST=${1:-srd}
+NCCL_HOME="/opt/zhongjie/"
 UCCL_HOME="/opt/zhongjie/uccl_rdma"
-LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
+LIBNCCL_PATH="${NCCL_HOME}/nccl/build/lib/libnccl.so"
+UCCL_LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=all_reduce_perf
+PROG_NAME=alltoall_perf
 NUM_PROCS=${2:-4}
 UCCL_QUITE=${3:-1}
 NIC=${4:-ens32}
@@ -19,6 +21,8 @@ CHANNELS=8 # for GPU scatter-gather copy
 CHANNELS_NET_PEER=4 # 2/4/6/8 is okay, but 1 doesn't work
 CHUNK_SIZE=131072 # best for UCCL
 # CHUNK_SIZE=524288 # best for SRD
+BUFFSIZE=8388608
+NV_LINK_DISABLE=1
 
 echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}, ${CHANNELS} channels."
 
@@ -32,14 +36,14 @@ if [ "$TEST" = "srd" ]; then
         --mca orte_base_help_aggregate 0 \
         --mca btl_tcp_if_include ${NIC} \
         -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
-        -x NCCL_P2P_DISABLE=1 \
-        -x NCCL_SHM_DISABLE=1 \
+        -x NCCL_P2P_DISABLE=${NV_LINK_DISABLE} \
+        -x NCCL_SHM_DISABLE=${NV_LINK_DISABLE} \
         -x NCCL_NET_DISABLE=0 \
         -x NCCL_MAX_NCHANNELS=${CHANNELS} \
         -x NCCL_MIN_NCHANNELS=${CHANNELS} \
         -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
         -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
-        -x NCCL_BUFFSIZE=8388608 \
+        -x NCCL_BUFFSIZE=${BUFFSIZE} \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
         -b 1K -e 1G -f 2 -c 1 -w 100 -n 100 -t ${GPU} -g 1
 
@@ -64,9 +68,9 @@ elif [ "$TEST" = "ud" ]; then
         --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
         --mca orte_base_help_aggregate 0 \
         --mca btl_tcp_if_include ${NIC} \
-        -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
-        -x NCCL_P2P_DISABLE=1 \
-        -x NCCL_SHM_DISABLE=1 \
+        -x LD_PRELOAD="${UCCL_LIBNCCL_PATH} ${PLUGIN_PATH}" \
+        -x NCCL_P2P_DISABLE=${NV_LINK_DISABLE} \
+        -x NCCL_SHM_DISABLE=${NV_LINK_DISABLE} \
         -x NCCL_NET_DISABLE=0 \
         -x GLOG_logtostderr=0 \
         -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
@@ -76,12 +80,12 @@ elif [ "$TEST" = "ud" ]; then
         -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
         -x NCCL_NET_GDR_LEVEL=SYS \
         -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
-        -x NCCL_BUFFSIZE=1048576 \
+        -x NCCL_BUFFSIZE=${BUFFSIZE} \
         -x CUDA_MODULE_LOADING=EAGER \
         -x NCCL_TOPO_FILE=${UCCL_HOME}/efa/p4d-24xl-topo.xml \
         -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
         ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 512K -e 1M -f 2 -c 1 -w 50 -n 100 -t ${GPU} -g 1 \
+        -b 1K -e 1G -f 2 -c 1 -w 50 -n 100 -t ${GPU} -g 1 \
         2>&1 | while read -r line; do
         # Extract rank from the format [1,2]
         if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
