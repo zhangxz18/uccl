@@ -11,17 +11,21 @@ LIBNCCL_PATH="${NCCL_HOME}/nccl/build/lib/libnccl.so"
 UCCL_LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=alltoall_perf
+PROG_NAME=all_reduce_perf
 NUM_PROCS=${2:-4}
 UCCL_QUITE=${3:-1}
 NIC=${4:-ens32}
 NODES=$(get_nodes "../nodes.txt")
 GPU=${5:-8}
-CHANNELS=8 # for GPU scatter-gather copy
+CHANNELS=8 # 8 for GPU scatter-gather copy
+# Notes:
+# 2 is best for 1*8/2*8 alltoall
+# 6 is good for EQDS 2*8 alltoall
 CHANNELS_NET_PEER=4 # 2/4/6/8 is okay, but 1 doesn't work
 CHUNK_SIZE=131072 # best for UCCL
 # CHUNK_SIZE=524288 # best for SRD
-BUFFSIZE=8388608
+BUFFSIZE=1048576 # for UCCL to run allreduce
+# BUFFSIZE=8388608
 NV_LINK_DISABLE=1
 
 echo "Running test: ${TEST}, ${PROG_NAME}, ${NUM_PROCS} processes, NIC ${NIC}, uccl_quite ${UCCL_QUITE}, ${NODES}, ${CHANNELS} channels."
@@ -64,38 +68,38 @@ elif [ "$TEST" = "ud" ]; then
     PLUGIN_PATH="/opt/zhongjie/uccl_rdma/efa/libnccl-net.so"
 
     mpirun --bind-to none -np ${NUM_PROCS} -N 1 --host ${NODES} \
-        --tag-output --merge-stderr-to-stdout \
-        --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
-        --mca orte_base_help_aggregate 0 \
-        --mca btl_tcp_if_include ${NIC} \
-        -x LD_PRELOAD="${UCCL_LIBNCCL_PATH} ${PLUGIN_PATH}" \
-        -x NCCL_P2P_DISABLE=${NV_LINK_DISABLE} \
-        -x NCCL_SHM_DISABLE=${NV_LINK_DISABLE} \
-        -x NCCL_NET_DISABLE=0 \
-        -x GLOG_logtostderr=0 \
-        -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
-        -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
-        -x NCCL_MAX_NCHANNELS=${CHANNELS} \
-        -x NCCL_MIN_NCHANNELS=${CHANNELS}  \
-        -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
-        -x NCCL_NET_GDR_LEVEL=SYS \
-        -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
-        -x NCCL_BUFFSIZE=${BUFFSIZE} \
-        -x CUDA_MODULE_LOADING=EAGER \
-        -x NCCL_TOPO_FILE=${UCCL_HOME}/efa/p4d-24xl-topo.xml \
-        -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
-        ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-        -b 1K -e 1G -f 2 -c 1 -w 50 -n 100 -t ${GPU} -g 1 \
-        2>&1 | while read -r line; do
-        # Extract rank from the format [1,2]
-        if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
-            RANK=${BASH_REMATCH[1]}                   # Extract second number as rank
-            CONTENT=${BASH_REMATCH[2]}                # Extract the remaining content
-            echo "Rank $RANK: $CONTENT"               # Print to terminal
-            echo "$CONTENT" >>"output_rank_$RANK.log" # Append to rank-specific file
-        else
-            echo "$line" # Print untagged output to the terminal
-        fi
+    --tag-output --merge-stderr-to-stdout \
+    --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
+    --mca orte_base_help_aggregate 0 \
+    --mca btl_tcp_if_include ${NIC} \
+    -x LD_PRELOAD="${UCCL_LIBNCCL_PATH} ${PLUGIN_PATH}" \
+    -x NCCL_PROTO=Simple \
+    -x NCCL_P2P_DISABLE=${NV_LINK_DISABLE} \
+    -x NCCL_SHM_DISABLE=${NV_LINK_DISABLE} \
+    -x NCCL_NET_DISABLE=0 \
+    -x GLOG_logtostderr=0 \
+    -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
+    -x NCCL_MAX_NCHANNELS=${CHANNELS} \
+    -x NCCL_MIN_NCHANNELS=${CHANNELS}  \
+    -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
+    -x NCCL_NET_GDR_LEVEL=SYS \
+    -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
+    -x NCCL_BUFFSIZE=${BUFFSIZE} \
+    -x CUDA_MODULE_LOADING=EAGER \
+    -x NCCL_TOPO_FILE=${UCCL_HOME}/efa/p4d-24xl-topo.xml \
+    -x UCCL_ENGINE_QUIET=${UCCL_QUITE} \
+    ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
+    -b 1K -e 1G -f 2 -c 1 -w 50 -n 100 -t ${GPU} -g 1 \
+    2>&1 | while read -r line; do
+    # Extract rank from the format [1,2]
+    if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
+        RANK=${BASH_REMATCH[1]}                   # Extract second number as rank
+        CONTENT=${BASH_REMATCH[2]}                # Extract the remaining content
+        echo "Rank $RANK: $CONTENT"               # Print to terminal
+        echo "$CONTENT" >>"output_rank_$RANK.log" # Append to rank-specific file
+    else
+        echo "$line" # Print untagged output to the terminal
+    fi
 
         # gdb -ex run --args \
         # -x NCCL_ALGO=Ring \
