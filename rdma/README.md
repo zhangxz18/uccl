@@ -27,9 +27,8 @@ sudo apt-get install libibverbs-dev -y
 3. Modify CTRL_NIC to the actual name of control NIC.
 
 ```
-Usage: ./run_nccl_test.sh [UCCL, default:1] [# of Nodes, default:2] [# of GPUs per node, default:8] 
+Usage: ./run_nccl_test.sh [NCCL/UCCL: 0/1, default:1] [# of Nodes, default:2] [# of GPUs per node, default:8] [allreduce/alltoall: 0/1]
 ```
-
 ## Build
 ```
 make -j`nproc`

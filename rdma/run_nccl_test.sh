@@ -1,10 +1,11 @@
 # /usr/bin/bash
 
-# Usage ./run_nccl_test.sh [UCCL] [# of Nodes] [# of GPUs per node] 
+# Usage ./run_nccl_test.sh [UCCL] [# of Nodes] [# of GPUs per node] [allreduce/alltoall: 0/1]
 
 UCCL=${1:-1}
 NUM_PROCS=${2:-2}
 NUM_GPUS_PER_NODE=${3:-8}
+PROG_OPTION=${4:-0}
 
 ROOT="/home/aleria/uccl_rdma"
 
@@ -38,9 +39,19 @@ SPLIT_DATA_ON_QPS=1
 
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=all_reduce_perf
+
+if [ "$PROG_OPTION" -eq 0 ]; then
+    PROG_NAME=all_reduce_perf
+elif [ "$PROG_OPTION" -eq 1 ]; then
+    PROG_NAME=alltoall_perf
+else
+    echo "Unsupport benchmark type."
+    exit 1
+fi
 
 if [ "$UCCL" -ne 1 ]; then
+    # zhongjie: This sometimes doesn't work, it still uses uccl's .so.
+    # Delete .so file to ensure using NCCL.
     PLUGIN_PATH=""
     rm -rf ${PLUGIN_PATH}
 fi
