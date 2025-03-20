@@ -80,7 +80,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     ${ROOT}/nccl-tests/build/${PROG_NAME} \
     -f 2 \
     --minbytes 1K --maxbytes 1G \
-    --warmup_iters 10 --iters 20 \
+    --warmup_iters 20 --iters 50 \
     -n 1 -t ${NUM_GPUS_PER_NODE}
     
     # --map-by ppr:1:node:PE=32 \

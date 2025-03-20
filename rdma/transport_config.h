@@ -156,7 +156,7 @@ static constexpr std::size_t kSackBitmapSize = 64 << 1;
 // the network supports adaptive routing, duplicate acks may be caused by
 // adaptive routing. In this case, kFastRexmitDupAckThres should be set to a
 // value greater than 0.
-static constexpr std::size_t kFastRexmitDupAckThres = 4;
+static constexpr std::size_t kFastRexmitDupAckThres = USE_ROCE ? 32 : 65536;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static constexpr uint32_t kRTOAbortThreshold = 50;
