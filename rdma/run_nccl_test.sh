@@ -9,8 +9,7 @@ NUM_GPUS_PER_NODE=${3:-8}
 ROOT="/home/aleria/uccl_rdma"
 
 # IP of Nodes.
-# NODES="87.120.213.6,87.120.213.5"
-NODES="87.120.213.6"
+NODES="87.120.213.6,87.120.213.5"
 # Names of HCAs.
 HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
 # Name of Control NIC.
@@ -39,7 +38,7 @@ SPLIT_DATA_ON_QPS=1
 
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
-PROG_NAME=alltoall_perf
+PROG_NAME=all_reduce_perf
 
 if [ "$UCCL" -ne 1 ]; then
     PLUGIN_PATH=""
@@ -70,7 +69,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     ${ROOT}/nccl-tests/build/${PROG_NAME} \
     -f 2 \
     --minbytes 1K --maxbytes 1G \
-    --warmup_iters 50 --iters 100 \
+    --warmup_iters 10 --iters 20 \
     -n 1 -t ${NUM_GPUS_PER_NODE}
     
     # --map-by ppr:1:node:PE=32 \

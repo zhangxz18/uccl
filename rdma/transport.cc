@@ -920,6 +920,11 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int remote_dev,
 
     CHECK(peer_id < MAX_PEER);
 
+    {
+        std::lock_guard<std::mutex> lock(fd_vec_mu_);
+        fd_vec_.push_back(bootstrap_fd);
+    }
+
     // Step4: negotiate FlowID with server.
     ret = receive_message(bootstrap_fd, &flow_id, sizeof(FlowID));
     DCHECK(ret == sizeof(FlowID)) << "uccl_connect: receive_message()";

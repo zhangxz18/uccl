@@ -1079,11 +1079,18 @@ class TimelyRDMAContext : public RDMAContext {
 
     uint32_t EventOnChunkSize(SubUcclFlow *subflow,
                               uint32_t remaining_bytes) override {
-        if (*eob_ >= kMaxOutstandingBytesEngine ||
-            subflow->outstanding_bytes_ >= kMaxOutstandingBytesPerFlow) {
-            return 0;
+        // if (*eob_ >= kMaxOutstandingBytesEngine ||
+        //     subflow->outstanding_bytes_ >= kMaxOutstandingBytesPerFlow) {
+        //     return 0;
+        // }
+        // return std::min(remaining_bytes, kChunkSize);
+
+        auto ready_bytes = std::min(remaining_bytes, kChunkSize);
+        if (*eob_ + ready_bytes <= kMaxOutstandingBytesEngine ||
+            subflow->outstanding_bytes_ + ready_bytes <= kMaxOutstandingBytesPerFlow) {
+            return ready_bytes;
         }
-        return std::min(remaining_bytes, kChunkSize);
+        return 0;
     }
 
     bool EventOnQueueData(SubUcclFlow *subflow, struct wr_ex *wr_ex,

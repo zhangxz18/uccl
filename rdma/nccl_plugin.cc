@@ -153,6 +153,7 @@ static uint16_t listen_port = 10000;
 // block, but contrary to connect and accept, listenComm should never be NULL if
 // the call succeeds.
 ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
+    int ret = 0;
     struct ucclHandle *handle = (struct ucclHandle *)opaqueHandle;
     memset(handle, 0, sizeof(struct ucclHandle));
 
@@ -169,10 +170,11 @@ ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(listen_port++);
-    DCHECK(bind(listen_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >=
-           0);
-
-    DCHECK(listen(listen_fd, 1) == 0);
+    ret = bind(listen_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+    DCHECK(ret >= 0) << ret;
+    
+    ret = listen(listen_fd, 1);
+    DCHECK(ret == 0) << ret;
 
     // Fill out handle which will be passed to the other side.
     auto factory_dev = RDMAFactory::get_factory_dev(dev);
