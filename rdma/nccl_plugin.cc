@@ -194,7 +194,7 @@ ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
     
     *listenComm = lcomm;
 
-    VLOG(3) << "[Plugin] pluginListen on dev: " << dev;
+    UCCL_LOG_PLUGIN << "Listen on dev: " << dev;
 
     return ncclSuccess;
 }
@@ -304,7 +304,7 @@ ncclResult_t pluginRegMr(void *collComm, void *data, size_t size, int type,
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
     ret = ep->uccl_regmr((UcclFlow *)base->conn_id.context, data, size, type,
                          (struct Mhandle **)mhandle);
-    VLOG(5) << "[Plugin] pluginRegMr, " << size << ", " << base->conn_id.flow_id;
+    UCCL_LOG_PLUGIN << "RegMr, " << size << ", " << base->conn_id.flow_id;
 
     return ret == 0 ? ncclSuccess : ncclInternalError;
 }
@@ -316,7 +316,7 @@ ncclResult_t pluginRegMrDmaBuf(void *collComm, void *data, size_t size,
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
     ret = ep->uccl_regmr_dmabuf((UcclFlow *)base->conn_id.context, data, size,
                                 type, offset, fd, (struct Mhandle **)mhandle);
-    VLOG(5) << "[Plugin] pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id;
+    UCCL_LOG_PLUGIN << "RegMrDmaBuf, " << size << ", " << base->conn_id.flow_id;
 
     return ret == 0 ? ncclSuccess : ncclInternalError;
 }
@@ -352,8 +352,7 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
 
     *request = req;
 
-    VLOG(4) << "[Plugin] pluginIsend on dev: " << dev << ", size: " << size << ", flow#"
-            << conn_id.flow_id;
+    UCCL_LOG_PLUGIN << "Isend on dev:" << dev << ", " << size << "B, ureq ptr:" << req;
 
     return ncclSuccess;
 }
@@ -384,8 +383,7 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
     *request = req;
 
-    VLOG(4) << "[Plugin] pluginIrecv on dev: " << dev << ", size: " << sizes[0]
-            << ", flow#" << conn_id.flow_id;
+    UCCL_LOG_PLUGIN << "Irecv on dev: " << dev << ", " << sizes[0] << "B, ureq ptr:" << req;
 
     return ncclSuccess;
 }
@@ -416,8 +414,7 @@ ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
 
     *request = req;
 
-    VLOG(4) << "[Plugin] pluginIflush on dev: " << dev << ", size: " << sizes[0]
-            << ", flow#" << conn_id.flow_id;
+    UCCL_LOG_PLUGIN << "Iflush on dev: " << dev << ", " << sizes[0] << "B, ureq ptr:" << req;
 
     return ncclSuccess;
 }
@@ -430,11 +427,14 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         *done = 1;
         if (req->type == ReqTx || req->type == ReqTxRC) {
             size[0] = req->send.data_len;
+            UCCL_LOG_PLUGIN << "Test Tx done, " << size[0] << "B, ureq ptr:" << req;
         } else if (req->type == ReqRx || req->type == ReqRxRC) {
             for (int i = 0; i < req->n; i++)
                 size[i] = req->recv.data_len[i];
+            UCCL_LOG_PLUGIN << "Test Rx done, " << size[0] << "B, ureq ptr:" << req;
         } else if (req->type == ReqFlush) {
             // Do nothing.
+            UCCL_LOG_PLUGIN << "Test Flush done, " << size[0] << "B, ureq ptr:" << req;
         }
         {
             auto uccl_req_pool =

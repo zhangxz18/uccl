@@ -133,7 +133,7 @@ void RDMAFactory::init_dev(int devname_suffix) {
             !((errno == EOPNOTSUPP) || (errno == EPROTONOSUPPORT));
         ibv_dealloc_pd(pd);
 
-        VLOG(5) << "DMA-BUF support: " << dev.dma_buf_support;
+        UCCL_LOG_RE << "DMA-BUF support: " << dev.dma_buf_support;
     }
 
     rdma_ctl->devices_.push_back(dev);
@@ -515,7 +515,7 @@ RDMAContext::~RDMAContext() {
         ibv_dealloc_pd(pd_);
     }
 
-    VLOG(5) << "RDMAContext destroyed";
+    UCCL_LOG_RE << "RDMAContext destroyed";
 }
 
 int RDMAContext::supply_rx_buff(struct ucclRequest *ureq) {
@@ -638,7 +638,7 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
 
         *sent_offset += chunk_size;
 
-        VLOG(3) << "[Engine] Tx: flow#" << flow->flowid() << 
+        UCCL_LOG_IO << "Tx: flow#" << flow->flowid() << 
                 ", req id#" << ureq->send.rid <<
                 ", msg id#" << ureq->mid <<
                 ", csn:" << imm_data.GetCSN() <<
@@ -734,7 +734,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
             *sent_offset += chunk_size;
 
-            VLOG(3) << "[Engine] Tx: flow#" << flow->flowid() << 
+            UCCL_LOG_IO << "Tx: flow#" << flow->flowid() << 
                 ", req id#" << ureq->send.rid <<
                 ", msg id#" << ureq->mid <<
                 ", csn:" << imm_data.GetCSN() <<
@@ -760,7 +760,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
         wr->wr.rdma.remote_addr = raddr + *sent_offset;
         wr->wr.rdma.rkey = rkey;
 
-        VLOG(5) << "remote_addr: " << wr->wr.rdma.remote_addr
+        UCCL_LOG_IO << "remote_addr: " << wr->wr.rdma.remote_addr
                 << ", rkey: " << wr->wr.rdma.rkey;
 
         IMMData imm_data(0);
@@ -804,7 +804,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 subflow->in_wheel_cnt_++;
                 // For future tracking.
                 wr_ex->ureq = ureq;
-                VLOG(5) << "[Engine] Queued " << chunk_size
+                UCCL_LOG_IO << "Queued " << chunk_size
                         << " bytes to timing wheel for flow#" << flow->flowid();
             } else {
                 // Transmit this chunk directly.
@@ -833,14 +833,14 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                     arm_timer_for_flow(subflow);
                 }
 
-                VLOG(5) << "[Engine] Directly sent " << chunk_size << " bytes to QP#"
+                UCCL_LOG_IO << "Directly sent " << chunk_size << " bytes to QP#"
                         << qpidx;
             }
         }
 
         *sent_offset += chunk_size;
 
-        VLOG(3) << "[Engine] Tx: flow#" << flow->flowid() << 
+        UCCL_LOG_IO << "Tx: flow#" << flow->flowid() << 
             ", req id#" << ureq->send.rid <<
             ", msg id#" << ureq->mid <<
             ", csn:" << imm_data.GetCSN() <<
@@ -872,7 +872,7 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
                 auto poll_ctx = chunk->ureq->poll_ctx;
                 // Wakeup app thread waiting one endpoint
                 uccl_wakeup(poll_ctx);
-                VLOG(3) << "[Engine] RC TX message complete";
+                UCCL_LOG_IO << "RC TX message complete";
             }
 
             *outstanding_bytes -= chunk->wr_ex->sge.length;
@@ -916,7 +916,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
             auto poll_ctx = chunk.ureq->poll_ctx;
             // Wakeup app thread waiting one endpoint
             uccl_wakeup(poll_ctx);
-            VLOG(3) << "[Engine] UC Tx message complete";
+            UCCL_LOG_IO << "UC Tx message complete";
         }
 
         // Record timestamp of the oldest unacked chunk.
@@ -960,7 +960,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
         fabric_delay_tsc -= serial_delay_tsc;
     }
 
-    VLOG(5) << "Total: " << to_usec(t6 - t1, freq_ghz)
+    UCCL_LOG_IO << "Total: " << to_usec(t6 - t1, freq_ghz)
             << ", Endpoint delay: " << to_usec(endpoint_delay_tsc, freq_ghz)
             << ", Fabric delay: " << to_usec(fabric_delay_tsc, freq_ghz);
 
@@ -1020,7 +1020,7 @@ int RDMAContext::receiver_poll_uc_cq(void) {
                     auto drop_period = (uint32_t)(1 / kTestLossRate);
                     static uint32_t drop_cnt = 0;
                     if (drop_cnt++ % drop_period == 0) {
-                        VLOG(5) << "Drop a chunk";
+                        UCCL_LOG_IO << "Drop a chunk";
                     } else {
                         rx_data(&ack_list);
                     }
@@ -1075,7 +1075,7 @@ void RDMAContext::rc_rx_ack(void) {
 
     subflow->update_scoreboard_rtt(pair.first, pair.second);
 
-    VLOG(5) << "Received ACK for csn: " << csn;
+    UCCL_LOG_IO << "Received ACK for csn: " << csn;
 }
 
 int RDMAContext::sender_poll_rc_cq(void) {
@@ -1144,7 +1144,7 @@ void RDMAContext::check_credit_rq(bool force) {
             rx_credit_wrs_[i].wr_id = chunk_addr;
         }
         DCHECK(ibv_post_recv(credit_qp_, &rx_credit_wrs_[0], &bad_wr) == 0);
-        VLOG(6) << "Posted " << post_credit_rq_cnt_
+        UCCL_LOG_IO << "Posted " << post_credit_rq_cnt_
                 << " recv requests for Credit QP";
         post_credit_rq_cnt_ -= kPostRQThreshold;
     }
@@ -1159,7 +1159,7 @@ void RDMAContext::check_credit_rq(bool force) {
         }
         rx_credit_wrs_[post_credit_rq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_recv(credit_qp_, &rx_credit_wrs_[0], &bad_wr) == 0);
-        VLOG(6) << "Posted " << post_credit_rq_cnt_
+        UCCL_LOG_IO << "Posted " << post_credit_rq_cnt_
                 << " recv requests for Credit QP";
         rx_credit_wrs_[post_credit_rq_cnt_ - 1].next =
             &rx_credit_wrs_[post_credit_rq_cnt_];
@@ -1178,7 +1178,7 @@ void RDMAContext::check_ctrl_rq(bool force) {
             rx_ack_wrs_[i].wr_id = chunk_addr;
         }
         DCHECK(ibv_post_recv(ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        VLOG(6) << "Posted " << post_ctrl_rq_cnt_
+        UCCL_LOG_IO << "Posted " << post_ctrl_rq_cnt_
                 << " recv requests for Ctrl QP";
         post_ctrl_rq_cnt_ -= kPostRQThreshold;
     }
@@ -1193,7 +1193,7 @@ void RDMAContext::check_ctrl_rq(bool force) {
         }
         rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_recv(ctrl_qp_, &rx_ack_wrs_[0], &bad_wr) == 0);
-        VLOG(6) << "Posted " << post_ctrl_rq_cnt_
+        UCCL_LOG_IO << "Posted " << post_ctrl_rq_cnt_
                 << " recv requests for Ctrl QP";
         rx_ack_wrs_[post_ctrl_rq_cnt_ - 1].next =
             &rx_ack_wrs_[post_ctrl_rq_cnt_];
@@ -1220,7 +1220,7 @@ void RDMAContext::check_srq(bool force) {
         }
 
         DCHECK(ibv_post_srq_recv(srq_, &imm_wrs_[0], &bad_wr) == 0);
-        VLOG(6) << "Posted " << kPostRQThreshold << " recv requests for SRQ";
+        UCCL_LOG_IO << "Posted " << kPostRQThreshold << " recv requests for SRQ";
         post_srq_cnt_ -= kPostRQThreshold;
     }
 
@@ -1241,7 +1241,7 @@ void RDMAContext::check_srq(bool force) {
 
         imm_wrs_[post_srq_cnt_ - 1].next = nullptr;
         DCHECK(ibv_post_srq_recv(srq_, &imm_wrs_[0], &bad_wr) == 0);
-        VLOG(6) << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
+        UCCL_LOG_IO << "Posted " << post_srq_cnt_ << " recv requests for SRQ";
         imm_wrs_[post_srq_cnt_ - 1].next = &imm_wrs_[post_srq_cnt_];
         post_srq_cnt_ = 0;
     }
@@ -1293,7 +1293,7 @@ bool RDMAContext::try_retransmit_chunk(SubUcclFlow *subflow,
     int ret = ibv_post_send(lossy_qpw->qp, &retr_wr, &bad_wr);
     DCHECK(ret == 0) << ret;
 
-    VLOG(5) << "successfully retransmit chunk for QP#" << (lossy_qpw - dp_qps_)
+    UCCL_LOG_IO << "successfully retransmit chunk for QP#" << (lossy_qpw - dp_qps_)
             << ", remote_addr: " << wr_ex->wr.wr.rdma.remote_addr
             << ", chunk_size: " << wr_ex->sge.length
             << ", csn: " << IMMData(ntohl(wr_ex->wr.imm_data)).GetCSN()
@@ -1338,15 +1338,15 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
     bool update_sackbitmap = false;
 
     if (UINT_CSN::uintcsn_seqno_lt(ackno, subflow->pcb.snd_una)) {
-        VLOG(5) << "Received old ACK " << ackno << " for flow" << fid
+        UCCL_LOG_IO << "Received old ACK " << ackno << " for flow" << fid
                 << " by Ctrl QP";
     } else if (UINT_CSN::uintcsn_seqno_gt(ackno, subflow->pcb.snd_nxt)) {
-        VLOG(5) << "Received ACK for untransmitted data "
+        UCCL_LOG_IO << "Received ACK for untransmitted data "
                 << "ackno: " << ackno
                 << ", snd_nxt: " << subflow->pcb.snd_nxt.to_uint32()
                 << " for flow" << fid << " by Ctrl QP";
     } else if (UINT_CSN::uintcsn_seqno_eq(ackno, subflow->pcb.snd_una)) {
-        VLOG(5) << "Received duplicate ACK " << ackno << " for flow" << fid
+        UCCL_LOG_IO << "Received duplicate ACK " << ackno << " for flow" << fid
                 << " by Ctrl QP";
 
         EventOnRxNACK(subflow, ucclsackh);
@@ -1404,7 +1404,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
         }
 
     } else {
-        VLOG(5) << "Received valid ACK " << ackno << " for flow" << fid
+        UCCL_LOG_IO << "Received valid ACK " << ackno << " for flow" << fid
                 << " by Ctrl QP";
 
         EventOnRxACK(subflow, ucclsackh);
@@ -1514,7 +1514,7 @@ int RDMAContext::poll_ctrl_cq(void) {
                 if (ibv_wc_read_opcode(cq_ex) == IBV_WC_RECV) {
                     auto imm_data = ntohl(ibv_wc_read_imm_data(cq_ex));
                     auto num_ack = imm_data;
-                    VLOG(5) << "Receive " << num_ack
+                    UCCL_LOG_IO << "Receive " << num_ack
                             << " ACKs in one CtrlChunk, Chunk addr: "
                             << cq_ex->wr_id;
                     for (int i = 0; i < num_ack; i++) {
@@ -1581,7 +1581,7 @@ void RDMAContext::burst_timing_wheel(void) {
             // Arm timer for TX
             arm_timer_for_flow(subflow);
         }
-        VLOG(5) << "Burst send: csn: " << imm_data.GetCSN() << " with QP#"
+        UCCL_LOG_IO << "Burst send: csn: " << imm_data.GetCSN() << " with QP#"
                 << wr_ex->qpidx;
 
         subflow->in_wheel_cnt_--;
@@ -1621,7 +1621,7 @@ void RDMAContext::try_update_csn(SubUcclFlow *subflow) {
         // Nothing more to do.
 
         subflow->pcb.advance_rcv_nxt();
-        VLOG(3) << "try_update_csn:"
+        UCCL_LOG_IO << "try_update_csn:"
                 << " rcv_nxt: " << subflow->pcb.rcv_nxt.to_uint32();
 
         if constexpr (!kUSERC) {
@@ -1631,7 +1631,7 @@ void RDMAContext::try_update_csn(SubUcclFlow *subflow) {
 }
 
 void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
-    VLOG(5) << "rx_rtx_data";
+    UCCL_LOG_IO << "rx_rtx_data";
     auto cq_ex = recv_cq_ex_;
     auto now = rdtsc();
 
@@ -1653,14 +1653,14 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
     auto *subflow = flow->sub_flows_[engine_offset_];
 
-    VLOG(5) << "Received retransmission chunk: (csn, rid, fid): " << csn << ", "
+    UCCL_LOG_IO << "Received retransmission chunk: (csn, rid, fid): " << csn << ", "
             << rid << ", " << fid;
 
     // Locate request by rid
     DCHECK(rid < kMaxReq);
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
-        VLOG(4) << "Can't find corresponding request or this request is "
+        UCCL_LOG_IO << "Can't find corresponding request or this request is "
                    "invalid for this retransmission chunk. Dropping.";
         subflow->pcb.stats_retr_chunk_drop++;
         return;
@@ -1672,7 +1672,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
 
     if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
         // Original chunk is already received.
-        VLOG(5) << "Original chunk is already received. Dropping "
+        UCCL_LOG_IO << "Original chunk is already received. Dropping "
                    "retransmission chunk for flow"
                 << fid;
         subflow->pcb.stats_retr_chunk_drop++;
@@ -1680,7 +1680,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
     }
 
     if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
-        VLOG(5) << "Chunk too far ahead. Dropping as we can't handle SACK. "
+        UCCL_LOG_IO << "Chunk too far ahead. Dropping as we can't handle SACK. "
                 << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         subflow->pcb.stats_retr_chunk_drop++;
         return;
@@ -1692,14 +1692,14 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
 
     if ((*sack_bitmap & (1ULL << cursor))) {
         // Original chunk is already received.
-        VLOG(5) << "Original chunk is already received. Dropping "
+        UCCL_LOG_IO << "Original chunk is already received. Dropping "
                    "retransmission chunk for flow"
                 << fid;
         subflow->pcb.stats_retr_chunk_drop++;
         return;
     }
 
-    VLOG(5) << "This retransmission chunk is accepted!!!";
+    UCCL_LOG_IO << "This retransmission chunk is accepted!!!";
 // Accept this retransmission chunk.
 #ifdef CLOUDLAB_DEV
     memcpy(reinterpret_cast<void *>(hdr->remote_addr),
@@ -1741,7 +1741,6 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
 }
 
 void RDMAContext::rc_rx_data(void) {
-    VLOG(3) << "rc_rx_data";
     auto cq_ex = recv_cq_ex_;
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
@@ -1756,7 +1755,7 @@ void RDMAContext::rc_rx_data(void) {
     DCHECK(flow) << fid << ", RDMAContext ptr: " << this;
     auto *subflow = flow->sub_flows_[engine_offset_];
 
-    VLOG(3) << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
+    UCCL_LOG_IO << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
             << csn << ", " << rid << ", " << fid;
 
     // Locate request by rid
@@ -1786,12 +1785,9 @@ void RDMAContext::rc_rx_data(void) {
     try_update_csn(subflow);
     
     EventOnRxData(subflow, &imm_data);
-
-    VLOG(3) << "rc_rx_data done.";
 }
 
 void RDMAContext::rx_data(struct list_head *ack_list) {
-    VLOG(5) << "rx_data";
     auto cq_ex = recv_cq_ex_;
     auto now = rdtsc();
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
@@ -1808,14 +1804,14 @@ void RDMAContext::rx_data(struct list_head *ack_list) {
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
     auto *subflow = flow->sub_flows_[engine_offset_];
 
-    VLOG(5) << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
+    UCCL_LOG_IO << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
             << csn << ", " << rid << ", " << fid << " from QP#" << qpidx;
 
     // Locate request by rid
     DCHECK(rid < kMaxReq);
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
-        VLOG(4) << "Can't find corresponding request or this request is "
+        UCCL_LOG_IO << "Can't find corresponding request or this request is "
                    "invalid for this chunk. Dropping.";
         subflow->pcb.stats_chunk_drop++;
         return;
@@ -1826,14 +1822,14 @@ void RDMAContext::rx_data(struct list_head *ack_list) {
     auto distance = UINT_CSN(csn) - ecsn;
 
     if (UINT_CSN::uintcsn_seqno_lt(UINT_CSN(csn), ecsn)) {
-        VLOG(4) << "Chunk lag behind. Dropping as we can't handle SACK. "
+        UCCL_LOG_IO << "Chunk lag behind. Dropping as we can't handle SACK. "
                 << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         subflow->pcb.stats_chunk_drop++;
         return;
     }
 
     if (distance.to_uint32() > kReassemblyMaxSeqnoDistance) {
-        VLOG(4) << "Chunk too far ahead. Dropping as we can't handle SACK. "
+        UCCL_LOG_IO << "Chunk too far ahead. Dropping as we can't handle SACK. "
                 << "csn: " << csn << ", ecsn: " << ecsn.to_uint32();
         subflow->pcb.stats_chunk_drop++;
         return;
@@ -1912,7 +1908,7 @@ void RDMAContext::flush_acks(int num_ack, uint64_t chunk_addr) {
     struct ibv_send_wr *bad_wr;
     DCHECK(ibv_post_send(ctrl_qp_, &tx_ack_wr_, &bad_wr) == 0);
 
-    VLOG(5) << "Flush " << num_ack << " ACKs";
+    UCCL_LOG_IO << "Flush " << num_ack << " ACKs";
 }
 
 void RDMAContext::craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr,
@@ -1940,7 +1936,7 @@ void RDMAContext::craft_ack(SubUcclFlow *subflow, uint64_t chunk_addr,
     }
     ucclsackh->sack_bitmap_count = be16_t(subflow->pcb.sack_bitmap_count);
 
-    VLOG(5) << "craft_ack ackno: " << subflow->pcb.ackno().to_uint32()
+    UCCL_LOG_IO << "craft_ack ackno: " << subflow->pcb.ackno().to_uint32()
             << " for flow: " << subflow->fid_;
 }
 
@@ -1948,7 +1944,7 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto) {
     SubUcclFlow *subflow = reinterpret_cast<SubUcclFlow *>(context);
 
     if (subflow->txtracking.empty()) {
-        VLOG(5) << "No unacked chunk to retransmit for flow" << subflow->fid_;
+        UCCL_LOG_IO << "No unacked chunk to retransmit for flow" << subflow->fid_;
         return;
     }
 
@@ -2004,7 +2000,7 @@ void RDMAContext::__retransmit_for_flow(void *context, bool rto) {
             } else {
                 // This bit is stale and its corresponding chunk is already
                 // acked. Do nothing.
-                VLOG(5) << "Stale SACK bit for seqno: " << seqno.to_uint32()
+                UCCL_LOG_IO << "Stale SACK bit for seqno: " << seqno.to_uint32()
                         << ", chunk.csn: " << chunk.csn
                         << ", tx_sack_bitmap_base: "
                         << tx_sack_bitmap_base.to_uint32();
