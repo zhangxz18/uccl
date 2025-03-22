@@ -478,7 +478,7 @@ class RDMAEndpoint {
                           PeerID *peer_id,
                           struct RemoteRDMAContext *remote_ctx);
 
-    void same_dev_install_ctx(int dev, int bootstrap_fd, bool local_lock_first, int local_gpuidx,
+    void same_dev_install_ctx(int dev, int bootstrap_fd, bool local_lock_first, bool is_send,
                           std::string &remote_ip, int remote_dev,
                           PeerID *peer_id,
                           struct RemoteRDMAContext *remote_ctx);

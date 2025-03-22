@@ -26,7 +26,7 @@ static constexpr bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("87.120.213.6");
 static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-static constexpr uint8_t NUM_DEVICES = 4;
+static constexpr uint8_t NUM_DEVICES = 1;
 #endif
 static constexpr uint8_t IB_PORT_NUM = 1;
 #ifdef CLOUDLAB_DEV
@@ -37,7 +37,7 @@ static constexpr double kLinkBandwidth = 400.0 * 1e9 / 8; // 400Gbps
 /// Interface configuration.
 
 // # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 1;
+static constexpr uint32_t NUM_ENGINES = 4;
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;

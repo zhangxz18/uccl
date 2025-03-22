@@ -21,7 +21,7 @@ NCCL_PATH="${ROOT}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="${ROOT}/rdma/libnccl-net.so"
 
 # Number of chunnels.
-NUM_CHUNNEL=1
+NUM_CHUNNEL=4
 # Chunk size.
 # 131072, 262144, 524288
 P2P_NET_CHUNKSIZE=524288
@@ -66,7 +66,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
     --mca orte_base_help_aggregate 0 \
     -x GLOG_logtostderr=1 \
-    -x GLOG_v=0 \
+    -x GLOG_v=1 \
     -x NCCL_P2P_DISABLE=1 \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
@@ -82,7 +82,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     ${ROOT}/nccl-tests/build/${PROG_NAME} \
     -f 2 \
     --minbytes 1K --maxbytes 1G \
-    --warmup_iters 20 --iters 50 \
+    --warmup_iters 0 --iters 50 \
     -n 1 -t ${NUM_GPUS_PER_NODE}
     
     # --map-by ppr:1:node:PE=32 \

@@ -738,7 +738,7 @@ PollCtx *RDMAEndpoint::install_ctx_on_engine(uint32_t engine_idx,
 }
 
 void RDMAEndpoint::same_dev_install_ctx(int dev, int bootstrap_fd,
-                                    bool local_lock_first, int local_gpuidx,
+                                    bool local_lock_first, bool is_send,
                                     std::string &remote_ip, int remote_dev,
                                     PeerID *peer_id,
                                     struct RemoteRDMAContext *remote_ctx) {
@@ -746,8 +746,6 @@ void RDMAEndpoint::same_dev_install_ctx(int dev, int bootstrap_fd,
     auto *first_lock = &peer_same_dev_map_mu_[dev][0];
     auto *second_map = &peer_same_dev_map_[dev][1];
     auto *second_lock = &peer_same_dev_map_mu_[dev][1];
-
-    VLOG(3) << "same_dev_install_ctx, gpudix:" << local_gpuidx;
     
     if (local_lock_first) {
         first_lock->lock();
@@ -760,7 +758,7 @@ void RDMAEndpoint::same_dev_install_ctx(int dev, int bootstrap_fd,
             wait_ready(bootstrap_fd);
             *peer_id = alloc_peer_id(dev);
             // Install RDMAContexts on all engines.
-            VLOG(1) << "[Endpoint] (Same device)Install ctx on all engines for dev:" << dev << ", remoted_dev:" << remote_dev << ", peerid: " << *peer_id; 
+            VLOG(1) << "[Endpoint] (Same device)Install ctx on all engines for dev:" << dev << ", remote_dev:" << remote_dev << ", peerid: " << *peer_id; 
             install_ctx_on_engines(bootstrap_fd, dev, *peer_id, remote_ctx);
             first_map->insert({{remote_ip, remote_dev},
                                    {*peer_id, remote_ctx->remote_gid,
@@ -801,7 +799,7 @@ void RDMAEndpoint::same_dev_install_ctx(int dev, int bootstrap_fd,
             send_ready(bootstrap_fd);
             *peer_id = alloc_peer_id(dev);
             // Install RDMAContexts on all engines.
-            VLOG(1) << "[Endpoint] (Same device)Install ctx on all engines for dev:" << dev << ", remoted_dev:" << remote_dev << ", peerid: " << *peer_id; 
+            VLOG(1) << "[Endpoint] (Same device)Install ctx on all engines for dev:" << dev << ", remote_dev:" << remote_dev << ", peerid: " << *peer_id; 
             install_ctx_on_engines(bootstrap_fd, dev, *peer_id, remote_ctx);
             second_map->insert({{remote_ip, remote_dev},
                                    {*peer_id, remote_ctx->remote_gid,
@@ -813,6 +811,26 @@ void RDMAEndpoint::same_dev_install_ctx(int dev, int bootstrap_fd,
             wait_ready(bootstrap_fd);
         }
     }
+
+    // Adjust used peer according to flow direction.
+    if (is_send) {
+        first_lock->lock();
+        auto it = first_map->find({remote_ip, remote_dev});
+        DCHECK(it != first_map->end());
+        *peer_id = it->second.peer_id;
+        remote_ctx->remote_gid = it->second.remote_gid;
+        remote_ctx->remote_port_attr = it->second.remote_port_attr;
+        first_lock->unlock();
+    } else {
+        second_lock->lock();
+        auto it = second_map->find({remote_ip, remote_dev});
+        DCHECK(it != second_map->end());
+        *peer_id = it->second.peer_id;
+        remote_ctx->remote_gid = it->second.remote_gid;
+        remote_ctx->remote_port_attr = it->second.remote_port_attr;
+        second_lock->unlock();
+    }
+
 }
 
 void RDMAEndpoint::safe_install_ctx(int dev, int bootstrap_fd,
@@ -831,7 +849,7 @@ void RDMAEndpoint::safe_install_ctx(int dev, int bootstrap_fd,
             wait_ready(bootstrap_fd);
             *peer_id = alloc_peer_id(dev);
             // Install RDMAContexts on all engines.
-            VLOG(1) << "[Endpoint] Install ctx on all engines for dev:" << dev << ", remoted_dev:" << remote_dev;
+            VLOG(1) << "[Endpoint] Install ctx on all engines for dev:" << dev << ", remote_dev:" << remote_dev;
             install_ctx_on_engines(bootstrap_fd, dev, *peer_id, remote_ctx);
             peer_map_[dev].insert({{remote_ip, remote_dev},
                                    {*peer_id, remote_ctx->remote_gid,
@@ -872,7 +890,7 @@ void RDMAEndpoint::safe_install_ctx(int dev, int bootstrap_fd,
             send_ready(bootstrap_fd);
             *peer_id = alloc_peer_id(dev);
             // Install RDMAContexts on all engines.
-            VLOG(1) << "[Endpoint] Install ctx on all engines for dev:" << dev << ", remoted_dev:" << remote_dev;
+            VLOG(1) << "[Endpoint] Install ctx on all engines for dev:" << dev << ", remote_dev:" << remote_dev;
             install_ctx_on_engines(bootstrap_fd, dev, *peer_id, remote_ctx);
             peer_map_[dev].insert({{remote_ip, remote_dev},
                                    {*peer_id, remote_ctx->remote_gid,
@@ -926,13 +944,13 @@ void RDMAEndpoint::install_ctx_on_engines(
 
     info->bootstrap_fd = fd;
     
-    VLOG(1) << "[Endpoint] Start to install ctx on engine.";
+    // VLOG(1) << "[Endpoint] Start to install ctx on engine.";
     for (int i = 0; i < num_engines_per_dev_; i++) {
         auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
         auto *poll_ctx = install_ctx_on_engine(engine_idx, peer_id, meta);
         uccl_poll(poll_ctx);
     }
-    VLOG(1) << "[Endpoint] Install ctx on engine done.";
+    // VLOG(1) << "[Endpoint] Install ctx on engine done.";
 
     remote_ctx->remote_gid = info->remote_gid;
     remote_ctx->remote_port_attr = info->remote_port_attr;
@@ -1010,7 +1028,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int local_gpuidx, int remote_dev, int
 
     // Step3: install RDMAContexts on both sides if needed.
     if (same_dev) {
-        same_dev_install_ctx(dev, bootstrap_fd, local_lock_first, local_gpuidx, remote_ip, remote_dev,
+        same_dev_install_ctx(dev, bootstrap_fd, local_lock_first, true, remote_ip, remote_dev,
             &peer_id, &remote_ctx);
     }
     else {
@@ -1100,7 +1118,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, int local_gpuidx, std::
 
     // Step3: install RDMAContexts on both sides if needed.
     if (same_dev) {
-        same_dev_install_ctx(dev, bootstrap_fd, local_lock_first, local_gpuidx, remote_ip,
+        same_dev_install_ctx(dev, bootstrap_fd, local_lock_first, false, remote_ip,
                          *remote_dev, &peer_id, &remote_ctx);
     } else {
         safe_install_ctx(dev, bootstrap_fd, local_lock_first, remote_ip,
