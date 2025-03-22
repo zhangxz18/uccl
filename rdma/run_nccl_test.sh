@@ -21,7 +21,7 @@ NCCL_PATH="${ROOT}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="${ROOT}/rdma/libnccl-net.so"
 
 # Number of chunnels.
-NUM_CHUNNEL=4
+NUM_CHUNNEL=1
 # Chunk size.
 # 131072, 262144, 524288
 P2P_NET_CHUNKSIZE=524288
@@ -65,6 +65,8 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     --mca btl_tcp_if_include ${CTRL_NIC} \
     --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
     --mca orte_base_help_aggregate 0 \
+    -x GLOG_logtostderr=1 \
+    -x GLOG_v=0 \
     -x NCCL_P2P_DISABLE=1 \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \

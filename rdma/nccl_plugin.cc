@@ -54,6 +54,7 @@ struct ucclHandle {
     uint32_t ip_addr_u32;
     uint16_t listen_port;
     int remote_dev;
+    int remote_gpuidx;
     enum ConnState state = kConnInit;
     AsyncConnectState connect_buffer;
 };
@@ -65,6 +66,7 @@ struct ucclListenComm {
     int dev;
     int listen_fd;
     int remote_dev;
+    int gpuidx;
     enum ConnState state = kConnInit;
     AsyncAcceptState accept_buffer;
 };
@@ -181,15 +183,18 @@ ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
     handle->ip_addr_u32 = str_to_ip(factory_dev->local_ip_str);
     handle->listen_port = ntohs(serv_addr.sin_port);
     handle->remote_dev = dev;
+    cudaGetDevice(&handle->remote_gpuidx);
 
     struct ucclListenComm *lcomm =
         (struct ucclListenComm *)calloc(1, sizeof(struct ucclListenComm));
 
     lcomm->dev = dev;
     lcomm->listen_fd = listen_fd;
+    lcomm->gpuidx = handle->remote_gpuidx;
+    
     *listenComm = lcomm;
 
-    VLOG(3) << "pluginListen on dev: " << dev;
+    VLOG(3) << "[Plugin] pluginListen on dev: " << dev;
 
     return ncclSuccess;
 }
@@ -203,6 +208,9 @@ ncclResult_t pluginConnect(int dev, void *opaque_handle, void **sendComm,
                            ncclNetDeviceHandle_v8_t ** /*sendDevComm*/) {
     struct ucclHandle *handle = (struct ucclHandle *)opaque_handle;
 
+    int local_gpuidx;
+    cudaGetDevice(&local_gpuidx);
+
     std::string remote_ip_str = ip_to_str(handle->ip_addr_u32);
 
     struct ucclSendComm *scomm =
@@ -211,9 +219,9 @@ ncclResult_t pluginConnect(int dev, void *opaque_handle, void **sendComm,
     if (handle->state == kConnInit) {
         handle->state = kConnConnecting;
         // Delegate connection to another thread.
-        std::thread t = std::thread([dev, handle, remote_ip_str] {
+        std::thread t = std::thread([dev, local_gpuidx, handle, remote_ip_str] {
             handle->connect_buffer.base.conn_id = ep->uccl_connect(
-                dev, handle->remote_dev, remote_ip_str, handle->listen_port);
+                dev, local_gpuidx, handle->remote_dev, handle->remote_gpuidx, remote_ip_str, handle->listen_port);
             handle->connect_buffer.base.dev = dev;
             std::atomic_thread_fence(std::memory_order_release);
             handle->state = kConnConnected;
@@ -258,7 +266,7 @@ ncclResult_t pluginAccept(void *listenComm, void **recvComm,
             std::string remote_ip_str;
             int remote_dev;
             lcomm->accept_buffer.base.conn_id = ep->uccl_accept(
-                lcomm->dev, lcomm->listen_fd, remote_ip_str, &remote_dev);
+                lcomm->dev, lcomm->listen_fd, lcomm->gpuidx, remote_ip_str, &remote_dev);
             lcomm->accept_buffer.base.dev = lcomm->dev;
             lcomm->accept_buffer.remote_ip_str = remote_ip_str;
             lcomm->accept_buffer.remote_dev = remote_dev;
@@ -296,7 +304,7 @@ ncclResult_t pluginRegMr(void *collComm, void *data, size_t size, int type,
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
     ret = ep->uccl_regmr((UcclFlow *)base->conn_id.context, data, size, type,
                          (struct Mhandle **)mhandle);
-    VLOG(5) << "pluginRegMr, " << size << ", " << base->conn_id.flow_id;
+    VLOG(5) << "[Plugin] pluginRegMr, " << size << ", " << base->conn_id.flow_id;
 
     return ret == 0 ? ncclSuccess : ncclInternalError;
 }
@@ -308,7 +316,7 @@ ncclResult_t pluginRegMrDmaBuf(void *collComm, void *data, size_t size,
     struct ucclBaseComm *base = (struct ucclBaseComm *)collComm;
     ret = ep->uccl_regmr_dmabuf((UcclFlow *)base->conn_id.context, data, size,
                                 type, offset, fd, (struct Mhandle **)mhandle);
-    VLOG(5) << "pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id;
+    VLOG(5) << "[Plugin] pluginRegMrDmaBuf, " << size << ", " << base->conn_id.flow_id;
 
     return ret == 0 ? ncclSuccess : ncclInternalError;
 }
@@ -344,7 +352,7 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
 
     *request = req;
 
-    VLOG(4) << "pluginIsend on dev: " << dev << ", size: " << size << ", flow#"
+    VLOG(4) << "[Plugin] pluginIsend on dev: " << dev << ", size: " << size << ", flow#"
             << conn_id.flow_id;
 
     return ncclSuccess;
@@ -376,7 +384,7 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
 
     *request = req;
 
-    VLOG(4) << "pluginIrecv on dev: " << dev << ", size: " << sizes[0]
+    VLOG(4) << "[Plugin] pluginIrecv on dev: " << dev << ", size: " << sizes[0]
             << ", flow#" << conn_id.flow_id;
 
     return ncclSuccess;
@@ -408,7 +416,7 @@ ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
 
     *request = req;
 
-    VLOG(4) << "pluginIflush on dev: " << dev << ", size: " << sizes[0]
+    VLOG(4) << "[Plugin] pluginIflush on dev: " << dev << ", size: " << sizes[0]
             << ", flow#" << conn_id.flow_id;
 
     return ncclSuccess;

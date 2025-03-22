@@ -186,7 +186,7 @@ class UcclRDMAEngine {
      * @param ctrl_work
      */
     void handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work);
-
+    
     /**
      * @brief Install a new UcclFlow on the engine.
      *
@@ -281,7 +281,7 @@ class UcclRDMAEngine {
 };
 
 /**
- * @brief A peer is identified by its IP address and device index.
+ * @brief A peer is identified by its IP address and device index and GPU index.
  */
 struct UcclPeer {
     std::string remote_ip;
@@ -359,7 +359,10 @@ class RDMAEndpoint {
     std::unordered_map<UcclPeer, PeerInfo, UcclPeerHash> peer_map_[NUM_DEVICES];
     std::mutex peer_map_mu_[NUM_DEVICES];
 
-    PeerID next_peer_id_[NUM_DEVICES] = {};
+    std::unordered_map<UcclPeer, PeerInfo, UcclPeerHash> peer_same_dev_map_[NUM_DEVICES][2];
+    std::mutex peer_same_dev_map_mu_[NUM_DEVICES][2];
+
+    std::atomic<PeerID> next_peer_id_[NUM_DEVICES] = {};
 
     Spin flow_id_spin_[NUM_DEVICES][MAX_PEER];
     FlowID next_flow_id_[NUM_DEVICES][MAX_PEER] = {};
@@ -374,22 +377,22 @@ class RDMAEndpoint {
 
     /// For testing easily.
     ConnID test_uccl_connect(int dev, std::string remote_ip, int remote_dev) {
-        return uccl_connect(dev, remote_dev, remote_ip,
+        return uccl_connect(dev, 0, remote_dev, 0, remote_ip,
                             kTestListenPort + remote_dev);
     }
     ConnID test_uccl_accept(int dev, std::string &remote_ip, int *remote_dev) {
-        return uccl_accept(dev, test_listen_fds_[dev], remote_ip, remote_dev);
+        return uccl_accept(dev, test_listen_fds_[dev], rdtsc(), remote_ip, remote_dev);
     }
     /// For testing easily.
 
     // Connect to a remote peer <remote_ip, remote_dev> with the given dev, who
     // is listening on the given listen_port. This function is thread-safe.
-    ConnID uccl_connect(int dev, int remote_dev, std::string remote_ip,
+    ConnID uccl_connect(int dev, int local_gpuidx, int remote_dev, int remote_gpuidx, std::string remote_ip,
                         uint16_t remote_port);
 
     // Accept a connection using the given listen_fd. <remote_ip, remote_dev> is
     // returned. This function is thread-safe.
-    ConnID uccl_accept(int dev, int listen_fd, std::string &remote_ip,
+    ConnID uccl_accept(int dev, int listen_fd, int local_gpuidx, std::string &remote_ip,
                        int *remote_dev);
 
     // Register a memory region.
@@ -442,6 +445,10 @@ class RDMAEndpoint {
         return true;
     }
 
+    inline PeerID alloc_peer_id(int dev) {
+        return next_peer_id_[dev].fetch_add(1);
+    }
+
   private:
     PollCtx *install_ctx_on_engine(uint32_t engine_idx, PeerID peer_id,
                                    union CtrlMeta meta);
@@ -467,6 +474,11 @@ class RDMAEndpoint {
      * @param remote_ctx
      */
     void safe_install_ctx(int dev, int bootstrap_fd, bool local_lock_first,
+                          std::string &remote_ip, int remote_dev,
+                          PeerID *peer_id,
+                          struct RemoteRDMAContext *remote_ctx);
+
+    void same_dev_install_ctx(int dev, int bootstrap_fd, bool local_lock_first, int local_gpuidx,
                           std::string &remote_ip, int remote_dev,
                           PeerID *peer_id,
                           struct RemoteRDMAContext *remote_ctx);

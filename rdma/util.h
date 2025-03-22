@@ -89,25 +89,25 @@ inline int send_message(int sockfd, const void *buffer, size_t n_bytes) {
 inline void send_ready(int bootstrap_fd) {
     bool ready = true;
     int ret = send_message(bootstrap_fd, &ready, sizeof(bool));
-    DCHECK(ret == sizeof(bool));
+    DCHECK(ret == sizeof(bool)) << ret;
 }
 
 inline void send_abort(int bootstrap_fd) {
     bool ready = false;
     int ret = send_message(bootstrap_fd, &ready, sizeof(bool));
-    DCHECK(ret == sizeof(bool));
+    DCHECK(ret == sizeof(bool)) << ret;
 }
 
 inline void wait_ready(int bootstrap_fd) {
     bool ready;
     int ret = receive_message(bootstrap_fd, &ready, sizeof(bool));
-    DCHECK(ret == sizeof(bool) && ready == true);
+    DCHECK(ret == sizeof(bool) && ready == true) << ret << ", " << ready;
 }
 
 inline bool wait_sync(int bootstrap_fd) {
     bool ready;
     int ret = receive_message(bootstrap_fd, &ready, sizeof(bool));
-    DCHECK(ret == sizeof(bool));
+    DCHECK(ret == sizeof(bool)) << ret;
     return ready;
 }
 
@@ -115,7 +115,7 @@ inline void net_barrier(int bootstrap_fd) {
     bool sync = true;
     int ret = send_message(bootstrap_fd, &sync, sizeof(bool));
     ret = receive_message(bootstrap_fd, &sync, sizeof(bool));
-    DCHECK(ret == sizeof(bool) && sync);
+    DCHECK(ret == sizeof(bool) && sync) << ret << ", " << sync;
 }
 
 inline void create_listen_socket(int *listen_fd, uint16_t listen_port) {

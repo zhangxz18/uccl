@@ -261,7 +261,10 @@ enum ReqType {
  */
 struct ucclRequest {
     enum ReqType type;
-    int n;
+    union {
+        int n;
+        int mid; // used for multi-send
+    };
     union {
         PollCtx *poll_ctx;
         // For reducing overhead of PollCtx for RC and Flush operation.
@@ -586,7 +589,7 @@ class RDMAContext {
     inline struct RecvRequest *get_recvreq_by_id(int id) { return &reqs_[id]; }
 
     inline void free_recvreq(struct RecvRequest *req) {
-        VLOG(3) << "free_recvreq: " << req;
+        VLOG(4) << "free_recvreq: " << req;
         memset(req, 0, sizeof(struct RecvRequest));
     }
 
@@ -598,11 +601,11 @@ class RDMAContext {
         for (int i = 0; i < kMaxReq; i++) {
             auto *req = &reqs_[i];
             if (req->type == RecvRequest::UNUSED) {
-                VLOG(3) << "alloc_recvreq: " << req;
+                VLOG(4) << "alloc_recvreq: " << req;
                 return req;
             }
         }
-        VLOG(3) << "alloc_recvreq: nullptr";
+        VLOG(4) << "alloc_recvreq: nullptr";
         return nullptr;
     }
 

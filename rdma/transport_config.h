@@ -25,9 +25,8 @@ static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2, 3};
 static constexpr bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("87.120.213.6");
-static constexpr uint8_t NUM_DEVICES = 8;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0, 1, 2, 3,
-                                                             4, 5, 6, 7};
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+static constexpr uint8_t NUM_DEVICES = 4;
 #endif
 static constexpr uint8_t IB_PORT_NUM = 1;
 #ifdef CLOUDLAB_DEV
@@ -38,7 +37,7 @@ static constexpr double kLinkBandwidth = 400.0 * 1e9 / 8; // 400Gbps
 /// Interface configuration.
 
 // # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 4;
+static constexpr uint32_t NUM_ENGINES = 1;
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
@@ -88,8 +87,6 @@ static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 static constexpr bool kUSERC = true;
 constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
                                 (kUSERC ? 0 : 1) /* Ctrl QP */;
-// Per-path cwnd or global cwnd.
-static constexpr bool kPPCwnd = false;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static constexpr uint32_t kRCSize = 8192;
 

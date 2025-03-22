@@ -638,10 +638,13 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
 
         *sent_offset += chunk_size;
 
-        VLOG(3) << "Sending: csn: " << imm_data.GetCSN()
-                << ", rid: " << ureq->send.rid << ", fid: " << flow->flowid()
-                << ", " << ureq->n << " with QP#" << qpidx << ", "
-                << size - *sent_offset << ", " << (uint32_t)pull_target;
+        VLOG(3) << "[Engine] Tx: flow#" << flow->flowid() << 
+                ", req id#" << ureq->send.rid <<
+                ", msg id#" << ureq->mid <<
+                ", csn:" << imm_data.GetCSN() <<
+                ", remaining bytes:" << size - *sent_offset << 
+                ", pull target:" << (uint32_t)pull_target << 
+                " with QP#" << qpidx;
 
         subflow->outstanding_bytes_ += chunk_size;
         *eob_ += chunk_size;
@@ -652,6 +655,7 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
 
 bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
     auto *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+    DCHECK(flow);
     auto *subflow = flow->sub_flows_[engine_offset_];
 
     auto size = ureq->send.data_len;
@@ -663,6 +667,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
     uint64_t wr_addr;
     bool queued = false;
     uint32_t chunk_size;
+    uint32_t qpidx;
 
     auto now = rdtsc();
 
@@ -706,7 +711,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 wr->wr_id = 0;
 
             // Select QP.
-            auto qpidx = select_qpidx_pot(chunk_size, subflow);
+            qpidx = select_qpidx_pot(chunk_size, subflow);
             auto qpw = &dp_qps_[qpidx];
 
             wr->send_flags = 0;
@@ -729,10 +734,12 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
             *sent_offset += chunk_size;
 
-            VLOG(3) << "Sending: csn: " << imm_data.GetCSN()
-                    << ", rid: " << ureq->send.rid
-                    << ", fid: " << flow->flowid() << ", " << ureq->n
-                    << " with QP#" << qpidx;
+            VLOG(3) << "[Engine] Tx: flow#" << flow->flowid() << 
+                ", req id#" << ureq->send.rid <<
+                ", msg id#" << ureq->mid <<
+                ", csn:" << imm_data.GetCSN() <<
+                ", remaining bytes:" << size - *sent_offset << 
+                " with QP#" << qpidx;
 
             subflow->outstanding_bytes_ += chunk_size;
             *eob_ += chunk_size;
@@ -797,7 +804,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 subflow->in_wheel_cnt_++;
                 // For future tracking.
                 wr_ex->ureq = ureq;
-                VLOG(5) << "Queued " << chunk_size
+                VLOG(5) << "[Engine] Queued " << chunk_size
                         << " bytes to timing wheel for flow#" << flow->flowid();
             } else {
                 // Transmit this chunk directly.
@@ -826,16 +833,19 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                     arm_timer_for_flow(subflow);
                 }
 
-                VLOG(5) << "Directly sent " << chunk_size << " bytes to QP#"
+                VLOG(5) << "[Engine] Directly sent " << chunk_size << " bytes to QP#"
                         << qpidx;
             }
         }
 
         *sent_offset += chunk_size;
 
-        VLOG(5) << "Sending: csn: " << imm_data.GetCSN()
-                << ", rid: " << ureq->send.rid << ", n: " << ureq->n
-                << " for flow#" << flow->flowid();
+        VLOG(3) << "[Engine] Tx: flow#" << flow->flowid() << 
+            ", req id#" << ureq->send.rid <<
+            ", msg id#" << ureq->mid <<
+            ", csn:" << imm_data.GetCSN() <<
+            ", remaining bytes:" << size - *sent_offset << 
+            " with QP#" << qpidx;
 
         subflow->outstanding_bytes_ += chunk_size;
         *eob_ += chunk_size;
@@ -862,7 +872,7 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
                 auto poll_ctx = chunk->ureq->poll_ctx;
                 // Wakeup app thread waiting one endpoint
                 uccl_wakeup(poll_ctx);
-                VLOG(3) << "Message complete";
+                VLOG(3) << "[Engine] RC TX message complete";
             }
 
             *outstanding_bytes -= chunk->wr_ex->sge.length;
@@ -906,7 +916,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
             auto poll_ctx = chunk.ureq->poll_ctx;
             // Wakeup app thread waiting one endpoint
             uccl_wakeup(poll_ctx);
-            VLOG(3) << "Message complete";
+            VLOG(3) << "[Engine] UC Tx message complete";
         }
 
         // Record timestamp of the oldest unacked chunk.
@@ -1611,7 +1621,7 @@ void RDMAContext::try_update_csn(SubUcclFlow *subflow) {
         // Nothing more to do.
 
         subflow->pcb.advance_rcv_nxt();
-        VLOG(5) << "try_update_csn:"
+        VLOG(3) << "try_update_csn:"
                 << " rcv_nxt: " << subflow->pcb.rcv_nxt.to_uint32();
 
         if constexpr (!kUSERC) {
@@ -1647,6 +1657,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
             << rid << ", " << fid;
 
     // Locate request by rid
+    DCHECK(rid < kMaxReq);
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is "
@@ -1730,7 +1741,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
 }
 
 void RDMAContext::rc_rx_data(void) {
-    VLOG(5) << "rc_rx_data";
+    VLOG(3) << "rc_rx_data";
     auto cq_ex = recv_cq_ex_;
     auto byte_len = ibv_wc_read_byte_len(cq_ex);
     auto imm_data = IMMData(ntohl(ibv_wc_read_imm_data(cq_ex)));
@@ -1742,36 +1753,41 @@ void RDMAContext::rc_rx_data(void) {
 
     DCHECK(fid < MAX_FLOW);
     auto *flow = reinterpret_cast<UcclFlow *>(receiver_flow_tbl_[fid]);
+    DCHECK(flow) << fid << ", RDMAContext ptr: " << this;
     auto *subflow = flow->sub_flows_[engine_offset_];
 
-    VLOG(5) << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
+    VLOG(3) << "Received chunk: (byte_len, csn, rid, fid): " << byte_len << ", "
             << csn << ", " << rid << ", " << fid;
 
     // Locate request by rid
+    DCHECK(rid < kMaxReq);
     auto req = get_recvreq_by_id(rid);
+    DCHECK(req->ureq);
+
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         LOG(ERROR) << "Can't find corresponding request or this request is "
-                      "invalid for this chunk. Dropping.";
+        "invalid for this chunk. Dropping.";
         // This should never happen.
         CHECK(0);
         return;
     }
 
     // There is no need to check CSN as RC provides reliable delivery.
-
     auto *msg_size = &req->ureq->recv.elems[0].size;
     uint32_t *received_bytes = req->received_bytes;
     received_bytes[0] += byte_len;
-
+    
     if (!last_chunk) {
         req = nullptr;
     }
-
+    
     subflow->rxtracking.ready_csn_.insert({csn, req});
-
+    
     try_update_csn(subflow);
-
+    
     EventOnRxData(subflow, &imm_data);
+
+    VLOG(3) << "rc_rx_data done.";
 }
 
 void RDMAContext::rx_data(struct list_head *ack_list) {
@@ -1796,6 +1812,7 @@ void RDMAContext::rx_data(struct list_head *ack_list) {
             << csn << ", " << rid << ", " << fid << " from QP#" << qpidx;
 
     // Locate request by rid
+    DCHECK(rid < kMaxReq);
     auto req = get_recvreq_by_id(rid);
     if (req->type != RecvRequest::RECV || req->ureq->context != flow) {
         VLOG(4) << "Can't find corresponding request or this request is "
