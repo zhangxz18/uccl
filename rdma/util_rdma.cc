@@ -570,11 +570,11 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
         return false;
     }
 
-    while (*sent_offset < size) {
+    while (*sent_offset < size || size == 0 /* zero-length message */ ) {
 
         chunk_size = EventOnChunkSize(subflow, size - *sent_offset);
 
-        if (chunk_size == 0)
+        if (chunk_size == 0 && size)
             return false;
 
         subflow->backlog_bytes_ -= chunk_size;
@@ -648,6 +648,10 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
 
         subflow->outstanding_bytes_ += chunk_size;
         *eob_ += chunk_size;
+
+        /* zero-length message */
+        if (size == 0) break;
+
     }
 
     return true;
@@ -671,11 +675,11 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
     auto now = rdtsc();
 
-    while (*sent_offset < size) {
+    while (*sent_offset < size || size == 0 /* zero-length message */ ) {
 
         chunk_size = EventOnChunkSize(subflow, size - *sent_offset);
 
-        if (chunk_size == 0)
+        if (chunk_size == 0 && size)
             return false;
 
         if constexpr (kTestNoTimingWheel) {
@@ -743,6 +747,8 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
             subflow->outstanding_bytes_ += chunk_size;
             *eob_ += chunk_size;
+            /* zero-length message */
+            if (size == 0) break;
 
             continue;
         }
@@ -849,6 +855,8 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
         subflow->outstanding_bytes_ += chunk_size;
         *eob_ += chunk_size;
+        /* zero-length message */
+        if (size == 0) break;
     }
 
     return true;
