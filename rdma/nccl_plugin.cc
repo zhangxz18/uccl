@@ -145,7 +145,7 @@ ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t *props) {
     return ncclSuccess;
 }
 
-static uint16_t listen_port = 10000;
+static std::atomic<uint16_t> listen_port = 10000;
 
 // To create a connection, NCCL will start by calling listen on the receiver
 // side. This function takes a device number as input argument, and should
@@ -171,7 +171,7 @@ ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
     bzero((char *)&serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(listen_port++);
+    serv_addr.sin_port = htons(listen_port.fetch_add(1));
     ret = bind(listen_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
     DCHECK(ret >= 0) << ret;
     
