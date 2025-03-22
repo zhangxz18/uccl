@@ -25,8 +25,10 @@ static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2, 3};
 static constexpr bool USE_ROCE = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("87.120.213.6");
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-static constexpr uint8_t NUM_DEVICES = 1;
+// static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+// static constexpr uint8_t NUM_DEVICES = 8;
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
+static constexpr uint8_t NUM_DEVICES = 4;
 #endif
 static constexpr uint8_t IB_PORT_NUM = 1;
 #ifdef CLOUDLAB_DEV
@@ -102,7 +104,7 @@ static constexpr uint32_t kMaxOutstandingBytesPerFlow = 2 * kChunkSize;
 // Limit the outstanding bytes on each engine.
 static constexpr uint32_t kMaxOutstandingBytesEngine = 16 * kChunkSize;
 // # of Tx work handled in one loop.
-static constexpr uint32_t kMaxTxWork = 2;
+static constexpr uint32_t kMaxTxWork = 4;
 // Maximum number of Tx bytes to be transmitted in one loop.
 static constexpr uint32_t kMaxTxBytesThres = 32 * kChunkSize;
 // # of Rx work handled in one loop.

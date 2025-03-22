@@ -12,7 +12,9 @@ ROOT="/home/aleria/uccl_rdma"
 # IP of Nodes.
 NODES="87.120.213.6,87.120.213.5"
 # Names of HCAs.
-HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
+# HCA_NAMES="mlx5_0:1"
+HCA_NAMES="mlx5_0:1,mlx5_2:1,mlx5_4:1,mlx5_6:1"
+# HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
 # Name of Control NIC.
 CTRL_NIC="ens10f0np0"
 # Path of NCCL
@@ -52,8 +54,8 @@ fi
 if [ "$UCCL" -ne 1 ]; then
     # zhongjie: This sometimes doesn't work, it still uses uccl's .so.
     # Delete .so file to ensure using NCCL.
-    PLUGIN_PATH=""
     rm -rf ${PLUGIN_PATH}
+    PLUGIN_PATH=""
 fi
 
 echo "Running test: ${PROG_NAME}, $([ "${UCCL}" -eq 1 ] && echo "UCCL" || echo "NCCL"), ${NUM_PROCS} nodes, ${NUM_GPUS_PER_NODE} GPUs per node, $((NUM_PROCS * NUM_GPUS_PER_NODE)) GPUs in total."
@@ -66,7 +68,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
     --mca orte_base_help_aggregate 0 \
     -x GLOG_logtostderr=1 \
-    -x GLOG_v=1 \
+    -x GLOG_v=0 \
     -x NCCL_P2P_DISABLE=1 \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
@@ -82,7 +84,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     ${ROOT}/nccl-tests/build/${PROG_NAME} \
     -f 2 \
     --minbytes 1K --maxbytes 1G \
-    --warmup_iters 0 --iters 50 \
+    --warmup_iters 20 --iters 50 \
     -n 1 -t ${NUM_GPUS_PER_NODE}
     
     # --map-by ppr:1:node:PE=32 \
