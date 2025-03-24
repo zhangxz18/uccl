@@ -1071,6 +1071,57 @@ class EQDSRDMAContext : public RDMAContext {
     }
 };
 
+class SwiftRDMAContext : public RDMAContext {
+    public:
+      using RDMAContext::RDMAContext;
+  
+      uint32_t EventOnSelectPath(SubUcclFlow *subflow,
+                                 uint32_t chunk_size) override {
+          return select_qpidx_pot(chunk_size, subflow);
+      }
+  
+      uint32_t EventOnChunkSize(SubUcclFlow *subflow,
+                                uint32_t remaining_bytes) override {
+          auto ready_bytes = std::min(remaining_bytes, kChunkSize);
+
+          if (remaining_bytes <= kChunkSize) {
+              ready_bytes = std::min(ready_bytes, subflow->pcb.swift_cc.get_wnd());
+          } else {
+            if (ready_bytes < kChunkSize)
+                return 0;
+          }
+  
+          if (*engine_unacked_bytes_ + ready_bytes > kMaxUnAckedBytesPerEngineHigh)
+              return 0;
+  
+          if (*engine_unacked_bytes_ + ready_bytes <= kMaxUnAckedBytesPerEngineLow ||
+              subflow->unacked_bytes_ + ready_bytes <= kMaxUnAckedBytesPerFlow) {
+              return ready_bytes;
+          }
+          return 0;
+      }
+  
+      bool EventOnQueueData(SubUcclFlow *subflow, struct wr_ex *wr_ex,
+                            uint32_t full_chunk_size, uint64_t now) override {
+          return false;
+      }
+  
+      void EventOnRxData(SubUcclFlow *subflow, IMMData *imm_data) override {}
+  
+      bool EventOnTxRTXData(SubUcclFlow *subflow, struct wr_ex *wr_ex) override {
+          return true;
+      }
+  
+      void EventOnRxRTXData(SubUcclFlow *subflow, IMMData *imm_data) override {}
+  
+      void EventOnRxACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {}
+  
+      void EventOnRxNACK(SubUcclFlow *subflow, UcclSackHdr *sack_hdr) override {}
+  
+      void EventOnRxCredit(SubUcclFlow *subflow,
+                           eqds::PullQuanta pullno) override {}
+  };
+
 class TimelyRDMAContext : public RDMAContext {
   public:
     using RDMAContext::RDMAContext;

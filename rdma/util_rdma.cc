@@ -169,6 +169,9 @@ RDMAContext *RDMAFactory::CreateContext(PeerID peer_id, TimerManager *rto,
     else if constexpr (kSenderCCA == SENDER_CCA_TIMELY)
         ctx = new TimelyRDMAContext(peer_id, rto, engine_unacked_bytes, eqds, dev,
                                     engine_offset, meta);
+    else if constexpr (kSenderCCA == SENDER_CCA_SWIFT)
+        ctx = new SwiftRDMAContext(peer_id, rto, engine_unacked_bytes, eqds, dev,
+            engine_offset, meta);
 
     CHECK(ctx != nullptr);
     return ctx;
@@ -869,6 +872,8 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
     uint64_t tx_timestamp;
     uint32_t qpidx;
 
+    uint32_t acked_bytes = 0;
+
     // Traverse unacked_chunks_
     // TODO: we can do more efficiently here.
     for (auto chunk = unacked_chunks_.begin(); chunk != unacked_chunks_.end();
@@ -876,6 +881,9 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
         if (chunk->csn == csn.to_uint32()) {
             // We find it!
             chunk->ureq->send.acked_bytes += chunk->wr_ex->sge.length;
+            
+            acked_bytes += chunk->wr_ex->sge.length;
+            
             if (chunk->ureq->send.acked_bytes == chunk->ureq->send.data_len) {
                 auto poll_ctx = chunk->ureq->poll_ctx;
                 // Wakeup app thread waiting one endpoint
@@ -901,6 +909,8 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
     auto newrtt_tsc = now - tx_timestamp;
 
     subflow->pcb.timely_cc.update_rate(now, newrtt_tsc, kEwmaAlpha);
+
+    subflow->pcb.swift_cc.adjust_wnd(to_usec(newrtt_tsc, freq_ghz), acked_bytes);
 
     return std::make_pair(tx_timestamp, qpidx);
 }
@@ -978,6 +988,8 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
 
     // Update global cwnd.
     subflow->pcb.timely_cc.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
+
+    subflow->pcb.swift_cc.adjust_wnd(to_usec(fabric_delay_tsc, freq_ghz), seg_size);
 
     return fabric_delay_tsc;
 }

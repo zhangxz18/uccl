@@ -44,13 +44,15 @@ enum SenderCCA {
     SENDER_CCA_NONE,
     // Timely [SIGCOMM'15]
     SENDER_CCA_TIMELY,
+    // Swift [SIGCOMM'20]
+    SENDER_CCA_SWIFT,
 };
 enum ReceiverCCA {
     RECEIVER_CCA_NONE,
     // EQDS [NSDI'22]
     RECEIVER_CCA_EQDS,
 };
-static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
+static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_SWIFT;
 static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_NONE;
 static_assert(kSenderCCA != SENDER_CCA_NONE ||
                   kReceiverCCA != RECEIVER_CCA_NONE,

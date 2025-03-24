@@ -10,6 +10,7 @@
 
 #include "eqds.h"
 #include "timely.h"
+#include "swift.h"
 #include "timing_wheel.h"
 #include "util.h"
 
@@ -20,9 +21,11 @@ namespace uccl {
  */
 struct PCB {
     static constexpr std::size_t kSackBitmapBucketSize = sizeof(uint64_t) * 8;
-    PCB() : timely_cc(freq_ghz, LINK_BANDWIDTH) {}
+    PCB() : timely_cc(freq_ghz, LINK_BANDWIDTH), swift_cc(freq_ghz, LINK_BANDWIDTH) {}
 
     timely::TimelyCC timely_cc;
+
+    swift::SwiftCC swift_cc;
 
     eqds::EQDSCC eqds_cc;
 
