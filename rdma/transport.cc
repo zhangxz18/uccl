@@ -320,7 +320,7 @@ void UcclRDMAEngine::handle_tx_work(void) {
 }
 
 void UcclRDMAEngine::handle_timing_wheel(void) {
-    if constexpr (kTestNoTimingWheel)
+    if constexpr (kBypassPacing)
         return;
     for (auto &it : rdma_ctx_map_) {
         it.second->burst_timing_wheel();
@@ -359,7 +359,7 @@ void UcclRDMAEngine::run() {
  */
 void UcclRDMAEngine::periodic_process() {
     // Handle RTOs for all UC QPs.
-    if constexpr (!kUSERC)
+    if constexpr (!kRCMode)
         handle_rto();
 
     // Handle control plane requests.
@@ -493,7 +493,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
         memcpy(buf + kPortEntropy * size + sizeof(uint32_t),
                &rdma_ctx->credit_qp_->qp_num, sizeof(uint32_t));
 
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             memcpy(buf + (kPortEntropy + 1) * size, &rdma_ctx->ctrl_local_psn_,
                    sizeof(uint32_t));
             memcpy(buf + (kPortEntropy + 1) * size + sizeof(uint32_t),
@@ -518,7 +518,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
                                 remote_psn, 0);
             DCHECK(ret == 0) << "Failed to modify data path QP to RTR";
 
-            ret = modify_qp_rts(qp, rdma_ctx->dp_qps_[i].local_psn, kUSERC);
+            ret = modify_qp_rts(qp, rdma_ctx->dp_qps_[i].local_psn, kRCMode);
             DCHECK(ret == 0) << "Failed to modify data path QP to RTS";
         }
 
@@ -534,7 +534,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
 
         ret = modify_qp_rts(credit_qp, rdma_ctx->credit_local_psn_, false);
 
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             auto ctrl_rpsn =
                 *reinterpret_cast<uint32_t *>(buf + (kPortEntropy + 1) * size);
             auto ctrl_rqpn = *reinterpret_cast<uint32_t *>(

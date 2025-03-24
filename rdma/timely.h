@@ -54,7 +54,7 @@ class TimelyCC {
     static constexpr bool kRecord = false;       ///< Fast-record Timely steps
     static constexpr bool kLatencyStats = false; ///< Track per-packet RTT stats
 
-// Config
+    // Config
     static constexpr double kMinRate = 0.1 * 1000 * 1000 * 1000;
     static constexpr double kAddRate = 0.5 * 1000 * 1000 * 1000;
     static constexpr double kTLow = 35;

@@ -158,26 +158,26 @@ error:
  * @return RDMAContext*
  */
 RDMAContext *RDMAFactory::CreateContext(PeerID peer_id, TimerManager *rto,
-                                        uint32_t *engine_ob, eqds::EQDS *eqds,
+                                        uint32_t *engine_unacked_bytes, eqds::EQDS *eqds,
                                         int dev, uint32_t engine_offset,
                                         union CtrlMeta meta) {
     RDMAContext *ctx = nullptr;
 
     if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS)
-        ctx = new EQDSRDMAContext(peer_id, rto, engine_ob, eqds, dev,
+        ctx = new EQDSRDMAContext(peer_id, rto, engine_unacked_bytes, eqds, dev,
                                   engine_offset, meta);
     else if constexpr (kSenderCCA == SENDER_CCA_TIMELY)
-        ctx = new TimelyRDMAContext(peer_id, rto, engine_ob, eqds, dev,
+        ctx = new TimelyRDMAContext(peer_id, rto, engine_unacked_bytes, eqds, dev,
                                     engine_offset, meta);
 
     CHECK(ctx != nullptr);
     return ctx;
 }
 
-RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
+RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_unacked_bytes,
                          eqds::EQDS *eqds, int dev, uint32_t engine_offset,
                          union CtrlMeta meta)
-    : peer_id_(peer_id), rto_(rto), eob_(engine_ob), eqds_(eqds), dev_(dev),
+    : peer_id_(peer_id), rto_(rto), engine_unacked_bytes_(engine_unacked_bytes), eqds_(eqds), dev_(dev),
       engine_offset_(engine_offset),
       wheel_({freq_ghz, us_to_cycles(kWheelSlotWidthUs, freq_ghz),
               us_to_cycles(kWheelHorizonUs, freq_ghz), kBktPoolSize}) {
@@ -243,7 +243,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
     qp_init_attr.qp_context = this;
     qp_init_attr.send_cq = ibv_cq_ex_to_cq(send_cq_ex_);
     qp_init_attr.recv_cq = ibv_cq_ex_to_cq(recv_cq_ex_);
-    if constexpr (!kUSERC)
+    if constexpr (!kRCMode)
         qp_init_attr.qp_type = IBV_QPT_UC;
     else
         qp_init_attr.qp_type = IBV_QPT_RC;
@@ -343,7 +343,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
     }
 
     // Initialize resources needed when using UC.
-    if constexpr (!kUSERC) {
+    if constexpr (!kRCMode) {
         // Create Ctrl QP, CQ, and MR.
         ctrl_local_psn_ = BASE_PSN;
         util_rdma_create_qp(context_, &ctrl_qp_, IBV_QPT_UC, true, true,
@@ -445,7 +445,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
     for (int i = 0; i < kMaxSRQ; i++) {
         struct ibv_recv_wr *bad_wr;
         struct ibv_sge sge;
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             uint64_t chunk_addr;
             if (retr_chunk_pool_->alloc_buff(&chunk_addr))
                 throw std::runtime_error(
@@ -466,7 +466,7 @@ RDMAContext::RDMAContext(PeerID peer_id, TimerManager *rto, uint32_t *engine_ob,
 }
 
 RDMAContext::~RDMAContext() {
-    if constexpr (!kUSERC) {
+    if constexpr (!kRCMode) {
         if (ctrl_mr_ != nullptr) {
             munmap(ctrl_mr_->addr, ctrl_mr_->length);
             ibv_dereg_mr(ctrl_mr_);
@@ -609,7 +609,7 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
 
         // We use high 8 bits of wr_id to store CSN.
         // Lower 56 bits to store subflow pointer.
-        if constexpr (kUSERC)
+        if constexpr (kRCMode)
             wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
         else
             wr->wr_id = 0;
@@ -631,7 +631,7 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
         // Track this chunk.
         subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(),
                                         imm_data.GetHINT());
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             // Arm timer for TX
             arm_timer_for_flow(subflow);
         }
@@ -646,8 +646,8 @@ bool RDMAContext::receiverCC_tx_message(struct ucclRequest *ureq) {
                 ", pull target:" << (uint32_t)pull_target << 
                 " with QP#" << qpidx;
 
-        subflow->outstanding_bytes_ += chunk_size;
-        *eob_ += chunk_size;
+        subflow->unacked_bytes_ += chunk_size;
+        *engine_unacked_bytes_ += chunk_size;
 
         /* zero-length message */
         if (size == 0) break;
@@ -682,7 +682,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
         if (chunk_size == 0 && size)
             return false;
 
-        if constexpr (kTestNoTimingWheel) {
+        if constexpr (kBypassPacing) {
             DCHECK(wr_ex_pool_->alloc_buff(&wr_addr) == 0);
             struct wr_ex *wr_ex = reinterpret_cast<struct wr_ex *>(wr_addr);
             auto wr = &wr_ex->wr;
@@ -709,7 +709,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
             // We use high 8 bits of wr_id to store CSN.
             // Lower 56 bits to store subflow pointer.
-            if constexpr (kUSERC)
+            if constexpr (kRCMode)
                 wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
             else
                 wr->wr_id = 0;
@@ -731,7 +731,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
             // Track this chunk.
             subflow->txtracking.track_chunk(ureq, wr_ex, now, imm_data.GetCSN(),
                                             imm_data.GetHINT());
-            if constexpr (!kUSERC) {
+            if constexpr (!kRCMode) {
                 // Arm timer for TX
                 arm_timer_for_flow(subflow);
             }
@@ -745,8 +745,8 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 ", remaining bytes:" << size - *sent_offset << 
                 " with QP#" << qpidx;
 
-            subflow->outstanding_bytes_ += chunk_size;
-            *eob_ += chunk_size;
+            subflow->unacked_bytes_ += chunk_size;
+            *engine_unacked_bytes_ += chunk_size;
             /* zero-length message */
             if (size == 0) break;
 
@@ -784,7 +784,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
         // We use high 8 bits of wr_id to store CSN.
         // Lower 56 bits to store subflow pointer.
-        if constexpr (kUSERC)
+        if constexpr (kRCMode)
             wr->wr_id = (1ULL * imm_data.GetCSN()) << 56 | (uint64_t)subflow;
         else
             wr->wr_id = 0;
@@ -834,7 +834,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
                 // Track this chunk.
                 subflow->txtracking.track_chunk(
                     ureq, wr_ex, now, imm_data.GetCSN(), imm_data.GetHINT());
-                if constexpr (!kUSERC) {
+                if constexpr (!kRCMode) {
                     // Arm timer for TX
                     arm_timer_for_flow(subflow);
                 }
@@ -853,8 +853,8 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
             ", remaining bytes:" << size - *sent_offset << 
             " with QP#" << qpidx;
 
-        subflow->outstanding_bytes_ += chunk_size;
-        *eob_ += chunk_size;
+        subflow->unacked_bytes_ += chunk_size;
+        *engine_unacked_bytes_ += chunk_size;
         /* zero-length message */
         if (size == 0) break;
     }
@@ -864,7 +864,7 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
 
 std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
     void *subflow_context, RDMAContext *rdma_ctx, UINT_CSN csn, uint64_t now,
-    uint32_t *outstanding_bytes, uint32_t *engine_outstanding_bytes) {
+    uint32_t *flow_unacked_bytes, uint32_t *engine_outstanding_bytes) {
     auto *subflow = reinterpret_cast<SubUcclFlow *>(subflow_context);
     uint64_t tx_timestamp;
     uint32_t qpidx;
@@ -883,7 +883,7 @@ std::pair<uint64_t, uint32_t> TXTracking::ack_rc_transmitted_chunks(
                 UCCL_LOG_IO << "RC TX message complete";
             }
 
-            *outstanding_bytes -= chunk->wr_ex->sge.length;
+            *flow_unacked_bytes -= chunk->wr_ex->sge.length;
             *engine_outstanding_bytes -= chunk->wr_ex->sge.length;
 
             tx_timestamp = chunk->timestamp;
@@ -910,7 +910,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
                                             uint32_t num_acked_chunks,
                                             uint64_t t5, uint64_t t6,
                                             uint64_t remote_queueing_tsc,
-                                            uint32_t *outstanding_bytes) {
+                                            uint32_t *flow_unacked_bytes) {
     DCHECK(num_acked_chunks <= unacked_chunks_.size());
 
     auto *subflow = reinterpret_cast<SubUcclFlow *>(subflow_context);
@@ -933,7 +933,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
 
         seg_size += chunk.wr_ex->sge.length;
 
-        *outstanding_bytes -= chunk.wr_ex->sge.length;
+        *flow_unacked_bytes -= chunk.wr_ex->sge.length;
 
         // Free wr_ex here.
         rdma_ctx->wr_ex_pool_->free_buff(
@@ -1079,7 +1079,7 @@ void RDMAContext::rc_rx_ack(void) {
     auto subflow = reinterpret_cast<SubUcclFlow *>((wr_id & 0xffffffffffffff));
 
     auto pair = subflow->txtracking.ack_rc_transmitted_chunks(
-        subflow, this, csn, now, &subflow->outstanding_bytes_, eob_);
+        subflow, this, csn, now, &subflow->unacked_bytes_, engine_unacked_bytes_);
 
     subflow->update_scoreboard_rtt(pair.first, pair.second);
 
@@ -1214,7 +1214,7 @@ void RDMAContext::check_srq(bool force) {
     while (post_srq_cnt_ >= kPostRQThreshold) {
         struct ibv_recv_wr *bad_wr;
 
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             for (int i = 0; i < kPostRQThreshold; i++) {
                 uint64_t chunk_addr;
                 DCHECK(retr_chunk_pool_->alloc_buff(&chunk_addr) == 0);
@@ -1234,7 +1234,7 @@ void RDMAContext::check_srq(bool force) {
 
     if (force && post_srq_cnt_) {
         struct ibv_recv_wr *bad_wr;
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             for (int i = 0; i < post_srq_cnt_; i++) {
                 uint64_t chunk_addr;
                 DCHECK(retr_chunk_pool_->alloc_buff(&chunk_addr) == 0);
@@ -1427,12 +1427,12 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
             t5 = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
 
         DCHECK(engine_offset_ < NUM_ENGINES);
-        auto reduced_bytes = subflow->outstanding_bytes_;
+        auto reduced_bytes = subflow->unacked_bytes_;
         auto newrtt_tsc = subflow->txtracking.ack_transmitted_chunks(
             subflow, this, num_acked_chunks.to_uint32(), t5, t6,
-            remote_queueing_tsc, &subflow->outstanding_bytes_);
-        reduced_bytes -= subflow->outstanding_bytes_;
-        *eob_ -= reduced_bytes;
+            remote_queueing_tsc, &subflow->unacked_bytes_);
+        reduced_bytes -= subflow->unacked_bytes_;
+        *engine_unacked_bytes_ -= reduced_bytes;
         if (qpidx < kPortEntropy)
             subflow->update_scoreboard_rtt(newrtt_tsc, qpidx);
         else {
@@ -1585,7 +1585,7 @@ void RDMAContext::burst_timing_wheel(void) {
         // Track this chunk.
         subflow->txtracking.track_chunk(wr_ex->ureq, wr_ex, rdtsc(),
                                         imm_data.GetCSN(), imm_data.GetHINT());
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             // Arm timer for TX
             arm_timer_for_flow(subflow);
         }
@@ -1596,7 +1596,7 @@ void RDMAContext::burst_timing_wheel(void) {
 
         wheel->ready_queue_.pop_front();
 
-        if (*eob_ >= kMaxOutstandingBytesEngine) {
+        if (*engine_unacked_bytes_ >= kMaxUnAckedBytesPerEngineHigh) {
             // The code is here because we want to at least send one chunk.
             // Push the message to the pending transmit queue.
             return;
@@ -1632,7 +1632,7 @@ void RDMAContext::try_update_csn(SubUcclFlow *subflow) {
         UCCL_LOG_IO << "try_update_csn:"
                 << " rcv_nxt: " << subflow->pcb.rcv_nxt.to_uint32();
 
-        if constexpr (!kUSERC) {
+        if constexpr (!kRCMode) {
             subflow->pcb.sack_bitmap_shift_left_one();
         }
     }

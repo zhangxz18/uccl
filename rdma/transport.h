@@ -154,7 +154,7 @@ class UcclRDMAEngine {
     void rc_handle_completion(void);
 
     inline void handle_completion(void) {
-        if constexpr (!kUSERC)
+        if constexpr (!kRCMode)
             uc_handle_completion();
         else
             rc_handle_completion();

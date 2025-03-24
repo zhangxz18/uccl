@@ -430,14 +430,14 @@ class TXTracking {
     std::pair<uint64_t, uint32_t>
     ack_rc_transmitted_chunks(void *subflow_context, RDMAContext *rdma_ctx,
                               UINT_CSN csn, uint64_t now,
-                              uint32_t *outstanding_bytes,
+                              uint32_t *flow_unacked_bytes,
                               uint32_t *engine_outstanding_bytes);
 
     uint64_t ack_transmitted_chunks(void *subflow_context,
                                     RDMAContext *rdma_ctx,
                                     uint32_t num_acked_chunks, uint64_t t5,
                                     uint64_t t6, uint64_t remote_queueing_tsc,
-                                    uint32_t *outstanding_bytes);
+                                    uint32_t *flow_unacked_bytes);
 
     inline void track_chunk(struct ucclRequest *ureq, struct wr_ex *wr_ex,
                             uint64_t timestamp, uint32_t csn, bool last_chunk) {
@@ -479,7 +479,7 @@ class SubUcclFlow {
     // Next path used in the ACK.
     uint16_t next_ack_path_;
 
-    uint32_t outstanding_bytes_ = 0;
+    uint32_t unacked_bytes_ = 0;
 
     uint32_t backlog_bytes_ = 0;
 
@@ -737,7 +737,7 @@ class RDMAContext {
     uint32_t consecutive_same_choice_bytes_ = 0;
     uint32_t last_qp_choice_ = 0;
 
-    uint32_t *eob_;
+    uint32_t *engine_unacked_bytes_;
 
     inline void update_clock(double ratio, double offset) {
         ratio_ = ratio;
@@ -998,7 +998,7 @@ class EQDSRDMAContext : public RDMAContext {
         uint32_t chunk_size;
 
         if constexpr (kSenderCCA != SENDER_CCA_NONE) {
-            if (subflow->outstanding_bytes_ >= subflow->pcb.timely_cc.get_wnd())
+            if (subflow->unacked_bytes_ >= subflow->pcb.timely_cc.get_wnd())
                 return 0;
         }
 
@@ -1082,15 +1082,13 @@ class TimelyRDMAContext : public RDMAContext {
 
     uint32_t EventOnChunkSize(SubUcclFlow *subflow,
                               uint32_t remaining_bytes) override {
-        // if (*eob_ >= kMaxOutstandingBytesEngine ||
-        //     subflow->outstanding_bytes_ >= kMaxOutstandingBytesPerFlow) {
-        //     return 0;
-        // }
-        // return std::min(remaining_bytes, kChunkSize);
-
         auto ready_bytes = std::min(remaining_bytes, kChunkSize);
-        if (*eob_ + ready_bytes <= kMaxOutstandingBytesEngine ||
-            subflow->outstanding_bytes_ + ready_bytes <= kMaxOutstandingBytesPerFlow) {
+
+        if (*engine_unacked_bytes_ + ready_bytes > kMaxUnAckedBytesPerEngineHigh)
+            return 0;
+
+        if (*engine_unacked_bytes_ + ready_bytes <= kMaxUnAckedBytesPerEngineLow ||
+            subflow->unacked_bytes_ + ready_bytes <= kMaxUnAckedBytesPerFlow) {
             return ready_bytes;
         }
         return 0;
@@ -1161,7 +1159,7 @@ class RDMAFactory {
      * @return RDMAContext*
      */
     static RDMAContext *CreateContext(PeerID peer_id, TimerManager *rto,
-                                      uint32_t *engine_ob, eqds::EQDS *eqds,
+                                      uint32_t *engine_unacked_bytes, eqds::EQDS *eqds,
                                       int dev, uint32_t engine_offset_,
                                       union CtrlMeta meta);
     static inline struct FactoryDevice *get_factory_dev(int dev) {

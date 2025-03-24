@@ -13,10 +13,10 @@ static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 static constexpr bool ROCE_NET = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("87.120.213.6");
-// static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-// static constexpr uint8_t NUM_DEVICES = 8;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
-static constexpr uint8_t NUM_DEVICES = 4;
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+static constexpr uint8_t NUM_DEVICES = 8;
+// static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
+// static constexpr uint8_t NUM_DEVICES = 4;
 static constexpr double LINK_BANDWIDTH = 400.0 * 1e9 / 8; // 400Gbps
 static constexpr uint32_t MAX_PEER = 256;
 // Maximum number of flows (one-way) on each engine.
@@ -24,32 +24,20 @@ static constexpr uint32_t MAX_FLOW = 256;
 static constexpr uint8_t IB_PORT_NUM = 1;
 /// Interface configuration.
 
-// # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 4;
-// Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
-static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
-static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
-// Minimum post receive size in NCCL.
-static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
-// PortEntropy/Path/QP per engine. The total number is NUM_ENGINES *
-// kPortEntropy.
+// Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static constexpr uint32_t kPortEntropy = 64;
-// Chunk size for each WQE.
+// Use RC rather than UC.
+static constexpr bool kRCMode = true;
+// Maximum chunk size (Bytes) for each WQE.
 static constexpr uint32_t kChunkSize = 32 << 10;
-// Note that load-based policy shoud >= ENGINE_POLICY_LOAD.
-enum engine_lb_policy {
-    // Bind each flow to one engine.
-    ENGINE_POLICY_BIND,
-    // Round-robin among engines.
-    ENGINE_POLICY_RR,
-    // Choose obliviously.
-    ENGINE_POLICY_OBLIVIOUS,
-    // Load balancing based on the load of each engine.
-    ENGINE_POLICY_LOAD,
-    // Variant of ENGINE_POLICY_LOAD, which uses power of two.
-    ENGINE_POLICY_LOAD_POT,
-};
-static constexpr enum engine_lb_policy kEngineLBPolicy = ENGINE_POLICY_RR;
+// Bypass the pacing stage.
+static constexpr bool kBypassPacing = true;
+
+// Limit the per-flow outstanding bytes on each engine.
+static constexpr uint32_t kMaxUnAckedBytesPerFlow = 2 * std::max(kChunkSize, 32768u);
+// Limit the outstanding bytes on each engine.
+static constexpr uint32_t kMaxUnAckedBytesPerEngineLow = 18 * std::max(kChunkSize, 32768u);
+static constexpr uint32_t kMaxUnAckedBytesPerEngineHigh = 24 * std::max(kChunkSize, 32768u);
 
 // Congestion control algorithm.
 enum SenderCCA {
@@ -69,12 +57,33 @@ static_assert(kSenderCCA != SENDER_CCA_NONE ||
               "At least one of the sender and receiver must have a congestion "
               "control algorithm.");
 
+// # of engines per device.
+static constexpr uint32_t NUM_ENGINES = 4;
+// Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
+static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
+static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
+// Minimum post receive size in NCCL.
+static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
+
+// Note that load-based policy shoud >= ENGINE_POLICY_LOAD.
+enum engine_lb_policy {
+    // Bind each flow to one engine.
+    ENGINE_POLICY_BIND,
+    // Round-robin among engines.
+    ENGINE_POLICY_RR,
+    // Choose obliviously.
+    ENGINE_POLICY_OBLIVIOUS,
+    // Load balancing based on the load of each engine.
+    ENGINE_POLICY_LOAD,
+    // Variant of ENGINE_POLICY_LOAD, which uses power of two.
+    ENGINE_POLICY_LOAD_POT,
+};
+static constexpr enum engine_lb_policy kEngineLBPolicy = ENGINE_POLICY_RR;
+
 static const uint32_t PACER_CPU_START = 3 * NUM_CPUS / 4;
 
-// Use RC rather than UC.
-static constexpr bool kUSERC = true;
 constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
-                                (kUSERC ? 0 : 1) /* Ctrl QP */;
+                                (kRCMode ? 0 : 1) /* Ctrl QP */;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static constexpr uint32_t kRCSize = 8192;
 
@@ -85,10 +94,6 @@ static constexpr uint32_t kMAXUseCacheQPSize = 8192;
 // Message size threshold for bypassing the timing wheel.
 static constexpr uint32_t kBypassTimingWheelThres = 9000;
 
-// Limit the per-flow outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesPerFlow = 2 * std::max(kChunkSize, 32768u);
-// Limit the outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesEngine = 18 * std::max(kChunkSize, 32768u);
 // # of Tx work handled in one loop.
 static constexpr uint32_t kMaxTxWork = 4;
 // Maximum number of Tx bytes to be transmitted in one loop.
@@ -160,8 +165,6 @@ static constexpr size_t kSlowTimerIntervalUs = 1000;
 /// Debugging and testing.
 // Disable hardware timestamp.
 static constexpr bool kTestNoHWTimestamp = false;
-// Bypass the timing wheel.
-static constexpr bool kTestNoTimingWheel = true;
 // Use constant(maximum) rate for transmission.
 static constexpr bool kTestConstantRate = false;
 // Test lossy network.
