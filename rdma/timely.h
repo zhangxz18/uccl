@@ -55,17 +55,11 @@ class TimelyCC {
     static constexpr bool kLatencyStats = false; ///< Track per-packet RTT stats
 
 // Config
-#ifdef CLOUDLAB_DEV
-    static constexpr double kMinRate = 60 * 1000 * 1000;
-    static constexpr double kAddRate = 60 * 1000 * 1000;
-    static constexpr double kTLow = 50;
-    static constexpr double kTHigh = 500;
-#else
     static constexpr double kMinRate = 0.1 * 1000 * 1000 * 1000;
     static constexpr double kAddRate = 0.5 * 1000 * 1000 * 1000;
     static constexpr double kTLow = 35;
     static constexpr double kTHigh = 350;
-#endif
+
     static constexpr double kMinRTT = 2;
     static constexpr size_t kHaiThresh = 5;
 

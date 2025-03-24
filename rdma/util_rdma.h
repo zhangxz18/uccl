@@ -959,12 +959,12 @@ class RDMAContext {
      */
     void __retransmit_for_flow(void *context, bool rto);
     inline void fast_retransmit_for_flow(void *context) {
-        if constexpr (USE_ROCE || kTestLoss) {
+        if constexpr (ROCE_NET || kTestLoss) {
             __retransmit_for_flow(context, false);
         }
     }
     inline void rto_retransmit_for_flow(void *context) {
-        if constexpr (USE_ROCE || kTestLoss) {
+        if constexpr (ROCE_NET || kTestLoss) {
             __retransmit_for_flow(context, true);
         }
     }
@@ -1188,7 +1188,7 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, int dev) {
 
     attr.qp_state = IBV_QPS_RTR;
     attr.path_mtu = factory_dev->port_attr.active_mtu;
-    if (USE_ROCE) {
+    if (ROCE_NET) {
         attr.ah_attr.is_global = 1;
         attr.ah_attr.grh.dgid = factory_dev->gid;
         attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
@@ -1233,7 +1233,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, int dev,
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
     attr.path_mtu = factory_dev->port_attr.active_mtu;
-    if (USE_ROCE) {
+    if (ROCE_NET) {
         attr.ah_attr.is_global = 1;
         attr.ah_attr.port_num = IB_PORT_NUM;
         attr.ah_attr.grh.dgid = remote_ctx->remote_gid;

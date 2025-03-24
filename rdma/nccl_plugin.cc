@@ -114,7 +114,7 @@ ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t *props) {
     props->name = factory_dev->ib_name;
 
     // Speed in *Mbps*. 100000 means 100G
-    props->speed = kLinkBandwidth * 8 / 1e6;
+    props->speed = LINK_BANDWIDTH * 8 / 1e6;
 
     pluginPciPath(factory_dev->ib_name, &props->pciPath);
 

@@ -6,36 +6,22 @@
 #include <string>
 #include <thread>
 
-// #define CLOUDLAB_DEV
-
 // #define STATS
 
 /// Interface configuration.
-static constexpr uint32_t MAX_PEER = 256;
-// Maximum number of flows (one-way) on each engine.
-static constexpr uint32_t MAX_FLOW = 256;
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
-#ifdef CLOUDLAB_DEV
-static constexpr bool USE_ROCE = true;
-// If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("87.120.213.6");
-static constexpr uint8_t NUM_DEVICES = 2;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2, 3};
-#else
-static constexpr bool USE_ROCE = false;
+static constexpr bool ROCE_NET = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("87.120.213.6");
 // static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 // static constexpr uint8_t NUM_DEVICES = 8;
 static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
 static constexpr uint8_t NUM_DEVICES = 4;
-#endif
+static constexpr double LINK_BANDWIDTH = 400.0 * 1e9 / 8; // 400Gbps
+static constexpr uint32_t MAX_PEER = 256;
+// Maximum number of flows (one-way) on each engine.
+static constexpr uint32_t MAX_FLOW = 256;
 static constexpr uint8_t IB_PORT_NUM = 1;
-#ifdef CLOUDLAB_DEV
-static constexpr double kLinkBandwidth = 25.0 * 1e9 / 8; // 25Gbps
-#else
-static constexpr double kLinkBandwidth = 400.0 * 1e9 / 8; // 400Gbps
-#endif
 /// Interface configuration.
 
 // # of engines per device.
@@ -155,7 +141,7 @@ static constexpr std::size_t kSackBitmapSize = 64 << 1;
 // the network supports adaptive routing, duplicate acks may be caused by
 // adaptive routing. In this case, kFastRexmitDupAckThres should be set to a
 // value greater than 0.
-static constexpr std::size_t kFastRexmitDupAckThres = USE_ROCE ? 32 : 65536;
+static constexpr std::size_t kFastRexmitDupAckThres = ROCE_NET ? 32 : 65536;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static constexpr uint32_t kRTOAbortThreshold = 50;
@@ -182,5 +168,5 @@ static constexpr bool kTestConstantRate = false;
 static constexpr bool kTestLoss = false;
 static constexpr double kTestLossRate = 0.0;
 // Disable RTO.
-static constexpr bool kTestNoRTO = (USE_ROCE || kTestLoss) ? false : true; // Infiniband is lossless, disable RTO even for UC.
+static constexpr bool kTestNoRTO = (ROCE_NET || kTestLoss) ? false : true; // Infiniband is lossless, disable RTO even for UC.
 /// Debugging and testing.

@@ -92,10 +92,10 @@ void RDMAFactory::init_dev(int devname_suffix) {
         goto close_device;
     }
 
-    if (USE_ROCE && port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
+    if (ROCE_NET && port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
         fprintf(stderr, "RoCE is not supported\n");
         goto close_device;
-    } else if (!USE_ROCE && port_attr.link_layer != IBV_LINK_LAYER_INFINIBAND) {
+    } else if (!ROCE_NET && port_attr.link_layer != IBV_LINK_LAYER_INFINIBAND) {
         fprintf(stderr, "IB is not supported\n");
         goto close_device;
     }
@@ -103,7 +103,7 @@ void RDMAFactory::init_dev(int devname_suffix) {
     dev.dev_attr = dev_attr;
     dev.port_attr = port_attr;
     dev.ib_port_num = IB_PORT_NUM;
-    dev.gid_idx = USE_ROCE ? 3 : 0;
+    dev.gid_idx = ROCE_NET ? 3 : 0;
     dev.context = context;
 
     if (ibv_query_gid(context, IB_PORT_NUM, dev.gid_idx, &dev.gid)) {
@@ -793,11 +793,11 @@ bool RDMAContext::senderCC_tx_message(struct ucclRequest *ureq) {
             auto wheel = &wheel_;
             uint32_t hdr_overhead;
             if (likely(chunk_size == kChunkSize && mtu_bytes_ == 4096)) {
-                hdr_overhead = USE_ROCE ? MAX_CHUNK_IB_4096_HDR_OVERHEAD
+                hdr_overhead = ROCE_NET ? MAX_CHUNK_IB_4096_HDR_OVERHEAD
                                         : MAX_CHUNK_ROCE_IPV4_4096_HDR_OVERHEAD;
             } else {
                 auto num_mtu = (chunk_size + mtu_bytes_) / mtu_bytes_;
-                hdr_overhead = num_mtu * (USE_ROCE ? ROCE_IPV4_HDR_OVERHEAD
+                hdr_overhead = num_mtu * (ROCE_NET ? ROCE_IPV4_HDR_OVERHEAD
                                                    : IB_HDR_OVERHEAD);
             }
 
@@ -955,7 +955,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
     auto fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
     // Make RTT independent of segment size.
     auto serial_delay_tsc =
-        us_to_cycles(seg_size * 1e6 / kLinkBandwidth, freq_ghz);
+        us_to_cycles(seg_size * 1e6 / LINK_BANDWIDTH, freq_ghz);
     if (fabric_delay_tsc > serial_delay_tsc)
         fabric_delay_tsc -= serial_delay_tsc;
     else {
@@ -1709,7 +1709,7 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
 
     UCCL_LOG_IO << "This retransmission chunk is accepted!!!";
 // Accept this retransmission chunk.
-#ifdef CLOUDLAB_DEV
+#ifdef CPU_MEMORY
     memcpy(reinterpret_cast<void *>(hdr->remote_addr),
             reinterpret_cast<void *>(chunk_addr +
                                     sizeof(struct retr_chunk_hdr)),
