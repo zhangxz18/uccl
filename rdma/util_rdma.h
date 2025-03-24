@@ -959,12 +959,12 @@ class RDMAContext {
      */
     void __retransmit_for_flow(void *context, bool rto);
     inline void fast_retransmit_for_flow(void *context) {
-        if constexpr (USE_ROCE) {
+        if constexpr (USE_ROCE || kTestLoss) {
             __retransmit_for_flow(context, false);
         }
     }
     inline void rto_retransmit_for_flow(void *context) {
-        if constexpr (USE_ROCE) {
+        if constexpr (USE_ROCE || kTestLoss) {
             __retransmit_for_flow(context, true);
         }
     }

@@ -100,13 +100,13 @@ static constexpr uint32_t kMAXUseCacheQPSize = 8192;
 static constexpr uint32_t kBypassTimingWheelThres = 9000;
 
 // Limit the per-flow outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesPerFlow = 2 * kChunkSize;
+static constexpr uint32_t kMaxOutstandingBytesPerFlow = 2 * std::max(kChunkSize, 32768u);
 // Limit the outstanding bytes on each engine.
-static constexpr uint32_t kMaxOutstandingBytesEngine = 16 * kChunkSize;
+static constexpr uint32_t kMaxOutstandingBytesEngine = 18 * std::max(kChunkSize, 32768u);
 // # of Tx work handled in one loop.
 static constexpr uint32_t kMaxTxWork = 4;
 // Maximum number of Tx bytes to be transmitted in one loop.
-static constexpr uint32_t kMaxTxBytesThres = 32 * kChunkSize;
+static constexpr uint32_t kMaxTxBytesThres = 32 * std::max(kChunkSize, 32768u);
 // # of Rx work handled in one loop.
 static constexpr uint32_t kMaxRxWork = 8;
 // Completion queue (CQ) size.
@@ -163,13 +163,13 @@ static constexpr uint32_t kRTOAbortThreshold = 50;
 // Constant/Dynamic RTO.
 static constexpr bool kConstRTO = true;
 // kConstRTO == true: Constant retransmission timeout in microseconds.
-static constexpr double kRTOUSec = 100; // 100us
+static constexpr double kRTOUSec = 1000;
 // kConstRTO == false: Minimum retransmission timeout in microseconds.
-static constexpr double kMinRTOUsec = 100; // 100us
+static constexpr double kMinRTOUsec = 1000;
 static constexpr uint32_t kRTORTT = 4;      // RTO = kRTORTT RTTs
 
 // Slow timer (periodic processing) interval in microseconds.
-static constexpr size_t kSlowTimerIntervalUs = 1000; // 1ms
+static constexpr size_t kSlowTimerIntervalUs = 1000;
 
 /// Debugging and testing.
 // Disable hardware timestamp.
@@ -182,5 +182,5 @@ static constexpr bool kTestConstantRate = false;
 static constexpr bool kTestLoss = false;
 static constexpr double kTestLossRate = 0.0;
 // Disable RTO.
-static constexpr bool kTestNoRTO = USE_ROCE ? false : true; // Infiniband is lossless, disable RTO even for UC.
+static constexpr bool kTestNoRTO = (USE_ROCE || kTestLoss) ? false : true; // Infiniband is lossless, disable RTO even for UC.
 /// Debugging and testing.
