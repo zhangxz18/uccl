@@ -988,7 +988,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
 
     // Update global cwnd.
     subflow->pcb.timely_cc.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
-
+    // TODO: seperate enpoint delay and fabric delay.
     subflow->pcb.swift_cc.adjust_wnd(to_usec(fabric_delay_tsc, freq_ghz), seg_size);
 
     return fabric_delay_tsc;

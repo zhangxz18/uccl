@@ -24,6 +24,8 @@ static constexpr uint32_t MAX_FLOW = 256;
 static constexpr uint8_t IB_PORT_NUM = 1;
 /// Interface configuration.
 
+// # of engines per device.
+static constexpr uint32_t NUM_ENGINES = 4;
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static constexpr uint32_t kPortEntropy = 64;
 // Use RC rather than UC.
@@ -36,7 +38,9 @@ static constexpr bool kBypassPacing = true;
 // Limit the per-flow outstanding bytes on each engine.
 static constexpr uint32_t kMaxUnAckedBytesPerFlow = 2 * std::max(kChunkSize, 32768u);
 // Limit the outstanding bytes on each engine.
+// Low means if a flow exceeds its own budget but doesn't exceed the Low threshold, it can send until Low threshold.
 static constexpr uint32_t kMaxUnAckedBytesPerEngineLow = 18 * std::max(kChunkSize, 32768u);
+// High means if all flows reach this threshold, all flows can't send any bytes.
 static constexpr uint32_t kMaxUnAckedBytesPerEngineHigh = 24 * std::max(kChunkSize, 32768u);
 
 // Congestion control algorithm.
@@ -52,15 +56,13 @@ enum ReceiverCCA {
     // EQDS [NSDI'22]
     RECEIVER_CCA_EQDS,
 };
-static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_SWIFT;
+static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
 static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_NONE;
 static_assert(kSenderCCA != SENDER_CCA_NONE ||
                   kReceiverCCA != RECEIVER_CCA_NONE,
               "At least one of the sender and receiver must have a congestion "
               "control algorithm.");
 
-// # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 4;
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
