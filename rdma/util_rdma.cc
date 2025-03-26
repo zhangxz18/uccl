@@ -1093,6 +1093,26 @@ void RDMAContext::rc_rx_ack(void) {
     auto pair = subflow->txtracking.ack_rc_transmitted_chunks(
         subflow, this, csn, now, &subflow->unacked_bytes_, engine_unacked_bytes_);
 
+    #ifdef TEST_CC_REACTION
+    auto hw_ts = convert_nic_to_host(ibv_wc_read_completion_ts(cq_ex));
+
+    static bool first = true;
+    static double avg_react_delay = 0.0;
+    static int count = 0;
+    auto reaction_delay = to_usec(now - hw_ts, freq_ghz);
+    
+    if (reaction_delay < 500 /* filter wrong values (probabaly due to clock sync) */ && count++ > 5000 /* warmup */) {
+        if (first) {
+            avg_react_delay = reaction_delay;
+            first = false;
+        }
+        else {
+            avg_react_delay = (avg_react_delay * count + reaction_delay) / (count + 1);
+        }
+        LOG_EVERY_N(INFO, 1000) << "CC decision delay: " << reaction_delay << "us, Average CC decision delay: " << avg_react_delay << "us";
+    }
+    #endif
+    
     subflow->update_scoreboard_rtt(pair.first, pair.second);
 
     UCCL_LOG_IO << "Received ACK for csn: " << csn;
