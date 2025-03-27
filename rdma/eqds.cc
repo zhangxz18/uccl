@@ -63,15 +63,16 @@ void EQDS::run_pacer(void) {
 void EQDS::handle_grant_credit() {
     struct list_head *pos, *n;
     uint32_t budget = 0;
+    uint16_t total_consumed;
+    PullQuanta consumed;
 
     if (!list_empty(&active_senders_)) {
-        while (!list_empty(&active_senders_) && budget < kSendersPerPull) {
+        while (!list_empty(&active_senders_) && (budget < kSendersPerPull || total_consumed < kCreditPerPull * kSendersPerPull)) {
             list_for_each_safe(pos, n, &active_senders_) {
                 auto item = list_entry(pos, struct active_item, active_link);
                 auto *sink = item->eqds_cc;
                 list_del(pos);
-
-                if (grant_credit(sink, false)) {
+                if (grant_credit(sink, false, &consumed)) {
                     // Grant done, add it to idle sender list.
                     DCHECK(list_empty(&sink->idle_item.idle_link));
                     list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
@@ -81,8 +82,16 @@ void EQDS::handle_grant_credit() {
                     list_add_tail(pos, &active_senders_);
                 }
 
-                if (++budget >= kSendersPerPull)
+                total_consumed += consumed;
+
+                if (total_consumed >= kCreditPerPull * kSendersPerPull)
                     break;
+                else
+                    continue;
+
+                if (++budget >= kSendersPerPull) {
+                    break;
+                }
             }
         }
     } else {
@@ -92,7 +101,7 @@ void EQDS::handle_grant_credit() {
             auto *sink = item->eqds_cc;
             list_del(pos);
 
-            if (grant_credit(sink, true) && !sink->idle_credit_enough()) {
+            if (grant_credit(sink, true, &consumed) && !sink->idle_credit_enough()) {
                 // Grant done but we can still grant more credit for this
                 // sender.
                 list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
@@ -214,8 +223,8 @@ bool EQDS::send_pull_packet(EQDSCC *eqds_cc) {
 }
 
 // Grant credit to the sender of this flow.
-bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) {
-    uint8_t increment;
+bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle, PullQuanta *ret_increment) {
+    PullQuanta increment;
 
     if (!idle)
         increment = std::min(kCreditPerPull, eqds_cc->backlog());
@@ -228,6 +237,8 @@ bool EQDS::grant_credit(EQDSCC *eqds_cc, bool idle) {
         eqds_cc->latest_pull_ -= increment;
         VLOG(5) << "Failed to send pull packet.";
     }
+
+    *ret_increment = increment;
 
     return eqds_cc->backlog() == 0;
 }

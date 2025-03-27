@@ -104,7 +104,7 @@ static inline PullQuanta quantize_ceil(uint32_t bytes) {
 struct EQDSCC {
 
     static constexpr PullQuanta INIT_PULL_QUANTA = 50;
-    static constexpr uint32_t kEQDSMaxCwnd = 200000; // Bytes
+    static constexpr uint32_t kEQDSMaxCwnd = 500000; // Bytes
 
     /********************************************************************/
     /************************ Sender-side states ************************/
@@ -280,7 +280,7 @@ class EQDS {
     void handle_pull_request(void);
 
     // Grant credit to the sender of this flow.
-    bool grant_credit(EQDSCC *eqds_cc, bool idle);
+    bool grant_credit(EQDSCC *eqds_cc, bool idle, PullQuanta *ret_increment);
 
     bool send_pull_packet(EQDSCC *eqds_cc);
 

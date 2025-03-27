@@ -294,6 +294,7 @@ struct ucclRequest {
             uint32_t acked_bytes; // RC only.
         } send;
     };
+    uint64_t rtt_tsc;
 };
 
 /**

@@ -377,11 +377,11 @@ class RDMAEndpoint {
 
     /// For testing easily.
     ConnID test_uccl_connect(int dev, std::string remote_ip, int remote_dev) {
-        return uccl_connect(dev, 0, remote_dev, 0, remote_ip,
+        return uccl_connect(dev, dev, remote_dev, remote_dev, remote_ip,
                             kTestListenPort + remote_dev);
     }
     ConnID test_uccl_accept(int dev, std::string &remote_ip, int *remote_dev) {
-        return uccl_accept(dev, test_listen_fds_[dev], rdtsc(), remote_ip, remote_dev);
+        return uccl_accept(dev, test_listen_fds_[dev], dev, remote_ip, remote_dev);
     }
     /// For testing easily.
 
