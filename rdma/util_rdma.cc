@@ -985,6 +985,24 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
     // LOG_EVERY_N(INFO, 10000) << "Host: " <<
     // std::round(to_usec(endpoint_delay_tsc, freq_ghz)) <<
     //     ", Fabric: " << std::round(to_usec(fabric_delay_tsc, freq_ghz));
+    
+    #ifdef TEST_TURNAROUND_ESTIMATION
+    static bool first = true;
+    static double avg_turnaround_delay = 0.0;
+    static int count = 0;
+    auto turnaround_delay = to_usec(remote_queueing_tsc, freq_ghz);
+    
+    if (turnaround_delay < 500 /* filter wrong values (probabaly due to clock sync) */ && count++ > 5000 /* warmup */) {
+        if (first) {
+            avg_turnaround_delay = turnaround_delay;
+            first = false;
+        }
+        else {
+            avg_turnaround_delay = (avg_turnaround_delay * count + turnaround_delay) / (count + 1);
+        }
+        LOG_EVERY_N(INFO, 1000) << "Turnaround delay: " << turnaround_delay << "us, Average turnaround delay: " << avg_turnaround_delay << "us";
+    }
+    #endif
 
     // Update global cwnd.
     subflow->pcb.timely_cc.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
@@ -1452,7 +1470,7 @@ void RDMAContext::rx_ack(uint64_t pkt_addr) {
         update_sackbitmap = true;
         auto num_acked_chunks = UINT_CSN(ackno) - subflow->pcb.snd_una;
         auto remote_queueing_tsc =
-            us_to_cycles(be64toh(ucclsackh->remote_queueing.value()), freq_ghz);
+            us_to_cycles((ucclsackh->remote_queueing.value()), freq_ghz);
         if constexpr (kTestNoHWTimestamp)
             t5 = t6;
         else

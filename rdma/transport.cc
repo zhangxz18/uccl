@@ -228,6 +228,8 @@ void UcclRDMAEngine::uc_handle_completion(void) {
         it.second->check_srq(!work);
         it.second->check_ctrl_rq(!work);
 
+        it.second->poll_ctrl_cq();
+
         if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS)
             it.second->check_credit_rq(!work);
     }
