@@ -104,7 +104,7 @@ static inline PullQuanta quantize_ceil(uint32_t bytes) {
 struct EQDSCC {
 
     static constexpr PullQuanta INIT_PULL_QUANTA = 50;
-    static constexpr uint32_t kEQDSMaxCwnd = 500000; // Bytes
+    static constexpr uint32_t kEQDSMaxCwnd = 1000000; // Bytes
 
     /********************************************************************/
     /************************ Sender-side states ************************/

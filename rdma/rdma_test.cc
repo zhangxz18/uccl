@@ -15,6 +15,10 @@
 #include "transport_config.h"
 #include "util_timer.h"
 
+#include "cuda_runtime.h"
+
+#define GPU
+
 using namespace uccl;
 
 static volatile bool quit = false;
@@ -228,63 +232,71 @@ static void server_tpt(std::vector<ConnID> &conn_ids,
 }
 
 static void client_tpt(std::vector<ConnID> &conn_ids,
-                       std::vector<struct Mhandle *> &mhandles,
-                       std::vector<void *> &datas) {
+    std::vector<struct Mhandle *> &mhandles,
+    std::vector<void *> &datas) {
     c_itr = FLAGS_iterations;
     c_itr *= FLAGS_nflow;
 
     std::vector<std::vector<std::vector<struct ucclRequest>>> ureq_vec(
-        FLAGS_nflow);
+    FLAGS_nflow);
     for (int f = 0; f < FLAGS_nflow; f++) {
-        ureq_vec[f].resize(FLAGS_nreq);
-        for (int r = 0; r < FLAGS_nreq; r++) {
-            ureq_vec[f][r].resize(FLAGS_nmsg);
-        }
+    ureq_vec[f].resize(FLAGS_nreq);
+    for (int r = 0; r < FLAGS_nreq; r++) {
+    ureq_vec[f][r].resize(FLAGS_nmsg);
+    for (int n = 0; n < FLAGS_nmsg; n++)
+    ureq_vec[f][r][n] = {};
+    }
     }
     for (int f = 0; f < FLAGS_nflow; f++) {
-        for (int r = 0; r < FLAGS_nreq; r++) {
-            for (int n = 0; n < FLAGS_nmsg; n++) {
-                void *send_data = reinterpret_cast<char *>(datas[f]) +
-                                  r * FLAGS_msize * FLAGS_nmsg +
-                                  n * FLAGS_msize;
-                while (ep->uccl_send_async((UcclFlow *)conn_ids[f].context,
-                                           mhandles[f], send_data, FLAGS_msize,
-                                           &ureq_vec[f][r][n])) {
-                }
-                tx_cur_sec_bytes += FLAGS_msize;
-            }
-            c_itr--;
-        }
+    for (int r = 0; r < FLAGS_nreq; r++) {
+    for (int n = 0; n < FLAGS_nmsg; n++) {
+    void *send_data = reinterpret_cast<char *>(datas[f]) +
+                r * FLAGS_msize * FLAGS_nmsg +
+                n * FLAGS_msize;
+    while (ep->uccl_send_async((UcclFlow *)conn_ids[f].context,
+                            mhandles[f], send_data, FLAGS_msize,
+                            &ureq_vec[f][r][n]) && !quit) {
+    }
+    ureq_vec[f][r][n].rtt_tsc = rdtsc();
+    tx_cur_sec_bytes += FLAGS_msize;
+    }
+    c_itr--;
+    }
     }
 
     int fin_msg = 0;
 
-    while (c_itr) {
-        for (int f = 0; f < FLAGS_nflow; f++) {
-            for (int r = 0; r < FLAGS_nreq; r++) {
-                for (int n = 0; n < FLAGS_nmsg; n++) {
-                    if (ep->uccl_poll_ureq_once(&ureq_vec[f][r][n])) {
-                        void *send_data = reinterpret_cast<char *>(datas[f]) +
-                                          r * FLAGS_msize * FLAGS_nmsg +
-                                          n * FLAGS_msize;
-                        while (!quit && ep->uccl_send_async(
-                                            (UcclFlow *)conn_ids[f].context,
-                                            mhandles[f], send_data, FLAGS_msize,
-                                            &ureq_vec[f][r][n])) {
-                        }
-                        tx_cur_sec_bytes += FLAGS_msize;
-                        if (++fin_msg == FLAGS_nreq) {
-                            c_itr--;
-                            fin_msg = 0;
-                        }
-                    }
-                    if (quit) {
-                        c_itr = 0;
-                        break;
-                    }
-                }
-            }
+    while (c_itr && !quit) {
+    for (int f = 0; f < FLAGS_nflow; f++) {
+    for (int r = 0; r < FLAGS_nreq; r++) {
+    for (int n = 0; n < FLAGS_nmsg; n++) {
+    if (ureq_vec[f][r][n].rtt_tsc == 0 || ep->uccl_poll_ureq_once(&ureq_vec[f][r][n])) {
+
+        ureq_vec[f][r][n].rtt_tsc = 0;
+
+        void *send_data = reinterpret_cast<char *>(datas[f]) +
+                        r * FLAGS_msize * FLAGS_nmsg +
+                        n * FLAGS_msize;
+        if (ep->uccl_send_async(
+                            (UcclFlow *)conn_ids[f].context,
+                            mhandles[f], send_data, FLAGS_msize,
+                            &ureq_vec[f][r][n])) {
+                                continue;
+                            }
+        ureq_vec[f][r][n].rtt_tsc = rdtsc();
+        tx_cur_sec_bytes += FLAGS_msize;
+        if (++fin_msg == FLAGS_nreq) {
+            c_itr--;
+            fin_msg = 0;
         }
+    }
+    if (quit) {
+        c_itr = 0;
+        break;
+    }
+    }
+    }
+    }
     }
 }
 
@@ -302,9 +314,15 @@ static void server_worker(void) {
         auto conn_id = ep->test_uccl_accept(0, remote_ip, &remote_dev);
         printf("Server accepted connection from %s (flow#%d)\n",
                remote_ip.c_str(), i);
+        #ifdef GPU
+        cudaSetDevice(0);
+        void *data;
+        cudaMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        #else        
         void *data =
             mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg,
                  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        #endif
         assert(data != MAP_FAILED);
         ep->uccl_regmr((UcclFlow *)conn_id.context, data,
                        FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);
@@ -344,9 +362,15 @@ static void client_worker(void) {
     for (int i = 0; i < FLAGS_nflow; i++) {
         auto conn_id = ep->test_uccl_connect(0, FLAGS_serverip, 0);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
+        #ifdef GPU
+        cudaSetDevice(0);
+        void *data;
+        cudaMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        #else
         void *data =
             mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg,
                  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        #endif
         assert(data != MAP_FAILED);
         ep->uccl_regmr((UcclFlow *)conn_id.context, data,
                        FLAGS_msize * FLAGS_nreq * FLAGS_nmsg, 0, &mhandles[i]);

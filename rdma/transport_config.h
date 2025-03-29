@@ -66,8 +66,6 @@ static_assert(kSenderCCA != SENDER_CCA_NONE ||
 // Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
-// Minimum post receive size in NCCL.
-static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
 
 // Note that load-based policy shoud >= ENGINE_POLICY_LOAD.
 enum engine_lb_policy {
@@ -90,6 +88,8 @@ constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
                                 (kRCMode ? 0 : 1) /* Ctrl QP */;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static constexpr uint32_t kRCSize = 8192;
+// Minimum post receive size in NCCL.
+static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
 
 // Limit the bytes of consecutive cached QP uses.
 static constexpr uint32_t kMAXConsecutiveSameChoiceBytes = 16384;

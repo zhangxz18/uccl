@@ -48,12 +48,12 @@ struct swift_record_t {
     static constexpr double kAI = 1;
     static constexpr double kBeta = 0.8;
     static constexpr double kMaxDF = 0.5;
-    static constexpr double kBaseDelay = 25;             // in microseconds
+    static constexpr double kBaseDelay = 50;             // in microseconds
 
     // flow scaling
     static constexpr double kFSRange = 5 * kBaseDelay;
     static constexpr double kFSMinCwnd = 8;           // in MTU-sized packets
-    static constexpr double kFSMaxCwnd = 100;           // in MTU-sized packets
+    static constexpr double kFSMaxCwnd = 300;           // in MTU-sized packets
     static constexpr double kFSAlpha = kFSRange / ((1.0 / std::sqrt(kFSMinCwnd)) -  (1.0 / std::sqrt(kFSMaxCwnd)));
     static constexpr double kFSBeta = - kFSAlpha / std::sqrt(kFSMaxCwnd);
 

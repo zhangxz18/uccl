@@ -34,7 +34,7 @@ DEFINE_bool(server, false, "Whether this is a server receiving traffic.");
 DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
 DEFINE_uint32(nflow, 1, "Number of flows.");
 DEFINE_uint32(nmsg, 1, "Number of messages within one request to post.");
-DEFINE_uint32(nreq, 4, "Outstanding requests to post.");
+DEFINE_uint32(nreq, 8, "Outstanding requests to post.");
 DEFINE_uint32(msize, 56 << 10, "Size of message.");
 DEFINE_uint32(iterations, 10000000, "Number of iterations to run.");
 DEFINE_uint32(clients_per_nic, 1, "Number of clients(threads) per NIC.");

@@ -106,8 +106,6 @@ void EQDS::handle_grant_credit() {
                 // sender.
                 list_add_tail(&sink->idle_item.idle_link, &idle_senders_);
             }
-
-            break;
         }
     }
 }
