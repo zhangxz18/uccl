@@ -558,9 +558,8 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
 }
 
 RDMAEndpoint::RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices,
-                           int num_engines_per_dev, int engine_cpu_start)
+                           int num_engines_per_dev)
     : num_devices_(num_devices), num_engines_per_dev_(num_engines_per_dev),
-      engine_cpu_start_(engine_cpu_start),
       stats_thread_([this]() { stats_thread_fn(); }) {
 
     // Initialize all RDMA devices.
@@ -575,9 +574,6 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices,
 
     int total_num_engines = num_devices * num_engines_per_dev;
 
-    CHECK_LE(ENGINE_CPU_START + total_num_engines - 1, NUM_CPUS)
-        << "The number of engines exceeds the number of CPUs";
-
     // Create multiple engines. Each engine has its own thread and channel to
     // let the endpoint communicate with.
     for (int i = 0; i < total_num_engines; i++)
@@ -589,10 +585,13 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices,
             eqds_[i] = new eqds::EQDS(i);
     }
 
-    for (int engine_id = 0, engine_cpu_id = engine_cpu_start;
-         engine_id < total_num_engines; engine_id++, engine_cpu_id++) {
+    for (int engine_id = 0, engine_cpu_id;
+         engine_id < total_num_engines; engine_id++) {
 
         auto dev = engine_id / num_engines_per_dev;
+
+        engine_cpu_id = ENGINE_CPU_START_LIST[dev] + engine_id % num_engines_per_dev;
+        DCHECK(engine_cpu_id < NUM_CPUS) << engine_cpu_id << ", " << NUM_CPUS;
 
         engine_vec_.emplace_back(std::make_unique<UcclRDMAEngine>(
             dev, engine_id, channel_vec_[engine_id], eqds_[dev]));

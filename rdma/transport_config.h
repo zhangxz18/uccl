@@ -28,11 +28,23 @@ static constexpr uint8_t kTrafficClass = ROCE_NET ? 3 : 0;
 static constexpr uint8_t kServiceLevel = ROCE_NET ? 135 : 0;
 // GID Index
 static constexpr uint8_t GID_IDX = ROCE_NET ? 3 : 0;
-
 /// Interface configuration.
 
 // # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 4;
+static constexpr uint32_t NUM_ENGINES = 2;
+static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
+// Each dev use [ENGINE_CPU_START_LIST[dev], ENGINE_CPU_START_LIST[dev] + NUM_ENGINES)
+static uint32_t ENGINE_CPU_START_LIST[8] = {
+    16,
+    16 + NUM_ENGINES,
+    16 + 2 * NUM_ENGINES,
+    16 + 3 * NUM_ENGINES,
+    48,
+    48 + NUM_ENGINES,
+    48 + 2 * NUM_ENGINES,
+    48 + 3 * NUM_ENGINES,
+};
+
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static constexpr uint32_t kPortEntropy = 64;
 // Use RC rather than UC.
@@ -69,10 +81,6 @@ static_assert(kSenderCCA != SENDER_CCA_NONE ||
                   kReceiverCCA != RECEIVER_CCA_NONE,
               "At least one of the sender and receiver must have a congestion "
               "control algorithm.");
-
-// Starting from 1/4 of the CPUs to avoid conflicting with nccl proxy service.
-static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
-static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 
 // Note that load-based policy shoud >= ENGINE_POLICY_LOAD.
 enum engine_lb_policy {

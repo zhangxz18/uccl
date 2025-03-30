@@ -17,7 +17,7 @@
 
 #include "cuda_runtime.h"
 
-#define GPU
+#define GPU 0
 
 using namespace uccl;
 
@@ -32,13 +32,13 @@ void interrupt_handler(int signal) {
 
 DEFINE_bool(server, false, "Whether this is a server receiving traffic.");
 DEFINE_string(serverip, "", "Server IP address the client tries to connect.");
-DEFINE_string(perftype, "basic", "Performance type: basic/lat/tpt/bi.");
+DEFINE_string(perftype, "tpt", "Performance type: basic/lat/tpt/bi.");
 DEFINE_bool(warmup, false, "Whether to run warmup.");
-DEFINE_uint32(nflow, 1, "Number of flows.");
-DEFINE_uint32(nmsg, 8, "Number of messages within one request to post.");
-DEFINE_uint32(nreq, 4, "Outstanding requests to post.");
-DEFINE_uint32(msize, 65536, "Size of message.");
-DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
+DEFINE_uint32(nflow, 4, "Number of flows.");
+DEFINE_uint32(nmsg, 1, "Number of messages within one request to post.");
+DEFINE_uint32(nreq, 2, "Outstanding requests to post.");
+DEFINE_uint32(msize, 1000000, "Size of message.");
+DEFINE_uint32(iterations, 1000000, "Number of iterations to run.");
 DEFINE_bool(flush, false, "Whether to flush after receiving.");
 DEFINE_bool(bi, false, "Whether to run bidirectional test.");
 
@@ -315,7 +315,7 @@ static void server_worker(void) {
         printf("Server accepted connection from %s (flow#%d)\n",
                remote_ip.c_str(), i);
         #ifdef GPU
-        cudaSetDevice(0);
+        cudaSetDevice(GPU);
         void *data;
         cudaMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
         #else        
@@ -363,7 +363,7 @@ static void client_worker(void) {
         auto conn_id = ep->test_uccl_connect(0, FLAGS_serverip, 0);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         #ifdef GPU
-        cudaSetDevice(0);
+        cudaSetDevice(GPU);
         void *data;
         cudaMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
         #else
@@ -405,7 +405,7 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, interrupt_handler);
     signal(SIGHUP, interrupt_handler);
 
-    ep.emplace(DEVNAME_SUFFIX_LIST, NUM_DEVICES, NUM_ENGINES, ENGINE_CPU_START);
+    ep.emplace(DEVNAME_SUFFIX_LIST, NUM_DEVICES, NUM_ENGINES);
 
     // Create a thread to print throughput every second
     std::thread t([&] {

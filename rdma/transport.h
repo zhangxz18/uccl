@@ -324,12 +324,6 @@ class RDMAEndpoint {
 
     std::shared_ptr<RDMAFactory> rdma_ctl_;
 
-    // The first CPU to run the engine thread belongs to the RDMAEndpoint.
-    // The range of CPUs for one device to run engine threads is
-    // [engine_cpu_start_ + i*dev, engine_cpu_start_ + i*dev +
-    // num_engines_per_dev_).
-    int engine_cpu_start_;
-
     // RDMA devices.
     int num_devices_;
 
@@ -372,7 +366,7 @@ class RDMAEndpoint {
 
   public:
     RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices,
-                 int num_engines_per_dev, int engine_cpu_start);
+                 int num_engines_per_dev);
     ~RDMAEndpoint();
 
     /// For testing easily.
