@@ -370,6 +370,7 @@ int main(int argc, char *argv[]) {
                 std::cout << "Write file done." << std::endl;
             }
         }
+        return 0;
     });
 
     if (FLAGS_bi) {

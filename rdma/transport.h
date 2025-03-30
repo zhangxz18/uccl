@@ -592,7 +592,7 @@ class UcclFlow {
         auto fifo_rqpn = *reinterpret_cast<uint32_t *>(buf + sizeof(uint32_t));
 
         UCCL_INIT_CHECK(modify_qp_rtr(comm_base->fifo_qp, dev, &remote_ctx_,
-                                      fifo_rqpn, fifo_rpsn, 1) == 0,
+                                      fifo_rqpn, fifo_rpsn) == 0,
                         "Failed to modify Fifo QP to RTR");
         UCCL_INIT_CHECK(modify_qp_rts(comm_base->fifo_qp, fifo_lpsn, true) == 0,
                         "Failed to modify Fifo QP to RTS");
@@ -664,7 +664,7 @@ class UcclFlow {
         auto rc_rqpn = *reinterpret_cast<uint32_t *>(buf + sizeof(uint32_t));
 
         UCCL_INIT_CHECK(modify_qp_rtr(comm_base->rc_qp, dev, &remote_ctx_,
-                                      rc_rqpn, rc_rpsn, 0) == 0,
+                                      rc_rqpn, rc_rpsn) == 0,
                         "Failed to modify RC QP to RTR");
 
         UCCL_INIT_CHECK(

@@ -103,7 +103,7 @@ void RDMAFactory::init_dev(int devname_suffix) {
     dev.dev_attr = dev_attr;
     dev.port_attr = port_attr;
     dev.ib_port_num = IB_PORT_NUM;
-    dev.gid_idx = ROCE_NET ? 3 : 0;
+    dev.gid_idx = GID_IDX;
     dev.context = context;
 
     if (ibv_query_gid(context, IB_PORT_NUM, dev.gid_idx, &dev.gid)) {

@@ -517,7 +517,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
             auto qp = rdma_ctx->dp_qps_[i].qp;
 
             ret = modify_qp_rtr(qp, dev, &rdma_ctx->remote_ctx_, remote_qpn,
-                                remote_psn, 0);
+                                remote_psn);
             DCHECK(ret == 0) << "Failed to modify data path QP to RTR";
 
             ret = modify_qp_rts(qp, rdma_ctx->dp_qps_[i].local_psn, kRCMode);
@@ -531,7 +531,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
         auto credit_qp = rdma_ctx->credit_qp_;
 
         ret = modify_qp_rtr(credit_qp, dev, &rdma_ctx->remote_ctx_, credit_rqpn,
-                            credit_rpsn, 1);
+                            credit_rpsn);
         DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
 
         ret = modify_qp_rts(credit_qp, rdma_ctx->credit_local_psn_, false);
@@ -544,7 +544,7 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg &ctrl_work) {
             auto ctrl_qp = rdma_ctx->ctrl_qp_;
 
             ret = modify_qp_rtr(ctrl_qp, dev, &rdma_ctx->remote_ctx_, ctrl_rqpn,
-                                ctrl_rpsn, 1);
+                                ctrl_rpsn);
             DCHECK(ret == 0) << "Failed to modify Ctrl QP to RTR";
 
             ret = modify_qp_rts(ctrl_qp, rdma_ctx->ctrl_local_psn_, false);

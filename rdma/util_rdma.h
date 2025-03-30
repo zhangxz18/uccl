@@ -1248,10 +1248,13 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, int dev) {
         attr.ah_attr.grh.dgid = factory_dev->gid;
         attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
         attr.ah_attr.grh.hop_limit = 0xff;
+        attr.ah_attr.grh.traffic_class = kTrafficClass;
     } else {
         attr.ah_attr.is_global = 0;
         attr.ah_attr.dlid = factory_dev->port_attr.lid;
     }
+
+    attr.ah_attr.sl = kServiceLevel;
 
     attr.ah_attr.port_num = IB_PORT_NUM;
     attr.dest_qp_num = qp->qp_num;
@@ -1277,8 +1280,7 @@ static inline int modify_qp_rtr_gpuflush(struct ibv_qp *qp, int dev) {
 
 static inline int modify_qp_rtr(struct ibv_qp *qp, int dev,
                                 struct RemoteRDMAContext *remote_ctx,
-                                uint32_t remote_qpn, uint32_t remote_psn,
-                                uint8_t sl) {
+                                uint32_t remote_qpn, uint32_t remote_psn) {
     struct ibv_qp_attr attr;
     int attr_mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV |
                     IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
@@ -1294,6 +1296,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, int dev,
         attr.ah_attr.grh.dgid = remote_ctx->remote_gid;
         attr.ah_attr.grh.sgid_index = factory_dev->gid_idx;
         attr.ah_attr.grh.hop_limit = 0xff;
+        attr.ah_attr.grh.traffic_class = kTrafficClass;
     } else {
         if (util_rdma_extract_local_subnet_prefix(
                 factory_dev->gid.global.subnet_prefix) !=
@@ -1305,7 +1308,7 @@ static inline int modify_qp_rtr(struct ibv_qp *qp, int dev,
         attr.ah_attr.port_num = IB_PORT_NUM;
         attr.ah_attr.dlid = remote_ctx->remote_port_attr.lid;
     }
-    attr.ah_attr.sl = sl;
+    attr.ah_attr.sl = kServiceLevel;
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = remote_psn;
 

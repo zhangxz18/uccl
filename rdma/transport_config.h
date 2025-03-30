@@ -22,6 +22,13 @@ static constexpr uint32_t MAX_PEER = 256;
 // Maximum number of flows (one-way) on each engine.
 static constexpr uint32_t MAX_FLOW = 256;
 static constexpr uint8_t IB_PORT_NUM = 1;
+// Traffic class
+static constexpr uint8_t kTrafficClass = ROCE_NET ? 3 : 0;
+// Service level
+static constexpr uint8_t kServiceLevel = ROCE_NET ? 135 : 0;
+// GID Index
+static constexpr uint8_t GID_IDX = ROCE_NET ? 3 : 0;
+
 /// Interface configuration.
 
 // # of engines per device.
