@@ -45,22 +45,33 @@ void AlltoAllGetBw(size_t count, int typesize, double sec, double* algBw, double
   *busBw = baseBw * factor;
 }
 
+// #define SEQUENTIAL
+
 testResult_t AlltoAllRunColl(void* sendbuff, void* recvbuff, size_t count, ncclDataType_t type, ncclRedOp_t op, int root, ncclComm_t comm, cudaStream_t stream) {
   int nRanks;
   NCCLCHECK(ncclCommCount(comm, &nRanks));
-  int rank;
-  NCCLCHECK(ncclCommUserRank(comm, &rank));
   size_t rankOffset = count * wordSize(type);
-  
+
+  #ifdef SEQUENTIAL
+  int local_rank;
+  ncclCommUserRank(comm, &local_rank);
+  #endif
+
 #if NCCL_MAJOR < 2 || NCCL_MINOR < 7
   printf("NCCL 2.7 or later is needed for alltoall. This test was compiled with %d.%d.\n", NCCL_MAJOR, NCCL_MINOR);
   return testNcclError;
 #else
   NCCLCHECK(ncclGroupStart());
   for (int r=0; r<nRanks; r++) {
-    int rotate_r = (rank + r) % nRanks;
-    NCCLCHECK(ncclSend(((char*)sendbuff)+rotate_r*rankOffset, count, type, rotate_r, comm, stream));
-    NCCLCHECK(ncclRecv(((char*)recvbuff)+rotate_r*rankOffset, count, type, rotate_r, comm, stream));
+    #ifdef SEQUENTIAL
+    int target_rank = (local_rank + r) % nRanks;
+    NCCLCHECK(ncclSend(((char*)sendbuff)+target_rank*rankOffset, count, type, target_rank, comm, stream));
+    NCCLCHECK(ncclRecv(((char*)recvbuff)+target_rank*rankOffset, count, type, target_rank, comm, stream));
+    cudaStreamSynchronize(stream);
+    #else
+    NCCLCHECK(ncclSend(((char*)sendbuff)+r*rankOffset, count, type, r, comm, stream));
+    NCCLCHECK(ncclRecv(((char*)recvbuff)+r*rankOffset, count, type, r, comm, stream));
+    #endif
   }
   NCCLCHECK(ncclGroupEnd());
   return testSuccess;
