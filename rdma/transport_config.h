@@ -31,7 +31,7 @@ static constexpr uint8_t GID_IDX = ROCE_NET ? 3 : 0;
 /// Interface configuration.
 
 // # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 2;
+static constexpr uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Each dev use [ENGINE_CPU_START_LIST[dev], ENGINE_CPU_START_LIST[dev] + NUM_ENGINES)
 static uint32_t ENGINE_CPU_START_LIST[8] = {
@@ -170,6 +170,7 @@ static constexpr std::size_t kFastRexmitDupAckThres = ROCE_NET ? 32 : 65536;
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static constexpr uint32_t kRTOAbortThreshold = 50;
 
+static constexpr uint32_t kMAXRTTUS = 10000; 
 // Constant/Dynamic RTO.
 static constexpr bool kConstRTO = true;
 // kConstRTO == true: Constant retransmission timeout in microseconds.

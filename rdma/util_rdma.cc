@@ -966,7 +966,7 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
     // Make RTT independent of segment size.
     auto serial_delay_tsc =
         us_to_cycles(seg_size * 1e6 / LINK_BANDWIDTH, freq_ghz);
-    if (fabric_delay_tsc > serial_delay_tsc)
+    if (fabric_delay_tsc > serial_delay_tsc || to_usec(fabric_delay_tsc, freq_ghz) < kMAXRTTUS)
         fabric_delay_tsc -= serial_delay_tsc;
     else {
         // Invalid timestamp.
@@ -974,8 +974,12 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
         t5 = rdtsc();
         endpoint_delay_tsc = t6 - t5 + remote_queueing_tsc;
         fabric_delay_tsc = (t6 - t1) - endpoint_delay_tsc;
-        DCHECK(fabric_delay_tsc > serial_delay_tsc);
-        fabric_delay_tsc -= serial_delay_tsc;
+        if (fabric_delay_tsc > serial_delay_tsc)
+            fabric_delay_tsc -= serial_delay_tsc;
+        else {
+            // This may be caused by clock synchronization.
+            fabric_delay_tsc = 0;
+        }
     }
 
     UCCL_LOG_IO << "Total: " << to_usec(t6 - t1, freq_ghz)
@@ -1003,11 +1007,13 @@ uint64_t TXTracking::ack_transmitted_chunks(void *subflow_context,
         LOG_EVERY_N(INFO, 1000) << "Turnaround delay: " << turnaround_delay << "us, Average turnaround delay: " << avg_turnaround_delay << "us";
     }
     #endif
-
-    // Update global cwnd.
-    subflow->pcb.timely_cc.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
-    // TODO: seperate enpoint delay and fabric delay.
-    subflow->pcb.swift_cc.adjust_wnd(to_usec(fabric_delay_tsc, freq_ghz), seg_size);
+    
+    if (fabric_delay_tsc) {
+        // Update global cwnd.
+        subflow->pcb.timely_cc.update_rate(t6, fabric_delay_tsc, kEwmaAlpha);
+        // TODO: seperate enpoint delay and fabric delay.
+        subflow->pcb.swift_cc.adjust_wnd(to_usec(fabric_delay_tsc, freq_ghz), seg_size);
+    }
 
     return fabric_delay_tsc;
 }

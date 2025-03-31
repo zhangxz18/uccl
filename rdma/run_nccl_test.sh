@@ -11,16 +11,14 @@ ROOT="/home/aleria/uccl_rdma"
 
 # IP of Nodes.
 NODES="87.120.213.6,87.120.213.5"
-# Names of HCAs.
-# HCA_NAMES="mlx5_0:1"
-HCA_NAMES="mlx5_0:1,mlx5_2:1,mlx5_4:1,mlx5_6:1"
-# HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
+# Names of HCAs."
+HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
 # Name of Control NIC.
 CTRL_NIC="ens10f0np0"
 # Path of NCCL
-NCCL_PATH="${ROOT}/nccl/build/lib/libnccl.so"
+NCCL_PATH="${ROOT}/nccl/build/lib"
 # Path of UCCL
-PLUGIN_PATH="${ROOT}/rdma/libnccl-net.so"
+PLUGIN_LIB="${ROOT}/rdma/libnccl-net.so"
 
 # Number of chunnels.
 NUM_CHUNNEL=4
@@ -35,6 +33,8 @@ CHANNELS_NET_PEER=-1
 # TREE, RING
 ALGO=-1
 
+NCCL_PROTO=-1
+
 # Multi-QP for NCCL.
 NUM_QPS_PER_CONNECTION=4
 SPLIT_DATA_ON_QPS=1
@@ -44,6 +44,8 @@ SPLIT_DATA_ON_QPS=1
 
 if [ "$PROG_OPTION" -eq 0 ]; then
     PROG_NAME=all_reduce_perf
+    # We force allreduce to use Simple protocol to avoid outlier for both UCCL and NCCL.
+    NCCL_PROTO="Simple"
 elif [ "$PROG_OPTION" -eq 1 ]; then
     PROG_NAME=alltoall_perf
 else
@@ -52,15 +54,16 @@ else
 fi
 
 if [ "$UCCL" -ne 1 ]; then
-    # zhongjie: This sometimes doesn't work, it still uses uccl's .so.
-    # Delete .so file to ensure using NCCL.
-    rm -rf ${PLUGIN_PATH}
-    PLUGIN_PATH=""
+    PLUGIN_LIB=""
 fi
+
+P2P_DISABLE=1
+SHM_DISABLE=1
+PXN_DISABLE=1
 
 echo "Running test: ${PROG_NAME}, $([ "${UCCL}" -eq 1 ] && echo "UCCL" || echo "NCCL"), ${NUM_PROCS} nodes, ${NUM_GPUS_PER_NODE} GPUs per node, $((NUM_PROCS * NUM_GPUS_PER_NODE)) GPUs in total."
 
-echo "Details: ${NUM_CHUNNEL} channels, P2P_NET_CHUNKSIZE: ${P2P_NET_CHUNKSIZE}, BUFFSIZE: ${BUFFSIZE}, CHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER}, ALGORITHM=${ALGO}"
+echo -e "Details: NCCL_NCHANNELS=${NUM_CHUNNEL} \n\t NCCL_P2P_NET_CHUNKSIZE=${P2P_NET_CHUNKSIZE} \n\t NCCL_BUFFSIZE=${BUFFSIZE} \n\t NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \n\t NCCL_ALGO=${ALGO} \n\t NCCL_IB_QPS_PER_CONNECTION=${NUM_QPS_PER_CONNECTION} \n\t NCCL_IB_SPLIT_DATA_ON_QPS=${SPLIT_DATA_ON_QPS} \n\t NCCL_PXN_DISABLE=${PXN_DISABLE} \n\t NCCL_P2P_DISABLE=${P2P_DISABLE} \n\t NCCL_SHM_DISABLE=${SHM_DISABLE} \n\t NCCL_IB_HCA=${HCA_NAMES}"
 
 mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     --host ${NODES} \
@@ -69,8 +72,11 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     --mca orte_base_help_aggregate 0 \
     -x GLOG_logtostderr=1 \
     -x GLOG_v=0 \
-    -x NCCL_P2P_DISABLE=1 \
-    -x NCCL_SHM_DISABLE=1 \
+    -x NCCL_DEBUG=WARN \
+    -x NCCL_PROTO=${NCCL_PROTO} \
+    -x NCCL_PXN_DISABLE=${PXN_DISABLE} \
+    -x NCCL_P2P_DISABLE=${P2P_DISABLE} \
+    -x NCCL_SHM_DISABLE=${SHM_DISABLE} \
     -x NCCL_NET_DISABLE=0 \
     -x NCCL_ALGO=${ALGO} \
     -x NCCL_MAX_NCHANNELS=${NUM_CHUNNEL} \
@@ -80,7 +86,8 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     -x NCCL_BUFFSIZE=${BUFFSIZE} \
     -x NCCL_IB_QPS_PER_CONNECTION=${NUM_QPS_PER_CONNECTION} -x NCCL_IB_SPLIT_DATA_ON_QPS=${SPLIT_DATA_ON_QPS} \
     -x NCCL_IB_HCA=${HCA_NAMES} \
-    -x LD_PRELOAD="${NCCL_PATH} ${PLUGIN_PATH}" \
+    -x NCCL_NET_PLUGIN=${PLUGIN_LIB} \
+    -x LD_LIBRARY_PATH=${NCCL_PATH}:${LD_LIBRARY_PATH} \
     ${ROOT}/nccl-tests/build/${PROG_NAME} \
     -f 2 \
     --minbytes 1K --maxbytes 1G \

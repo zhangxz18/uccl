@@ -108,6 +108,14 @@ ncclResult_t pluginPciPath(const char *ib_name, char **path) {
     return ncclSuccess;
 }
 
+#define KNL_MODULE_LOADED(a) ((access(a, F_OK) == -1) ? 0 : 1)
+static bool GdrSupportInitOnce() {
+  // Check for the nv_peer_mem module being loaded
+  return KNL_MODULE_LOADED("/sys/kernel/mm/memory_peers/nv_mem/version") ||
+                          KNL_MODULE_LOADED("/sys/kernel/mm/memory_peers/nv_mem_nc/version") ||
+                          KNL_MODULE_LOADED("/sys/module/nvidia_peermem/version");
+}
+
 ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t *props) {
     auto factory_dev = RDMAFactory::get_factory_dev(dev);
 
@@ -123,8 +131,16 @@ ncclResult_t pluginGetProperties(int dev, ncclNetProperties_v8_t *props) {
 
     props->ptrSupport = NCCL_PTR_HOST;
 
+    // TODO: make this configurable.
+    if (GdrSupportInitOnce())
+        props->ptrSupport |= NCCL_PTR_CUDA;
+
     if (factory_dev->dma_buf_support)
-        props->ptrSupport |= NCCL_PTR_CUDA | NCCL_PTR_DMABUF;
+        props->ptrSupport |= NCCL_PTR_DMABUF;
+
+    if (props->ptrSupport == NCCL_PTR_HOST) {
+        DCHECK(0) << "Lack of GPU Direct RDMA support.";
+    }
 
     // If you regMr has a fast registration cache, set to 1. If set to 0, user
     // buffer registration may be disabled.
