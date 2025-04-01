@@ -32,7 +32,7 @@
 
 DEFINE_uint32(size, 4 * 1024 * 1024, "Message size.");
 DEFINE_uint32(iterations, 1000000, "Number of iterations to run.");
-DEFINE_string(benchtype, "SA", "Benchmark type. PT: Permutation Traffic, SA: Sequential AlltoAll.");
+DEFINE_string(benchtype, "SA", "Benchmark type. PT: Permutation Traffic, SA: Sequential AlltoAll, AA: AlltoAll");
 
 using namespace uccl;
 
@@ -324,6 +324,21 @@ void seq_alltoall()
 {
     while (cur_iteration++ < FLAGS_iterations && !quit) {
         for (int r = 0; r < NRANKS; r++) {
+            int target_rank = (LOCAL_RANK + r) % NRANKS;
+            if (target_rank == LOCAL_RANK) continue;
+            p2p_receive(target_rank, FLAGS_size);
+            p2p_send(target_rank, FLAGS_size);
+            net_sync(target_rank);
+        }
+    }
+
+    MPI_LOG(INFO) << "Sequential alltoall done.";
+}
+
+void alltoall()
+{
+    while (cur_iteration++ < FLAGS_iterations && !quit) {
+        for (int r = 0; r < NRANKS; r++) {
             if (r == LOCAL_RANK) continue;
             p2p_receive(r, FLAGS_size);
             p2p_send(r, FLAGS_size);
@@ -331,7 +346,7 @@ void seq_alltoall()
         }
     }
 
-    MPI_LOG(INFO) << "Sequential alltoall done.";
+    MPI_LOG(INFO) << "Alltoall done.";
 }
 
 int find_target_rank(const std::string& filePath, int sourceNode) {
@@ -396,6 +411,8 @@ int main(int argc, char** argv) {
         seq_alltoall();
     else if (FLAGS_benchtype == "PT")
         permutation_traffic();
+    else if (FLAGS_benchtype == "AA")
+        alltoall();
 
     // Destroy connections, free buffers, etc.
     exit_benchmark();
