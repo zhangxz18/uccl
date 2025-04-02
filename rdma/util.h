@@ -124,7 +124,24 @@ inline void net_barrier(int bootstrap_fd) {
     DCHECK(ret == sizeof(bool) && sync) << ret << ", " << sync;
 }
 
-inline void create_listen_socket(int *listen_fd, uint16_t listen_port) {
+// 0x04030201 (network order) -> 1.2.3.4
+static inline std::string ip_to_str(uint32_t ip) {
+    struct sockaddr_in sa;
+    char str[INET_ADDRSTRLEN];
+    sa.sin_addr.s_addr = ip;
+    inet_ntop(AF_INET, &(sa.sin_addr), str, INET_ADDRSTRLEN);
+    return std::string(str);
+}
+
+// 1.2.3.4 -> 0x04030201 (network order)
+static inline uint32_t str_to_ip(const std::string &ip) {
+    struct sockaddr_in sa;
+    DCHECK(inet_pton(AF_INET, ip.c_str(), &(sa.sin_addr)) != 0);
+    return sa.sin_addr.s_addr;
+}
+
+
+inline void create_listen_socket(int *listen_fd, uint16_t listen_port, std::string &ip) {
     *listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     DCHECK(*listen_fd >= 0) << "ERROR: opening socket";
     int flag = 1;
@@ -134,7 +151,7 @@ inline void create_listen_socket(int *listen_fd, uint16_t listen_port) {
     struct sockaddr_in serv_addr;
     bzero((char *)&serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_addr.s_addr = str_to_ip(ip.c_str());
     serv_addr.sin_port = htons(listen_port);
     DCHECK(bind(*listen_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >=
            0)
@@ -568,22 +585,6 @@ static inline uint16_t ipv4_udptcp_cksum(uint8_t proto, uint32_t saddr,
         cksum = 0xffff;
 
     return (uint16_t)cksum;
-}
-
-// 0x04030201 (network order) -> 1.2.3.4
-static inline std::string ip_to_str(uint32_t ip) {
-    struct sockaddr_in sa;
-    char str[INET_ADDRSTRLEN];
-    sa.sin_addr.s_addr = ip;
-    inet_ntop(AF_INET, &(sa.sin_addr), str, INET_ADDRSTRLEN);
-    return std::string(str);
-}
-
-// 1.2.3.4 -> 0x04030201 (network order)
-static inline uint32_t str_to_ip(const std::string &ip) {
-    struct sockaddr_in sa;
-    DCHECK(inet_pton(AF_INET, ip.c_str(), &(sa.sin_addr)) != 0);
-    return sa.sin_addr.s_addr;
 }
 
 // Return -1 if not found

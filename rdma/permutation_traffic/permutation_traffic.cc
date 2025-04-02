@@ -29,11 +29,11 @@
 
 #define MPI_LOG(level) LOG(level) << "Rank:" << LOCAL_RANK << " "
 
-#define MAX_BUFFER_SIZE (16 * 1024 * 1024)     // 16MB
-#define NET_CHUNK_SIZE  (512 * 1024)           // 512KB
+#define MAX_BUFFER_SIZE (32 * 1024 * 1024)     // 32MB
+#define NET_CHUNK_SIZE  (1024 * 1024)           // 1MB
 #define MAX_CHUNK (MAX_BUFFER_SIZE / NET_CHUNK_SIZE)
 
-DEFINE_uint32(size, 8 * 1024 * 1024, "Message size.");
+DEFINE_uint32(size, 32 * 1024 * 1024, "Message size.");
 DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
 DEFINE_string(benchtype, "PT", "Benchmark type. PT: Permutation Traffic, SA: Sequential AlltoAll, AA: AlltoAll");
 
@@ -203,6 +203,8 @@ void listen_ports()
         ret = listen(nodes[r].listen_fd_, MAX_NODES);
         DCHECK(ret == 0) << ret;
     }
+    
+    MPI_LOG(INFO) << "Listen ports done.";
 }
 
 static void init_benchmark()
@@ -211,11 +213,13 @@ static void init_benchmark()
 
     listen_ports();
 
-    setup_connections();
-
-    wait_setup_connections();
-
-    allocate_buffers();
+    if (FLAGS_benchtype != "PT") {
+        setup_connections();
+        
+        wait_setup_connections();
+    
+        allocate_buffers();
+    }
 }
 
 static void exit_benchmark()
@@ -245,7 +249,7 @@ bool test_p2p_recv_done(int target_rank, int chunk_id)
 
 void p2p_send(int target_rank, int size)
 {
-    MPI_LOG(INFO) << "p2p send to " << target_rank;
+    // MPI_LOG(INFO) << "p2p send to " << target_rank;
     
     auto *send_comm_ = &nodes[target_rank].send_comm_;
 
@@ -266,7 +270,7 @@ void p2p_send(int target_rank, int size)
 
 void p2p_receive(int target_rank, int size)
 {
-    MPI_LOG(INFO) << "p2p receive from " << target_rank;
+    // MPI_LOG(INFO) << "p2p receive from " << target_rank;
 
     auto *recv_comm_ = &nodes[target_rank].recv_comm_;
 
@@ -307,27 +311,14 @@ void net_sync(int target_rank)
     test_all_recv(target_rank);
 }
 
-void readIPsFromFile(const std::string& filename) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Error: Could not open file " << filename << std::endl;
-        return;
-    }
+void send_sync(int target_rank)
+{
+    test_all_send(target_rank);
+}
 
-    std::string line;
-    int rank = 0;
-    while (std::getline(file, line)) {
-        size_t space_pos = line.find_first_of(" \t");
-        if (space_pos != std::string::npos) {
-            std::string ip = line.substr(0, space_pos);
-            ips.push_back(ip);
-        } else {
-            ips.push_back(line);
-        }
-        rank++;
-    }
-    
-    file.close();
+void recv_sync(int target_rank)
+{
+    test_all_recv(target_rank);
 }
 
 void launch_stats_thread()
@@ -356,12 +347,13 @@ void verify_params() {
 void seq_alltoall()
 {
     while (cur_iteration++ < FLAGS_iterations && !quit) {
-        for (int r = 0; r < NRANKS; r++) {
-            int target_rank = (LOCAL_RANK + r) % NRANKS;
-            if (target_rank == LOCAL_RANK) continue;
-            p2p_receive(target_rank, FLAGS_size);
-            p2p_send(target_rank, FLAGS_size);
-            net_sync(target_rank);
+        for (int r = 1; r < NRANKS; r++) {
+            int send_target = (LOCAL_RANK + r) % NRANKS;
+            int recv_target = (LOCAL_RANK + NRANKS - r) % NRANKS;
+            p2p_receive(recv_target, FLAGS_size);
+            p2p_send(send_target, FLAGS_size);
+            recv_sync(recv_target);
+            send_sync(send_target);
         }
     }
 
@@ -405,6 +397,28 @@ void permutation_traffic()
 
     MPI_LOG(INFO) << LOCAL_RANK << "'s target is " << target_rank;
 
+    nodes[target_rank].client_setup();
+    nodes[target_rank].server_setup();
+
+    nodes[target_rank].wait_connect_done();
+    nodes[target_rank].wait_accept_done();
+
+    nodes[target_rank].send_comm_.buffer = mmap(nullptr, MAX_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    DCHECK(nodes[target_rank].send_comm_.buffer != MAP_FAILED);
+
+    ep->uccl_regmr((UcclFlow *)nodes[target_rank].send_comm_.conn_id.context, nodes[target_rank].send_comm_.buffer,
+    MAX_BUFFER_SIZE, 0, &nodes[target_rank].send_comm_.mhandle);
+
+    nodes[target_rank].recv_comm_.buffer = mmap(nullptr, MAX_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    DCHECK(nodes[target_rank].recv_comm_.buffer != MAP_FAILED);
+
+    ep->uccl_regmr((UcclFlow *)nodes[target_rank].recv_comm_.conn_id.context, nodes[target_rank].recv_comm_.buffer,
+    MAX_BUFFER_SIZE, 0, &nodes[target_rank].recv_comm_.mhandle);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    MPI_LOG(INFO) << LOCAL_RANK << "'setup connection done.";
+
     while (cur_iteration++ < FLAGS_iterations && !quit) {
         p2p_receive(target_rank, FLAGS_size);
         p2p_send(target_rank, FLAGS_size);
@@ -412,6 +426,57 @@ void permutation_traffic()
     }
 
     MPI_LOG(INFO) << "Permutation traffic done.";
+}
+
+void get_ips() {
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    std::string local_ip;
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET)
+            continue;
+
+        if (strcmp(ifa->ifa_name, "eth0") == 0) {
+            void *tmpAddrPtr = &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
+            char addressBuffer[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, tmpAddrPtr, addressBuffer, INET_ADDRSTRLEN);
+            local_ip = addressBuffer;
+            break;
+        }
+    }
+    freeifaddrs(ifaddr);
+
+    if (rank == 0) {
+        ips.resize(size);
+        ips[0] = local_ip;
+        
+        for (int i = 1; i < size; i++) {
+            char ip_buffer[INET_ADDRSTRLEN];
+            MPI_Recv(ip_buffer, INET_ADDRSTRLEN, MPI_CHAR, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            ips[i] = ip_buffer;
+        }
+        
+        for (int i = 0; i < size; i++) {
+            MPI_Bcast(const_cast<char*>(ips[i].c_str()), ips[i].size() + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+        }
+    } else {
+        MPI_Send(local_ip.c_str(), local_ip.size() + 1, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+        
+        ips.resize(size);
+        for (int i = 0; i < size; i++) {
+            char ip_buffer[INET_ADDRSTRLEN];
+            MPI_Bcast(ip_buffer, INET_ADDRSTRLEN, MPI_CHAR, 0, MPI_COMM_WORLD);
+            ips[i] = ip_buffer;
+        }
+    }
 }
 
 int main(int argc, char** argv) {
@@ -422,12 +487,13 @@ int main(int argc, char** argv) {
 
     verify_params();
 
-    readIPsFromFile("hostname.txt");
-
     MPI_Init(&argc, &argv);
     
     MPI_Comm_rank(MPI_COMM_WORLD, &LOCAL_RANK);
+
     MPI_Comm_size(MPI_COMM_WORLD, &NRANKS);
+
+    get_ips();
 
     for (int i = 0; i < NRANKS; i++)
         nodes.push_back(NodeInfo(ips[i], i));

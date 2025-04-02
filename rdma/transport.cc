@@ -614,7 +614,7 @@ RDMAEndpoint::RDMAEndpoint(const uint8_t *devname_suffix_list, int num_devices,
 
     for (int i = 0; i < num_devices; i++) {
         // Create listening sockets
-        create_listen_socket(&test_listen_fds_[i], kTestListenPort + i);
+        create_listen_socket(&test_listen_fds_[i], kTestListenPort + i, SINGLE_IP);
     }
 }
 
