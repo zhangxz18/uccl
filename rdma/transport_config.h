@@ -12,12 +12,12 @@
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 static constexpr bool ROCE_NET = false;
 // If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("87.120.213.6");
+static std::string SINGLE_IP("10.0.0.4");
 static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-static constexpr uint8_t NUM_DEVICES = 8;
+static constexpr uint8_t NUM_DEVICES = 1;
 // static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
 // static constexpr uint8_t NUM_DEVICES = 4;
-static constexpr double LINK_BANDWIDTH = 400.0 * 1e9 / 8; // 400Gbps
+static constexpr double LINK_BANDWIDTH = 200.0 * 1e9 / 8; // 200Gbps
 static constexpr uint32_t MAX_PEER = 256;
 // Maximum number of flows (one-way) on each engine.
 static constexpr uint32_t MAX_FLOW = 256;
@@ -35,7 +35,7 @@ static constexpr uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Each dev use [ENGINE_CPU_START_LIST[dev], ENGINE_CPU_START_LIST[dev] + NUM_ENGINES)
 static uint32_t ENGINE_CPU_START_LIST[8] = {
-    16,
+    4,
     16 + NUM_ENGINES,
     16 + 2 * NUM_ENGINES,
     16 + 3 * NUM_ENGINES,
@@ -103,8 +103,10 @@ constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
                                 (kRCMode ? 0 : 1) /* Ctrl QP */;
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static constexpr uint32_t kRCSize = 8192;
+// static constexpr uint32_t kRCSize = 5000000;
 // Minimum post receive size in NCCL.
 static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
+// static constexpr uint32_t NCCL_MIN_POST_RECV = 5000000;
 
 // Limit the bytes of consecutive cached QP uses.
 static constexpr uint32_t kMAXConsecutiveSameChoiceBytes = 16384;

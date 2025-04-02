@@ -1,10 +1,10 @@
 #!/bin/bash
 
-SOURCE_DIR="/home/aleria/uccl_rdma/rdma/permutation_traffic"
+SOURCE_DIR="/home/azureuser/uccl_rdma/rdma/permutation_traffic"
 
-TARGET_MACHINES=("87.120.213.6" "87.120.213.5")
+TARGET_MACHINES=("74.179.81.170" "74.179.82.149" "74.179.81.10" "74.179.82.138")
 
-TARGET_DIR="/home/aleria/uccl_rdma/rdma/permutation_traffic"
+TARGET_DIR="/home/azureuser/uccl_rdma/rdma/permutation_traffic"
 
 if [ ! -d "$SOURCE_DIR" ]; then
   exit 1
@@ -14,12 +14,12 @@ for MACHINE in "${TARGET_MACHINES[@]}"; do
   (
     echo "Installing on machine: $MACHINE"
 
-    rsync -avz --delete "$SOURCE_DIR/" "aleria@$MACHINE:$TARGET_DIR" > /dev/null 2>&1
+    rsync -avz --delete "$SOURCE_DIR/" "azureuser@$MACHINE:$TARGET_DIR" > /dev/null 2>&1
 
     if [ $? -eq 0 ]; then
       echo "Copy done on machine: $MACHINE"
 
-      ssh "aleria@$MACHINE" "cd $TARGET_DIR/ && make clean && make" > /dev/null 2>&1
+      ssh "azureuser@$MACHINE" "cd $TARGET_DIR/ && make clean && make" > /dev/null 2>&1
       if [ $? -eq 0 ]; then
         echo "Compile successfully on machine: $MACHINE"
       else

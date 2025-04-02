@@ -24,15 +24,18 @@
 #include "transport_config.h"
 #include "util_timer.h"
 
+#define MAX_NODES 512
+#define BASE_LISTEN_PORT 6666
+
 #define MPI_LOG(level) LOG(level) << "Rank:" << LOCAL_RANK << " "
 
 #define MAX_BUFFER_SIZE (16 * 1024 * 1024)     // 16MB
 #define NET_CHUNK_SIZE  (512 * 1024)           // 512KB
 #define MAX_CHUNK (MAX_BUFFER_SIZE / NET_CHUNK_SIZE)
 
-DEFINE_uint32(size, 4 * 1024 * 1024, "Message size.");
-DEFINE_uint32(iterations, 1000000, "Number of iterations to run.");
-DEFINE_string(benchtype, "SA", "Benchmark type. PT: Permutation Traffic, SA: Sequential AlltoAll, AA: AlltoAll");
+DEFINE_uint32(size, 8 * 1024 * 1024, "Message size.");
+DEFINE_uint32(iterations, 100000, "Number of iterations to run.");
+DEFINE_string(benchtype, "PT", "Benchmark type. PT: Permutation Traffic, SA: Sequential AlltoAll, AA: AlltoAll");
 
 using namespace uccl;
 
@@ -70,28 +73,13 @@ void interrupt_handler(int signal) {
     quit = true;
 }
 
-static void server_setup_agent(int target_rank, std::string ip, struct CommHandle *recv_comm)
-{
-    int remote_dev;
-    auto conn_id = ep->test_uccl_accept(DEV, ip, &remote_dev);
-    
-    recv_comm->conn_id = conn_id;
+static void server_setup_agent(int target_rank, std::string ip, struct CommHandle *recv_comm);
 
-    MPI_LOG(INFO) << "Accepted from " << target_rank << " succesfully";
-}
-
-static void client_setup_agent(int target_rank, std::string ip, struct CommHandle *send_comm)
-{
-    auto conn_id = ep->test_uccl_connect(DEV, ip, REMOTE_DEV);
-    
-    send_comm->conn_id = conn_id;
-
-    MPI_LOG(INFO) << "Connected to " << target_rank << " succesfully";
-}
+static void client_setup_agent(int target_rank, std::string ip, struct CommHandle *send_comm);
 
 class NodeInfo {
 public:
-    NodeInfo(std::string &ip, int target_rank): ip_(ip), target_rank_(target_rank) {}
+    NodeInfo(std::string &ip, int target_rank): ip_(ip), target_rank_(target_rank), listen_fd_(0) {}
     ~NodeInfo() = default;
 
     void server_setup() {server_thread_ = std::thread(server_setup_agent, target_rank_, ip_, &recv_comm_);}
@@ -108,6 +96,8 @@ public:
     NodeInfo(NodeInfo&&) = default;
     NodeInfo& operator=(NodeInfo&&) = default;
 
+    // FD of listening socket.
+    int listen_fd_;
     // Target rank.
     int target_rank_;
     // IP address.
@@ -121,6 +111,25 @@ public:
     // Thread for server stuff.
     std::thread server_thread_;
 };
+
+static void server_setup_agent(int target_rank, std::string ip, struct CommHandle *recv_comm)
+{
+    int remote_dev;
+    auto conn_id = ep->uccl_accept(DEV, nodes[target_rank].listen_fd_, DEV, ip, &remote_dev);
+    
+    recv_comm->conn_id = conn_id;
+
+    MPI_LOG(INFO) << "Accepted from " << target_rank << " succesfully";
+}
+
+static void client_setup_agent(int target_rank, std::string ip, struct CommHandle *send_comm)
+{
+    auto conn_id = ep->uccl_connect(DEV, DEV, REMOTE_DEV, REMOTE_DEV, ip, BASE_LISTEN_PORT + LOCAL_RANK);
+    
+    send_comm->conn_id = conn_id;
+
+    MPI_LOG(INFO) << "Connected to " << target_rank << " succesfully";
+}
 
 void setup_connections()
 {
@@ -175,9 +184,32 @@ void free_buffers()
     }
 }
 
+void listen_ports()
+{
+    for (int r = 0; r < NRANKS; r++) {
+        if (r == LOCAL_RANK) continue;
+        nodes[r].listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+        DCHECK(nodes[r].listen_fd_ >= 0);
+        int flag = 1;
+        DCHECK(setsockopt(nodes[r].listen_fd_, SOL_SOCKET, SO_REUSEADDR, &flag,
+                          sizeof(int)) >= 0);
+        struct sockaddr_in serv_addr;
+        bzero((char *)&serv_addr, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = INADDR_ANY;
+        serv_addr.sin_port = htons(BASE_LISTEN_PORT + r);
+        int ret = bind(nodes[r].listen_fd_, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+        DCHECK(ret >= 0) << ret;
+        ret = listen(nodes[r].listen_fd_, MAX_NODES);
+        DCHECK(ret == 0) << ret;
+    }
+}
+
 static void init_benchmark()
 {
     ep.emplace(DEVNAME_SUFFIX_LIST, NUM_DEVICES, NUM_ENGINES);
+
+    listen_ports();
 
     setup_connections();
 
@@ -304,10 +336,11 @@ void launch_stats_thread()
         while (!quit) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             printf(
-                "(%d)TX Tput: %.4f Gbps, RX Tput: %.4f Gbps\n",
-                cur_iteration,
+                "Rank %d: TX Tput: %.4f Gbps, RX Tput: %.4f Gbps, iterations: %d\n",
+                LOCAL_RANK,
                 (tx_cur_sec_bytes.load() - tx_prev_sec_bytes) * 8.0 / 1e9,
-                (rx_cur_sec_bytes.load() - rx_prev_sec_bytes) * 8.0 / 1e9);
+                (rx_cur_sec_bytes.load() - rx_prev_sec_bytes) * 8.0 / 1e9,
+                cur_iteration);
 
             tx_prev_sec_bytes = tx_cur_sec_bytes.load();
             rx_prev_sec_bytes = rx_cur_sec_bytes.load();
@@ -369,6 +402,8 @@ int find_target_rank(const std::string& filePath, int sourceNode) {
 void permutation_traffic()
 {
     int target_rank = find_target_rank("matrix.txt", LOCAL_RANK);
+
+    MPI_LOG(INFO) << LOCAL_RANK << "'s target is " << target_rank;
 
     while (cur_iteration++ < FLAGS_iterations && !quit) {
         p2p_receive(target_rank, FLAGS_size);

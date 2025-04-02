@@ -20,7 +20,7 @@ test_src = $(wildcard *_test.cc)
 test_bin = $(test_src:.cc=)
 
 .PHONY: build
-build: $(test_bin) $(lib_obj) $(PLUGIN_SO)
+build: $(test_bin) $(lib_obj)
 
 rdma_test: rdma_test.cc $(DEPS) $(lib_obj)
 	g++ rdma_test.cc -o rdma_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
