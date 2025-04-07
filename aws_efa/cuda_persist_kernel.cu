@@ -55,8 +55,9 @@ struct alignas(8) Iov {
 
 #define kMaxFifoDepth 1024
 struct IovFifo {
-    uint64_t head;  // GPU writes finished index
-    uint64_t tail;  // CPU posts working index
+    uint64_t head;   // GPU writes finished index
+    uint64_t tail;   // CPU posts working index
+    uint64_t abort;  // Telling the kernel to abort
     struct Iov iovs[kMaxFifoDepth];
 };
 
@@ -103,49 +104,54 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
     }
 }
 
-__global__ void persistKernel(struct IovFifo *fifo, int steps) {
+// TODO: per-warp fifo queue (to support multiple SMs), only loading Iovs up to
+// iov_n, implementing prims_simple style copy.
+__global__ void persistKernel(struct IovFifo *fifo) {
     __shared__ uint64_t cached_tail;
-    __shared__ struct Iov cached_iov;
+    __shared__ uint64_t abort_flag;
+    __shared__ struct Iov *cur_iov;
 
     int tid = threadIdx.x;
     int bid = blockIdx.x;
     int global_tid = bid * blockDim.x + tid;
 
+    // This print is necessary to make sure other kernels can run.
+    if (global_tid == 0) {
+        printf("Persist kernel: block %d, thread %d\n", bid, tid);
+    }
+
     // Initing per-threadblock variables
     if (tid == 0) cached_tail = (uint64_t)-1;
     __syncthreads();
 
-    int i = 0;
-    while (i++ < steps) {
+    // We should avoid all thread loading the global memory at the same, as this
+    // will cause severe performance drop.
+    // while (ld_volatile(&fifo->abort) == 0) {
+    while (true) {
         // Each thread block loads new work from CPU.
         if (tid == 0) {
             uint64_t cur_tail;
             do {
+                abort_flag = ld_volatile(&fifo->abort);
+                if (abort_flag) break;
+
                 cur_tail = ld_volatile(&fifo->tail);
             } while (cur_tail != cached_tail + 1);
 
             cached_tail = cur_tail;
-            cached_iov = fifo->iovs[cached_tail % kMaxFifoDepth];
+            cur_iov = fifo->iovs + cached_tail % kMaxFifoDepth;
+
             // TODO: using volatile load?
         }
         __syncthreads();
+        if (abort_flag) return;
 
-        // do something with cached_iov
-        if (global_tid == 0) {
-            if (cached_tail % 1000 == 0) {
-                printf(
-                    "PersistKernel: block %d, thread %d, cached_tail %lu, "
-                    "iov_n %d\n",
-                    bid, tid, cached_tail, cached_iov.iov_n);
-            }
-        }
-
-        kernelScatteredMemcpy(&cached_iov);
+        kernelScatteredMemcpy(cur_iov);
 
         __syncthreads();
 
         // Post the finished work to the GPU
-        if (global_tid == 0) {
+        if (tid == 0) {
             fence_acq_rel_sys();
             st_relaxed_sys(&fifo->head, cached_tail);
         }
@@ -154,13 +160,15 @@ __global__ void persistKernel(struct IovFifo *fifo, int steps) {
 
 __global__ void emptykernel() {
     if (threadIdx.x == 0)
-        printf("Emptykernel: block %d, thread %d\n", blockIdx.x, threadIdx.x);
+        printf("Empty kernel: block %d, thread %d\n", blockIdx.x, threadIdx.x);
 }
 
 static constexpr int kTestIters = 10000;
+static constexpr int kTestIovs = 128;
 
 // make cuda_persist_kernel
 // CUDA_MODULE_LOADING=EAGER ./cuda_persist_kernel
+// 11 us for 1 test iov, 82 us for 128 test iovs
 int main() {
     cudaStream_t stream1, stream2;
     cudaStreamCreate(&stream1);
@@ -180,6 +188,7 @@ int main() {
     for (int i = 0; i < kMaxFifoDepth; i++) {
         fifo->iovs[i].iov_n = -1;
     }
+    fifo->abort = 0;
 
     // Preallocate a iov work item.
     struct Iov *cpu_iov = (struct Iov *)malloc(sizeof(struct Iov));
@@ -188,11 +197,9 @@ int main() {
         cudaMalloc(&cpu_iov->dsts[i], 8888);
         cpu_iov->lens[i] = 8888;
     }
-    cpu_iov->iov_n = kMaxIovs;
+    cpu_iov->iov_n = kTestIovs;
 
-    // The current implementation is too inefficient.
-    // Single thread block -> 200us, while 4 thread blocks -> 186us.
-    persistKernel<<<4, 512, 0, stream1>>>(__fifo, kTestIters);
+    persistKernel<<<1, 512, 0, stream1>>>(__fifo);
     cudaCheckErrors("persistKernel failed");
 
     // Test concurrent kernel launch.
@@ -210,7 +217,6 @@ int main() {
             gpu_iov->lens[j] = cpu_iov->lens[j];
         }
         gpu_iov->iov_n = cpu_iov->iov_n;
-
         fifo->tail = i;
         __sync_synchronize();
 
@@ -224,6 +230,10 @@ int main() {
         if (i % 1000 == 0)
             printf("CPU wait time: %ld us\n", elapsed_us.count());
     }
+
+    // Tell the kernel to abort.
+    fifo->abort = 1;
+    __sync_synchronize();
 
     cudaStreamSynchronize(stream1);
     cudaCheckErrors("cudaStreamSynchronize failed");
