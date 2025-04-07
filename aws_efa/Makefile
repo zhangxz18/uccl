@@ -46,25 +46,25 @@ CUDA_BIN = cuda_event cuda_memcpy cuda_memcpy_async cuda_persist_kernel cuda_mem
 cuda: $(CUDA_BIN)
 
 cuda_event: cuda_event.cu
-	nvcc -O3 -g cuda_event.cu -o cuda_event $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_event.cu -o cuda_event $(CXXFLAGS) -std=c++17
 
 cuda_memcpy: cuda_memcpy.cu
-	nvcc -O3 -g cuda_memcpy.cu -o cuda_memcpy $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_memcpy.cu -o cuda_memcpy $(CXXFLAGS) -std=c++17
 
 cuda_memcpy_async: cuda_memcpy_async.cu
-	nvcc -O3 -g cuda_memcpy_async.cu -o cuda_memcpy_async $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_memcpy_async.cu -o cuda_memcpy_async $(CXXFLAGS) -std=c++17
 
 cuda_persist_kernel: cuda_persist_kernel.cu
-	nvcc -O3 -g cuda_persist_kernel.cu -o cuda_persist_kernel $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_persist_kernel.cu -o cuda_persist_kernel $(CXXFLAGS) -std=c++17
 
 cuda_memcpy_gpu: cuda_memcpy_gpu.cu
-	nvcc -O3 -g cuda_memcpy_gpu.cu -o cuda_memcpy_gpu $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_memcpy_gpu.cu -o cuda_memcpy_gpu $(CXXFLAGS) -std=c++17
 
 cuda_concurrent: cuda_concurrent.cu
-	nvcc -O3 -g cuda_concurrent.cu -o cuda_concurrent $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_concurrent.cu -o cuda_concurrent $(CXXFLAGS) -std=c++17
 
 cuda_greenctx: cuda_greenctx.cu
-	nvcc -O3 -g cuda_greenctx.cu -o cuda_greenctx $(CXXFLAGS) -std=c++11
+	nvcc -O3 -g cuda_greenctx.cu -o cuda_greenctx $(CXXFLAGS) -std=c++17
 
 clean:
 	rm $(FI_BIN) $(EFA_BIN) $(CUDA_BIN)

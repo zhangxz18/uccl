@@ -1,8 +1,10 @@
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <tuple>
 
 #define cudaCheckErrors(msg)                                        \
     do {                                                            \
@@ -42,6 +44,11 @@ __device__ __forceinline__ void st_relaxed_sys(uint64_t *ptr, uint64_t val) {
 #endif
 }
 
+__global__ void emptykernel() {
+    if (threadIdx.x == 0)
+        printf("Empty kernel: block %d, thread %d\n", blockIdx.x, threadIdx.x);
+}
+
 // Yang: 128 max scattered IOVs
 #define kMaxIovs 128
 struct alignas(8) Iov {
@@ -51,14 +58,6 @@ struct alignas(8) Iov {
     int iov_n;
     int gpu_idx;  // for debugging
     int step;     // for debugging
-};
-
-#define kMaxFifoDepth 1024
-struct IovFifo {
-    uint64_t head;   // GPU writes finished index
-    uint64_t tail;   // CPU posts working index
-    uint64_t abort;  // Telling the kernel to abort
-    struct Iov iovs[kMaxFifoDepth];
 };
 
 __device__ void kernelScatteredMemcpy(struct Iov *iov) {
@@ -104,9 +103,17 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
     }
 }
 
+#define kMaxFifoDepth 8
+struct IovFifo {
+    uint64_t head;   // GPU writes finished index
+    uint64_t tail;   // CPU posts working index
+    uint64_t abort;  // Telling the kernel to abort
+    struct Iov iovs[kMaxFifoDepth];
+};
+
 // TODO: per-warp fifo queue (to support multiple SMs), only loading Iovs up to
 // iov_n, implementing prims_simple style copy.
-__global__ void persistKernel(struct IovFifo *fifo) {
+__global__ void persistKernel(struct IovFifo **fifo_vec) {
     __shared__ uint64_t cached_tail;
     __shared__ uint64_t abort_flag;
     __shared__ struct Iov *cur_iov;
@@ -115,8 +122,10 @@ __global__ void persistKernel(struct IovFifo *fifo) {
     int bid = blockIdx.x;
     int global_tid = bid * blockDim.x + tid;
 
-    // This print is necessary to make sure other kernels can run.
-    if (global_tid == 0) {
+    struct IovFifo *fifo = fifo_vec[bid];
+
+    // This impossible print is necessary to make sure other kernels run.
+    if (global_tid == -1) {
         printf("Persist kernel: block %d, thread %d\n", bid, tid);
     }
 
@@ -158,13 +167,70 @@ __global__ void persistKernel(struct IovFifo *fifo) {
     }
 }
 
-__global__ void emptykernel() {
-    if (threadIdx.x == 0)
-        printf("Empty kernel: block %d, thread %d\n", blockIdx.x, threadIdx.x);
-}
+class iovMultiFifo {
+    static constexpr int kMaxFifos = 32;
+
+    int num_fifo_;
+    volatile struct IovFifo *fifo_vec_[kMaxFifos];
+    uint64_t fifo_slot_idx_[kMaxFifos];  // monotonic increasing index
+
+   public:
+    iovMultiFifo(int num_fifo) : num_fifo_(num_fifo) {
+        for (int i = 0; i < num_fifo; i++) {
+            cudaHostAlloc(&fifo_vec_[i], sizeof(struct IovFifo),
+                          cudaHostAllocMapped);
+            cudaCheckErrors("cudaMallocManaged failed");
+
+            // Initialize the fifo
+            volatile struct IovFifo *fifo = fifo_vec_[i];
+            fifo->head = (uint64_t)-1;
+            fifo->tail = (uint64_t)-1;
+            for (int j = 0; j < kMaxFifoDepth; j++) {
+                fifo->iovs[j].iov_n = -1;
+            }
+            fifo->abort = 0;
+
+            fifo_slot_idx_[i] = 0;
+        }
+    }
+    ~iovMultiFifo() {
+        for (int i = 0; i < num_fifo_; i++) {
+            cudaFreeHost((void *)fifo_vec_[i]);
+            cudaCheckErrors("cudaFreeHost failed");
+        }
+    }
+
+    struct IovFifo **get_fifo_vec() { return (struct IovFifo **)fifo_vec_; }
+
+    std::tuple<uint64_t, volatile struct Iov *> reserve_fifo_slot(
+        int fifo_idx) {
+        auto slot_idx = fifo_slot_idx_[fifo_idx]++;
+        auto reserved_iov =
+            fifo_vec_[fifo_idx]->iovs + slot_idx % kMaxFifoDepth;
+        return {slot_idx, reserved_iov};
+    }
+
+    void dispatch_task(int fifo_idx) {
+        auto slot_idx = fifo_slot_idx_[fifo_idx] - 1;
+        fifo_vec_[fifo_idx]->tail = slot_idx;
+        __sync_synchronize();
+    }
+
+    bool check_completion(int fifo_idx, uint64_t slot_idx) {
+        assert(slot_idx < fifo_slot_idx_[fifo_idx]);
+        // The intial -1 will always be less than 0.
+        return (int64_t)fifo_vec_[fifo_idx]->head >= (int64_t)slot_idx;
+    }
+
+    void abort(int fifo_idx) {
+        fifo_vec_[fifo_idx]->abort = 1;
+        __sync_synchronize();
+    }
+};
 
 static constexpr int kTestIters = 10000;
 static constexpr int kTestIovs = 128;
+static constexpr int kNumBlocks = 4;
 
 // make cuda_persist_kernel
 // CUDA_MODULE_LOADING=EAGER ./cuda_persist_kernel
@@ -176,20 +242,6 @@ int main() {
     cudaStreamCreate(&stream2);
     cudaCheckErrors("cudaStreamCreate failed");
 
-    struct IovFifo *__fifo;
-    cudaHostAlloc(&__fifo, sizeof(struct IovFifo), cudaHostAllocMapped);
-    cudaCheckErrors("cudaMallocManaged failed");
-
-    volatile struct IovFifo *fifo = (volatile struct IovFifo *)__fifo;
-
-    // Initialize the fifo
-    fifo->head = (uint64_t)-1;
-    fifo->tail = (uint64_t)-1;
-    for (int i = 0; i < kMaxFifoDepth; i++) {
-        fifo->iovs[i].iov_n = -1;
-    }
-    fifo->abort = 0;
-
     // Preallocate a iov work item.
     struct Iov *cpu_iov = (struct Iov *)malloc(sizeof(struct Iov));
     for (int i = 0; i < kMaxIovs; i++) {
@@ -197,9 +249,11 @@ int main() {
         cudaMalloc(&cpu_iov->dsts[i], 8888);
         cpu_iov->lens[i] = 8888;
     }
-    cpu_iov->iov_n = kTestIovs;
 
-    persistKernel<<<1, 512, 0, stream1>>>(__fifo);
+    // Create a iovMultiFifo object.
+    iovMultiFifo *fifo = new iovMultiFifo(kNumBlocks);
+
+    persistKernel<<<kNumBlocks, 512, 0, stream1>>>(fifo->get_fifo_vec());
     cudaCheckErrors("persistKernel failed");
 
     // Test concurrent kernel launch.
@@ -209,37 +263,44 @@ int main() {
     cudaCheckErrors("cudaStreamSynchronize failed");
 
     for (int i = 0; i < kTestIters; i++) {
-        // CPU dispatches work to GPU.
-        volatile struct Iov *gpu_iov = fifo->iovs + i % kMaxFifoDepth;
-        for (int j = 0; j < kMaxIovs; j++) {
+        auto fifo_idx = i % kNumBlocks;
+
+        // Reserve a slot in the FIFO.
+        auto [slot_idx, gpu_iov] = fifo->reserve_fifo_slot(fifo_idx);
+        for (int j = 0; j < kTestIovs; j++) {
             gpu_iov->srcs[j] = cpu_iov->srcs[j];
             gpu_iov->dsts[j] = cpu_iov->dsts[j];
             gpu_iov->lens[j] = cpu_iov->lens[j];
         }
-        gpu_iov->iov_n = cpu_iov->iov_n;
-        fifo->tail = i;
-        __sync_synchronize();
+        gpu_iov->iov_n = kTestIovs;
+
+        // CPU dispatches work to GPU.
+        fifo->dispatch_task(fifo_idx);
 
         // CPU side work.
         auto start = std::chrono::high_resolution_clock::now();
-        while (fifo->head != i) {
+        while (fifo->check_completion(fifo_idx, slot_idx) == false) {
         }
         auto end = std::chrono::high_resolution_clock::now();
-        auto elapsed_us =
-            std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        if (i % 1000 == 0)
-            printf("CPU wait time: %ld us\n", elapsed_us.count());
+
+        if (i % 1000 == 0) {
+            auto elapsed_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(end -
+                                                                      start);
+            auto bw_GBps = kTestIovs * 8888 * 1.0 / elapsed_us.count() / 1000;
+            printf("CPU wait time: %ld us, bw: %lf GBps\n", elapsed_us.count(),
+                   bw_GBps);
+        }
     }
 
     // Tell the kernel to abort.
-    fifo->abort = 1;
-    __sync_synchronize();
+    for (int i = 0; i < kNumBlocks; i++) {
+        fifo->abort(i);
+    }
 
     cudaStreamSynchronize(stream1);
     cudaCheckErrors("cudaStreamSynchronize failed");
 
-    cudaFreeHost(__fifo);
-    cudaCheckErrors("cudaFreeHost failed");
-
+    delete fifo;
     return 0;
 }
