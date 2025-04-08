@@ -5,7 +5,7 @@
 XDP_TARGETS  := af_xdp_kern af_xdp_kern_efa
 USER_TARGETS := af_xdp_user af_xdp_user_efa
 CUDA_HOME:=/usr/local/cuda
-CXXFLAGS = -I /opt/amazon/efa/include -L /opt/amazon/efa/lib -I$(CUDA_HOME)/include -L ${CUDA_HOME}/lib64 -lfabric -libverbs -lefa -lcudart -lpthread -lcuda
+CXXFLAGS = -I /opt/amazon/efa/include -L /opt/amazon/efa/lib -I$(CUDA_HOME)/include -L ${CUDA_HOME}/lib64 -lfabric -libverbs -lefa -lcudart -lpthread -lcuda -arch=sm_80
 
 all: fi efa cuda
 

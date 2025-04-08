@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <cuda_pipeline.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -44,6 +45,11 @@ __device__ __forceinline__ void st_relaxed_sys(uint64_t *ptr, uint64_t val) {
 #endif
 }
 
+template <typename X, typename Y, typename Z = decltype(X() + Y())>
+__host__ __device__ constexpr Z divUp(X x, Y y) {
+    return (x + y - 1) / y;
+}
+
 __global__ void emptykernel() {
     if (threadIdx.x == 0)
         printf("Empty kernel: block %d, thread %d\n", blockIdx.x, threadIdx.x);
@@ -60,45 +66,92 @@ struct alignas(8) Iov {
     int step;     // for debugging
 };
 
-__device__ void kernelScatteredMemcpy(struct Iov *iov) {
-    // Total threads in the grid.
-    int total_threads = gridDim.x * blockDim.x;
-    // Compute our unique global thread id.
-    int global_id = blockIdx.x * blockDim.x + threadIdx.x;
-    // Number of threads per copy.
-    int threads_per_copy = total_threads / iov->iov_n;
+__device__ __forceinline__ void copyGlobalMemory(void *dst, void *src,
+                                                 int len) {
+    uintptr_t src_addr = (uintptr_t)src;
+    uintptr_t dst_addr = (uintptr_t)dst;
+    int i = 0;
 
-    // Map each thread to a copy.
-    int copy_idx = global_id / threads_per_copy;
-    if (copy_idx >= iov->iov_n) return;  // In case of rounding
-
-    // Compute local thread index within the group assigned to this copy.
-    int local_thread_idx = global_id % threads_per_copy;
-
-    // Retrieve parameters for this copy.
-    uint64_t total_size = iov->lens[copy_idx];
-    if (total_size == 0) return;
-
-    char *src_ptr = (char *)iov->srcs[copy_idx];
-    char *dst_ptr = (char *)iov->dsts[copy_idx];
-
-    // Copy 8-byte chunks first (if possible)
-    uint64_t num_full = total_size / 8;
-    uint64_t *src_u64 = (uint64_t *)src_ptr;
-    uint64_t *dst_u64 = (uint64_t *)dst_ptr;
-
-    // Each thread in the group copies its portion of 64-bit words.
-    for (uint64_t i = local_thread_idx; i < num_full; i += threads_per_copy) {
-        dst_u64[i] = src_u64[i];
+    for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
+        *(uint64_t *)(dst_addr + i) = *(uint64_t *)(src_addr + i);
     }
 
     // Handle the remaining tail bytes (if any)
-    uint64_t tail_start = num_full * 8;
-    // Let only one thread in the copy group (e.g. local_thread_idx == 0) copy
-    // the tail.
-    if (local_thread_idx == 0) {
-        for (uint64_t i = tail_start; i < total_size; i++) {
-            dst_ptr[i] = src_ptr[i];
+    if (i > len) {
+        i -= sizeof(uint64_t);
+        for (; i < len; i++) {
+            *(uint8_t *)(dst_addr + i) = *(uint8_t *)(src_addr + i);
+        }
+    }
+}
+
+static constexpr int kNumBlocks = 4;
+static constexpr int kNumThreadsPerBlock = 512;
+
+__device__ void kernelScatteredMemcpy(struct Iov *iov) {
+    typedef float2 T;
+    static constexpr int kPipelineDepth = 8;
+    __shared__ T smem[kNumThreadsPerBlock * kPipelineDepth];
+
+    // Each SM is an independent worker.
+    int nthreads = blockDim.x;
+    int tid = threadIdx.x;
+    int iov_n = iov->iov_n;
+
+    // Number of threads per copy: A100 has 8 * 128bit mem transactions.
+    // https://developer.download.nvidia.com/video/gputechconf/gtc/2020/presentations/s21745-developing-cuda-kernels-to-push-tensor-cores-to-the-absolute-limit-on-nvidia-a100.pdf
+    int nthreads_per_iov = max(8, nthreads / iov_n);
+    // Ignoring some non-rounded threads
+    if (tid > nthreads_per_iov * iov_n) return;
+
+    int iov_n_per_iter = nthreads / nthreads_per_iov;
+    int start_iov = tid / nthreads_per_iov;
+
+    for (int i = start_iov; i < iov_n; i += iov_n_per_iter) {
+        // Map each thread to a iov copy.
+        int iov_idx = i;
+        // Compute local tid within the th group assigned to this iov copy.
+        int local_tid = tid % nthreads_per_iov;
+
+        // Retrieve parameters for this copy.
+        char *src_ptr = (char *)iov->srcs[iov_idx];
+        char *dst_ptr = (char *)iov->dsts[iov_idx];
+        int iov_len = iov->lens[iov_idx];
+        if (iov_len == 0) return;
+
+        // Copy t-byte chunks first (if possible)
+        uint64_t num_full = iov_len / sizeof(T);
+        T *src_T = (T *)src_ptr;
+        T *dst_T = (T *)dst_ptr;
+
+        int depth = 0;
+        // Each thread in the group copies its portion of data.
+        for (uint64_t i = local_tid; i < num_full; i += nthreads_per_iov) {
+            // dst_T[i] = src_T[i];
+
+            void *smemBytePtr = (void *)&smem[tid + nthreads * depth++];
+            const void *gmemBytePtr = (const void *)&src_T[i];
+            __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(T));
+
+            if (depth == kPipelineDepth || i + nthreads_per_iov >= num_full) {
+                __pipeline_commit();
+                __pipeline_wait_prior(0);
+                // Copy the data from shared memory to global memory
+                for (int j = 0; j < depth; j++) {
+                    dst_T[i - j * nthreads_per_iov] = smem[tid + nthreads * j];
+                }
+                depth = 0;
+            }
+        }
+
+        // Let only one thread in the copy group (e.g. local_tid == 0) copy
+        // the tail.
+        if (local_tid == 0) {
+            // Handle the remaining tail bytes (if any)
+            uint64_t tail_start = num_full * 8;
+            for (uint64_t i = tail_start; i < iov_len; i++) {
+                dst_ptr[i] = src_ptr[i];
+            }
         }
     }
 }
@@ -111,8 +164,7 @@ struct IovFifo {
     struct Iov iovs[kMaxFifoDepth];
 };
 
-// TODO: per-warp fifo queue (to support multiple SMs), only loading Iovs up to
-// iov_n, implementing prims_simple style copy.
+// TODO: test multiple inflight work.
 __global__ void persistKernel(struct IovFifo **fifo_vec) {
     __shared__ uint64_t cached_tail;
     __shared__ uint64_t abort_flag;
@@ -145,7 +197,7 @@ __global__ void persistKernel(struct IovFifo **fifo_vec) {
                 if (abort_flag) break;
 
                 cur_tail = ld_volatile(&fifo->tail);
-            } while (cur_tail != cached_tail + 1);
+            } while (cur_tail < cached_tail + 1);
 
             cached_tail = cur_tail;
             cur_iov = fifo->iovs + cached_tail % kMaxFifoDepth;
@@ -228,32 +280,69 @@ class iovMultiFifo {
     }
 };
 
-static constexpr int kTestIters = 10000;
+static constexpr int kCopySize = 8888;
+static constexpr int kTestIters = 1000;
 static constexpr int kTestIovs = 128;
-static constexpr int kNumBlocks = 4;
+
+void fill_data(void **srcs_gpu, int iov_n, int len, uint64_t value,
+               cudaStream_t stream) {
+    // make a CPU buffer, then copy to GPU
+    uint64_t *cpu_buf = (uint64_t *)malloc(len);
+    for (int i = 0; i < len / sizeof(uint64_t); i++) {
+        cpu_buf[i] = value;
+    }
+    for (int i = 0; i < iov_n; i++) {
+        cudaMemcpyAsync(srcs_gpu[i], cpu_buf, len, cudaMemcpyHostToDevice,
+                        stream);
+        cudaStreamSynchronize(stream);
+        cudaCheckErrors("cudaMemcpy failed");
+    }
+    free(cpu_buf);
+}
+
+void check_data(void **dsts_gpu, int iov_n, int len, uint64_t value,
+                cudaStream_t stream) {
+    // check the data
+    uint64_t *cpu_buf = (uint64_t *)malloc(len);
+    for (int i = 0; i < iov_n; i++) {
+        cudaMemcpyAsync(cpu_buf, dsts_gpu[i], len, cudaMemcpyDeviceToHost,
+                        stream);
+        cudaStreamSynchronize(stream);
+        cudaCheckErrors("cudaMemcpy failed");
+        for (int j = 0; j < len / sizeof(uint64_t); j++) {
+            assert(cpu_buf[j] == value);
+        }
+    }
+    free(cpu_buf);
+}
 
 // make cuda_persist_kernel
 // CUDA_MODULE_LOADING=EAGER ./cuda_persist_kernel
 // 11 us for 1 test iov, 82 us for 128 test iovs
 int main() {
-    cudaStream_t stream1, stream2;
+    cudaStream_t stream1, stream2, stream3;
     cudaStreamCreate(&stream1);
     cudaCheckErrors("cudaStreamCreate failed");
     cudaStreamCreate(&stream2);
+    cudaCheckErrors("cudaStreamCreate failed");
+    cudaStreamCreate(&stream3);
     cudaCheckErrors("cudaStreamCreate failed");
 
     // Preallocate a iov work item.
     struct Iov *cpu_iov = (struct Iov *)malloc(sizeof(struct Iov));
     for (int i = 0; i < kMaxIovs; i++) {
-        cudaMalloc(&cpu_iov->srcs[i], 8888);
-        cudaMalloc(&cpu_iov->dsts[i], 8888);
-        cpu_iov->lens[i] = 8888;
+        cudaMalloc(&cpu_iov->srcs[i], kCopySize);
+        cudaMalloc(&cpu_iov->dsts[i], kCopySize);
+        cpu_iov->lens[i] = kCopySize;
     }
+    fill_data((void **)cpu_iov->srcs, kTestIovs, kCopySize, 0xdeadbeef,
+              stream3);
 
     // Create a iovMultiFifo object.
     iovMultiFifo *fifo = new iovMultiFifo(kNumBlocks);
 
-    persistKernel<<<kNumBlocks, 512, 0, stream1>>>(fifo->get_fifo_vec());
+    persistKernel<<<kNumBlocks, kNumThreadsPerBlock, 0, stream1>>>(
+        fifo->get_fifo_vec());
     cudaCheckErrors("persistKernel failed");
 
     // Test concurrent kernel launch.
@@ -273,6 +362,7 @@ int main() {
             gpu_iov->lens[j] = cpu_iov->lens[j];
         }
         gpu_iov->iov_n = kTestIovs;
+        fill_data((void **)cpu_iov->srcs, kTestIovs, kCopySize, i, stream3);
 
         // CPU dispatches work to GPU.
         fifo->dispatch_task(fifo_idx);
@@ -282,12 +372,14 @@ int main() {
         while (fifo->check_completion(fifo_idx, slot_idx) == false) {
         }
         auto end = std::chrono::high_resolution_clock::now();
+        check_data((void **)gpu_iov->dsts, kTestIovs, kCopySize, i, stream3);
 
-        if (i % 1000 == 0) {
+        if (i % 100 == 0) {
             auto elapsed_us =
                 std::chrono::duration_cast<std::chrono::microseconds>(end -
                                                                       start);
-            auto bw_GBps = kTestIovs * 8888 * 1.0 / elapsed_us.count() / 1000;
+            auto bw_GBps =
+                kTestIovs * kCopySize * 1.0 / elapsed_us.count() / 1000;
             printf("CPU wait time: %ld us, bw: %lf GBps\n", elapsed_us.count(),
                    bw_GBps);
         }
