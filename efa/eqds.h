@@ -215,6 +215,7 @@ public:
 private:
     static constexpr PullQuanta INIT_PULL_QUANTA = 100;
     static constexpr uint32_t kEQDSMaxCwnd = 625000; // BDPBytes = 100Gbps * 50us RTT
+    // static constexpr uint32_t kEQDSMaxCwnd = 700000;
 
     /********************************************************************/
     /************************ Sender-side states ************************/
@@ -466,7 +467,8 @@ public:
     // How many credits to grant per pull.
     static const PullQuanta kCreditPerPull = 6;
     // How many senders to grant credit per iteration.
-    static const uint32_t kSendersPerPull = 2;
+    // static const uint32_t kSendersPerPull = 2; 
+    static const uint32_t kSendersPerPull = 1; // Good for allreduce
 
     // Reference: for PULL_QUANTUM = 16384, kLinkBandwidth = 400 * 1e9 / 8,
     // kCreditPerPull = 4, kSendersPerPull = 4, kPacingIntervalUs ~= 5.3 us.

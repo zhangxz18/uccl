@@ -53,7 +53,7 @@ struct ncclSendMem {
 };
 
 // Yang: 128 max scattered IOVs
-#define kMaxIovs 128
+#define kMaxIovs 256
 struct alignas(8) iov {
   void* iov_addrs[kMaxIovs];
   int iov_lens[kMaxIovs];
@@ -74,7 +74,7 @@ struct ncclRecvMem {
       struct iov iovFifo[NCCL_STEPS];
       /************************** */
     };
-    char pad4[MEM_ALIGN + MEM_ALIGN * 4];
+    char pad4[MEM_ALIGN + MEM_ALIGN * 8];
   };
 };
 // Yang: iovFifo is the starting address of the scattered IOVs.

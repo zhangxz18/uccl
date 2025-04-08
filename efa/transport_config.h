@@ -37,7 +37,7 @@ static const uint32_t kNumVdevices = 8;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 static const bool kSplitSendRecvEngine =
-    true;  // Split sender/recevier flows to dedicated engines.
+    false;  // Split sender/recevier flows to dedicated engines.
 
 /// Interface configuration.
 #ifdef P4D
