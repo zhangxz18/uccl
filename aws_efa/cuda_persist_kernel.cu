@@ -56,7 +56,14 @@ __global__ void emptykernel() {
 }
 
 // Yang: 128 max scattered IOVs
-#define kMaxIovs 128
+static constexpr int kMaxIovs = 128;
+static constexpr int kNumBlocks = 4;
+static constexpr int kNumThreadsPerBlock = 512;
+static constexpr int kMaxFifoDepth = 8;
+static constexpr int kCopySize = 8888;
+static constexpr int kTestIters = 1000;
+static constexpr int kTestIovs = 128;
+
 struct alignas(8) Iov {
     void *srcs[kMaxIovs];
     void *dsts[kMaxIovs];
@@ -66,27 +73,12 @@ struct alignas(8) Iov {
     int step;     // for debugging
 };
 
-__device__ __forceinline__ void copyGlobalMemory(void *dst, void *src,
-                                                 int len) {
-    uintptr_t src_addr = (uintptr_t)src;
-    uintptr_t dst_addr = (uintptr_t)dst;
-    int i = 0;
-
-    for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
-        *(uint64_t *)(dst_addr + i) = *(uint64_t *)(src_addr + i);
-    }
-
-    // Handle the remaining tail bytes (if any)
-    if (i > len) {
-        i -= sizeof(uint64_t);
-        for (; i < len; i++) {
-            *(uint8_t *)(dst_addr + i) = *(uint8_t *)(src_addr + i);
-        }
-    }
-}
-
-static constexpr int kNumBlocks = 4;
-static constexpr int kNumThreadsPerBlock = 512;
+struct IovFifo {
+    uint64_t head;   // GPU writes finished index
+    uint64_t tail;   // CPU posts working index
+    uint64_t abort;  // Telling the kernel to abort
+    struct Iov iovs[kMaxFifoDepth];
+};
 
 __device__ void kernelScatteredMemcpy(struct Iov *iov) {
     typedef float2 T;
@@ -156,15 +148,6 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
     }
 }
 
-#define kMaxFifoDepth 8
-struct IovFifo {
-    uint64_t head;   // GPU writes finished index
-    uint64_t tail;   // CPU posts working index
-    uint64_t abort;  // Telling the kernel to abort
-    struct Iov iovs[kMaxFifoDepth];
-};
-
-// TODO: test multiple inflight work.
 __global__ void persistKernel(struct IovFifo **fifo_vec) {
     __shared__ uint64_t cached_tail;
     __shared__ uint64_t abort_flag;
@@ -279,10 +262,6 @@ class iovMultiFifo {
         __sync_synchronize();
     }
 };
-
-static constexpr int kCopySize = 8888;
-static constexpr int kTestIters = 1000;
-static constexpr int kTestIovs = 128;
 
 void fill_data(void **srcs_gpu, int iov_n, int len, uint64_t value,
                cudaStream_t stream) {
