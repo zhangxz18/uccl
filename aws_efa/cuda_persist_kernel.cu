@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <tuple>
+#include <vector>
 
 #define cudaCheckErrors(msg)                                        \
     do {                                                            \
@@ -57,12 +58,18 @@ __global__ void emptykernel() {
 
 // Yang: 128 max scattered IOVs
 static constexpr int kMaxIovs = 128;
+static constexpr int kFifoDepth = 8;
+static constexpr uint64_t kAbortTailValue = (uint64_t)-2;
 static constexpr int kNumBlocks = 4;
 static constexpr int kNumThreadsPerBlock = 512;
-static constexpr int kMaxFifoDepth = 8;
 static constexpr int kCopySize = 8888;
-static constexpr int kTestIters = 1000;
+static constexpr int kTestIters = 1024;
 static constexpr int kTestIovs = 128;
+static constexpr int kTestSteps = kNumBlocks * 8;
+
+static_assert(kTestSteps <= kFifoDepth * kNumBlocks,
+              "kTestSteps should be less than kFifoDepth * kNumBlocks");
+static_assert(kTestIovs <= kMaxIovs, "kTestIovs should be less than kMaxIovs");
 
 struct alignas(8) Iov {
     void *srcs[kMaxIovs];
@@ -74,10 +81,9 @@ struct alignas(8) Iov {
 };
 
 struct IovFifo {
-    uint64_t head;   // GPU writes finished index
-    uint64_t tail;   // CPU posts working index
-    uint64_t abort;  // Telling the kernel to abort
-    struct Iov iovs[kMaxFifoDepth];
+    uint64_t head;  // GPU writes finished index
+    uint64_t tail;  // CPU posts working index
+    struct Iov iovs[kFifoDepth];
 };
 
 __device__ void kernelScatteredMemcpy(struct Iov *iov) {
@@ -165,7 +171,10 @@ __global__ void persistKernel(struct IovFifo **fifo_vec) {
     }
 
     // Initing per-threadblock variables
-    if (tid == 0) cached_tail = (uint64_t)-1;
+    if (tid == 0) {
+        abort_flag = 0;
+        cached_tail = (uint64_t)-1;
+    }
     __syncthreads();
 
     // We should avoid all thread loading the global memory at the same, as this
@@ -176,16 +185,20 @@ __global__ void persistKernel(struct IovFifo **fifo_vec) {
         if (tid == 0) {
             uint64_t cur_tail;
             do {
-                abort_flag = ld_volatile(&fifo->abort);
-                if (abort_flag) break;
-
                 cur_tail = ld_volatile(&fifo->tail);
-            } while (cur_tail < cached_tail + 1);
+
+                if (cur_tail == kAbortTailValue) {
+                    // The CPU has posted a abort signal.
+                    abort_flag = 1;
+                    break;
+                }
+            } while ((int64_t)cur_tail < (int64_t)(cached_tail + 1));
+
+            // Processing one iov at a time.
+            cur_tail = cached_tail + 1;
 
             cached_tail = cur_tail;
-            cur_iov = fifo->iovs + cached_tail % kMaxFifoDepth;
-
-            // TODO: using volatile load?
+            cur_iov = fifo->iovs + cached_tail % kFifoDepth;
         }
         __syncthreads();
         if (abort_flag) return;
@@ -220,10 +233,9 @@ class iovMultiFifo {
             volatile struct IovFifo *fifo = fifo_vec_[i];
             fifo->head = (uint64_t)-1;
             fifo->tail = (uint64_t)-1;
-            for (int j = 0; j < kMaxFifoDepth; j++) {
+            for (int j = 0; j < kFifoDepth; j++) {
                 fifo->iovs[j].iov_n = -1;
             }
-            fifo->abort = 0;
 
             fifo_slot_idx_[i] = 0;
         }
@@ -240,8 +252,7 @@ class iovMultiFifo {
     std::tuple<uint64_t, volatile struct Iov *> reserve_fifo_slot(
         int fifo_idx) {
         auto slot_idx = fifo_slot_idx_[fifo_idx]++;
-        auto reserved_iov =
-            fifo_vec_[fifo_idx]->iovs + slot_idx % kMaxFifoDepth;
+        auto reserved_iov = fifo_vec_[fifo_idx]->iovs + slot_idx % kFifoDepth;
         return {slot_idx, reserved_iov};
     }
 
@@ -258,7 +269,7 @@ class iovMultiFifo {
     }
 
     void abort(int fifo_idx) {
-        fifo_vec_[fifo_idx]->abort = 1;
+        fifo_vec_[fifo_idx]->tail = kAbortTailValue;
         __sync_synchronize();
     }
 };
@@ -320,6 +331,7 @@ int main() {
     // Create a iovMultiFifo object.
     iovMultiFifo *fifo = new iovMultiFifo(kNumBlocks);
 
+    // Launch the persist kernel.
     persistKernel<<<kNumBlocks, kNumThreadsPerBlock, 0, stream1>>>(
         fifo->get_fifo_vec());
     cudaCheckErrors("persistKernel failed");
@@ -330,47 +342,61 @@ int main() {
     cudaStreamSynchronize(stream2);
     cudaCheckErrors("cudaStreamSynchronize failed");
 
-    for (int i = 0; i < kTestIters; i++) {
-        auto fifo_idx = i % kNumBlocks;
+    for (int i = 0; i < kTestIters; i += kTestSteps) {
+        std::vector<std::tuple<uint64_t, uint64_t>> poll_handlers;
 
-        // Reserve a slot in the FIFO.
-        auto [slot_idx, gpu_iov] = fifo->reserve_fifo_slot(fifo_idx);
-        for (int j = 0; j < kTestIovs; j++) {
-            gpu_iov->srcs[j] = cpu_iov->srcs[j];
-            gpu_iov->dsts[j] = cpu_iov->dsts[j];
-            gpu_iov->lens[j] = cpu_iov->lens[j];
+        for (int k = 0; k < kTestSteps; k++) {
+            auto fifo_idx = (i + k) % kNumBlocks;
+            fill_data((void **)cpu_iov->srcs, kTestIovs, kCopySize, i, stream3);
+
+            // Reserve a slot in the FIFO.
+            auto [slot_idx, gpu_iov] = fifo->reserve_fifo_slot(fifo_idx);
+            for (int j = 0; j < kTestIovs; j++) {
+                gpu_iov->srcs[j] = cpu_iov->srcs[j];
+                gpu_iov->dsts[j] = cpu_iov->dsts[j];
+                gpu_iov->lens[j] = cpu_iov->lens[j];
+            }
+            gpu_iov->iov_n = kTestIovs;
+
+            // CPU dispatches work to GPU.
+            fifo->dispatch_task(fifo_idx);
+
+            poll_handlers.push_back(std::make_tuple(fifo_idx, slot_idx));
         }
-        gpu_iov->iov_n = kTestIovs;
-        fill_data((void **)cpu_iov->srcs, kTestIovs, kCopySize, i, stream3);
-
-        // CPU dispatches work to GPU.
-        fifo->dispatch_task(fifo_idx);
 
         // CPU side work.
         auto start = std::chrono::high_resolution_clock::now();
-        while (fifo->check_completion(fifo_idx, slot_idx) == false) {
+        for (int k = 0; k < kTestSteps; k++) {
+            auto [fifo_idx, slot_idx] = poll_handlers[k];
+            // Wait for the GPU to finish the work.
+            while (fifo->check_completion(fifo_idx, slot_idx) == false) {
+            }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        check_data((void **)gpu_iov->dsts, kTestIovs, kCopySize, i, stream3);
+        check_data((void **)cpu_iov->dsts, kTestIovs, kCopySize, i, stream3);
 
-        if (i % 100 == 0) {
+        if (i % 128 == 0) {
             auto elapsed_us =
                 std::chrono::duration_cast<std::chrono::microseconds>(end -
                                                                       start);
-            auto bw_GBps =
-                kTestIovs * kCopySize * 1.0 / elapsed_us.count() / 1000;
+            auto bw_GBps = kTestIovs * kTestSteps * kCopySize * 1.0 /
+                           elapsed_us.count() / 1000;
             printf("CPU wait time: %ld us, bw: %lf GBps\n", elapsed_us.count(),
                    bw_GBps);
         }
     }
 
+    auto start = std::chrono::high_resolution_clock::now();
     // Tell the kernel to abort.
     for (int i = 0; i < kNumBlocks; i++) {
         fifo->abort(i);
     }
-
     cudaStreamSynchronize(stream1);
     cudaCheckErrors("cudaStreamSynchronize failed");
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    printf("Kernel abort time: %ld us\n", elapsed_us.count());
 
     delete fifo;
     return 0;
