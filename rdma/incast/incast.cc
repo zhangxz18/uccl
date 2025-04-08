@@ -43,14 +43,20 @@
 
 #define MPI_LOG(level) LOG(level) << "Node:" << NODE_ID << " "
 
-#define MAX_BUFFER_SIZE (8 * 1024 * 1024)     // 32MB
-#define NET_CHUNK_SIZE  (1024 * 1024)           // 1MB
-#define MAX_CHUNK (MAX_BUFFER_SIZE / NET_CHUNK_SIZE)
+#define MAX_BUFFER_SIZE (16 * 1024 * 1024)
+#define PT_NET_CHUNK_SIZE  (1024 * 1024)
+#define INCAST_NET_CHUNK_SIZE  (1024 * 1024)
+#define MAX_CHUNK (MAX_BUFFER_SIZE / PT_NET_CHUNK_SIZE)
 
-DEFINE_uint32(size, 4 * 1024 * 1024, "Message size.");
-DEFINE_uint32(iterations, 1000000, "Number of iterations to run.");
+DEFINE_uint32(pt_size, 4 * 1024 * 1024, "Message size of Permutation Traffic.");
+DEFINE_uint32(incast_size,  4 * 1024 * 1024, "Message size of Incast Traffic.");
+DEFINE_uint32(iterations, 200000, "Number of iterations to run.");
 
 using namespace uccl;
+
+std::vector<std::vector<uint64_t>> pt_rtts;
+std::vector<std::vector<uint64_t>> incast_rtts;
+std::vector<std::vector<uint64_t>> copy_incast_rtts;
 
 static int NODE_ID;
 static int NRANKS;
@@ -62,6 +68,7 @@ struct Socket {
     int nb_net_chunk = 0;
     struct ucclRequest ureq[MAX_CHUNK] = {};
     bool done[MAX_CHUNK] = {};
+    uint64_t rtt[MAX_CHUNK] = {};
 };
 
 struct CommHandle {
@@ -89,6 +96,38 @@ static volatile bool quit = false;
 
 static volatile uint32_t pt_cur_iteration[NB_THREADS * 2] = {};
 static volatile uint32_t incast_cur_iteration[NB_THREADS * 2] = {};
+
+void dump_rtts() {
+    // Dump pt_rtts to ./pt_rtts.txt with "RankX value" format
+    std::ofstream pt_file("./pt_rtts.txt");
+    if (!pt_file.is_open()) {
+        std::cerr << "Error: Could not open pt_rtts.txt for writing." << std::endl;
+        return;
+    }
+    for (size_t i = 0; i < pt_rtts.size(); ++i) {
+        for (const auto& rtt : pt_rtts[i]) {
+            pt_file << "Rank" << i << " " << to_usec(rtt, freq_ghz) << "\n";
+        }
+    }
+    pt_file.close();
+
+    // Dump incast_rtts to ./incast_rtts.txt with same format
+    // Incast benchmark is still runnning, so we copy the vector.
+    copy_incast_rtts = incast_rtts;
+    std::ofstream incast_file("./incast_rtts.txt");
+    if (!incast_file.is_open()) {
+        std::cerr << "Error: Could not open incast_rtts.txt for writing." << std::endl;
+        return;
+    }
+    for (size_t i = 0; i < copy_incast_rtts.size(); ++i) {
+        for (const auto& rtt : copy_incast_rtts[i]) {
+            incast_file << "Rank" << i << " " << to_usec(rtt, freq_ghz) << "\n";
+        }
+    }
+    incast_file.close();
+
+    MPI_LOG(INFO) << "RTT data dumped successfully (RankX value format).";
+}
 
 void interrupt_handler(int signal) {
     (void)signal;
@@ -444,6 +483,10 @@ bool test_p2p_send_done(int local_rank, int target_rank, int chunk_id, bool inca
         if (done) {
             incast_tx_cur_sec_bytes[local_rank].fetch_add(send_comm_->incast[local_rank].ureq[chunk_id].send.data_len);
             send_comm_->incast[local_rank].done[chunk_id] = true;
+            if (local_rank != 7 && local_rank != 15) {
+                // Filter data from Rank 7 and 15
+                incast_rtts[local_rank].push_back(rdtsc() - send_comm_->incast[local_rank].rtt[chunk_id]);
+            }
         }
     }
     else {
@@ -454,6 +497,10 @@ bool test_p2p_send_done(int local_rank, int target_rank, int chunk_id, bool inca
         if (done) {
             pt_tx_cur_sec_bytes[local_rank].fetch_add(send_comm_->pt.ureq[chunk_id].send.data_len);
             send_comm_->pt.done[chunk_id] = true;
+            if (local_rank != 3 && local_rank != 6 && local_rank != 7 && local_rank != 15) {
+                // Filter data from Rank 3,6,7,15
+                pt_rtts[local_rank].push_back(rdtsc() - send_comm_->pt.rtt[chunk_id]);
+            }
         }
     }
 
@@ -497,9 +544,14 @@ void p2p_send(int local_rank, int target_rank, int size, bool incast)
 
     if (incast) {
         while (offset < size) {
-            int net_chunk_size = std::min(size - offset, (uint32_t)NET_CHUNK_SIZE);
+            int net_chunk_size = std::min(size - offset, (uint32_t)INCAST_NET_CHUNK_SIZE);
+            
+            
+            send_comm_->incast[local_rank].rtt[chunk_id] = rdtsc();
             while (ep->uccl_send_async((UcclFlow *)send_comm_->incast[local_rank].conn_id.context, 
-            send_comm_->incast[local_rank].mhandle, send_comm_->incast[local_rank].buffer, net_chunk_size, &send_comm_->incast[local_rank].ureq[chunk_id])) {}
+            send_comm_->incast[local_rank].mhandle, send_comm_->incast[local_rank].buffer, net_chunk_size, &send_comm_->incast[local_rank].ureq[chunk_id])) {
+                send_comm_->incast[local_rank].rtt[chunk_id] = rdtsc();
+            }
             
             send_comm_->incast[local_rank].done[chunk_id] = false;
             offset += net_chunk_size;
@@ -509,9 +561,12 @@ void p2p_send(int local_rank, int target_rank, int size, bool incast)
         send_comm_->incast[local_rank].nb_net_chunk = chunk_id;
     } else {
         while (offset < size) {
-            int net_chunk_size = std::min(size - offset, (uint32_t)NET_CHUNK_SIZE);
+            int net_chunk_size = std::min(size - offset, (uint32_t)PT_NET_CHUNK_SIZE);
+            send_comm_->pt.rtt[chunk_id] = rdtsc();
             while (ep->uccl_send_async((UcclFlow *)send_comm_->pt.conn_id.context, 
-            send_comm_->pt.mhandle, send_comm_->pt.buffer, net_chunk_size, &send_comm_->pt.ureq[chunk_id])) {}
+            send_comm_->pt.mhandle, send_comm_->pt.buffer, net_chunk_size, &send_comm_->pt.ureq[chunk_id])) {
+                send_comm_->pt.rtt[chunk_id] = rdtsc();
+            }
             
             send_comm_->pt.done[chunk_id] = false;
             offset += net_chunk_size;
@@ -532,7 +587,7 @@ void p2p_receive(int local_rank, int target_rank, int size, bool incast)
 
     if (incast) {
         while (offset < size) {
-            int net_chunk_size = std::min(size - offset, (uint32_t)NET_CHUNK_SIZE);
+            int net_chunk_size = std::min(size - offset, (uint32_t)INCAST_NET_CHUNK_SIZE);
             DCHECK(ep->uccl_recv_async((UcclFlow *)recv_comm_->incast[local_rank].conn_id.context, 
             &recv_comm_->incast[local_rank].mhandle, &recv_comm_->incast[local_rank].buffer, &net_chunk_size, 1, &recv_comm_->incast[local_rank].ureq[chunk_id]) == 0);
             
@@ -544,7 +599,7 @@ void p2p_receive(int local_rank, int target_rank, int size, bool incast)
         recv_comm_->incast[local_rank].nb_net_chunk = chunk_id;
     } else {
         while (offset < size) {
-            int net_chunk_size = std::min(size - offset, (uint32_t)NET_CHUNK_SIZE);
+            int net_chunk_size = std::min(size - offset, (uint32_t)PT_NET_CHUNK_SIZE);
             DCHECK(ep->uccl_recv_async((UcclFlow *)recv_comm_->pt.conn_id.context, 
             &recv_comm_->pt.mhandle, &recv_comm_->pt.buffer, &net_chunk_size, 1, &recv_comm_->pt.ureq[chunk_id]) == 0);
             
@@ -674,13 +729,13 @@ void launch_stats_thread()
 }
 
 void verify_params() {
-    CHECK(FLAGS_size <= MAX_BUFFER_SIZE);
+    CHECK(FLAGS_pt_size <= MAX_BUFFER_SIZE);
 }
 
 void incast_send(int local_rank)
 {
-    while (incast_cur_iteration[local_rank]++ < FLAGS_iterations && !quit) {
-        p2p_send(local_rank, INCAST_RANK, FLAGS_size, true);
+    while (incast_cur_iteration[local_rank]++ < 50 * FLAGS_iterations && !quit) {
+        p2p_send(local_rank, INCAST_RANK, FLAGS_incast_size, true);
         // MPI_LOG(INFO) << local_rank << " send to incast rank.";
         net_send_sync(local_rank, INCAST_RANK, true);
         // MPI_LOG(INFO) << local_rank << " send to incast rank done.";
@@ -699,7 +754,7 @@ void incast_recv(int local_rank)
             // First run, post buffers to all nodes.
             for (int r = 0; r < NRANKS; r++) {
                 if (r == local_rank) continue;
-                p2p_receive(local_rank, r, FLAGS_size, true);
+                p2p_receive(local_rank, r, FLAGS_incast_size, true);
                 incast_cur_iteration[local_rank]++;
             }
         } else {
@@ -708,13 +763,13 @@ void incast_recv(int local_rank)
                 if (r == local_rank) continue;
                 if (nb_test_all_recv(local_rank, r, true)) 
                 {
-                    p2p_receive(local_rank, r, FLAGS_size, true);
+                    p2p_receive(local_rank, r, FLAGS_incast_size, true);
                     incast_cur_iteration[local_rank]++;
                 }
             }
         }
 
-        if (incast_cur_iteration[local_rank] >= FLAGS_iterations) break;
+        if (incast_cur_iteration[local_rank] >= 50 * FLAGS_iterations) break;
 
     }
 }
@@ -759,10 +814,15 @@ void permutation_traffic_rank_thread(int local_rank)
     MPI_LOG(INFO) << local_rank << "'s target is " << target_rank;
 
     while (pt_cur_iteration[local_rank]++ < FLAGS_iterations && !quit) {
-        p2p_receive(local_rank, target_rank, FLAGS_size, false);
-        p2p_send(local_rank, target_rank, FLAGS_size, false);
+        p2p_receive(local_rank, target_rank, FLAGS_pt_size, false);
+        p2p_send(local_rank, target_rank, FLAGS_pt_size, false);
         net_sync(local_rank, target_rank, false);
     }
+
+    if (local_rank % NB_THREADS == 0) {
+        dump_rtts();
+    }
+
 }
 
 void permutation_traffic()
@@ -851,6 +911,9 @@ int main(int argc, char** argv) {
     NRANKS *= NB_THREADS;
     DCHECK(NRANKS == 16);
 
+    pt_rtts.resize(NRANKS);
+    incast_rtts.resize(NRANKS);
+
     for (int i = 0; i < NRANKS; i++) {
         nodes.push_back(NodeInfo(ips[i / NB_THREADS], i));
     }
@@ -904,12 +967,12 @@ int main(int argc, char** argv) {
     pt_thread = std::thread(permutation_traffic);
     #endif
 
-    #ifdef INCAST
-        incast_thread.join();
-    #endif
-
     #ifdef PT
     pt_thread.join();
+    #endif
+
+    #ifdef INCAST
+        incast_thread.join();
     #endif
 
     // Destroy connections, free buffers, etc.
@@ -919,5 +982,6 @@ int main(int argc, char** argv) {
     }
     
     MPI_Finalize();
+
     return 0;
 }
