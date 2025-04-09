@@ -77,6 +77,7 @@ typedef enum {
   ncclProfilerProxyOpRecvPosted,
   ncclProfilerProxyOpRecvReceived,
   ncclProfilerProxyOpRecvTransmitted,
+  ncclProfilerProxyOpRecvSGCopied,
   ncclProfilerProxyOpRecvDone,
 
   /* Legacy proxy profiler states */

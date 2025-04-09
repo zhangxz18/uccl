@@ -1200,6 +1200,11 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
   if (args->state == ncclProxyOpReady) {
+    // Yang: launch our customized sg_copy kernel.
+    // printf("sg_copy: launch sg_copy kernel after cuLaunchKernelEx\n");
+    proxyState->sgCopyEngine->initFifo();
+    proxyState->sgCopyEngine->launchSGCopyKernel();
+
     // Initialize subs and group them by same recvComm.
     void* recvComm;
     int groupSize = 0;
@@ -1231,7 +1236,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       sub->base = ROUNDUP(resources->step, args->chunkSteps);
       // Set step base for next op
       resources->step = sub->base + sub->nsteps;
-      sub->posted = sub->received = sub->transmitted = sub->done = 0;
+      sub->posted = sub->received = sub->transmitted = sub->sg_copied = sub->done = 0;
       for (int i=0; i<groupSize; i++) sub[-i].groupSize = groupSize;
       ncclProfilerStartRecvProxyOpEvent(s, args);
       if (sub->reg && sub->nbytes > 0) {
@@ -1297,9 +1302,18 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         struct recvNetResources* resources = (struct recvNetResources*) (subGroup->connection->transportResources);
         void** requestPtr = subGroup->requests+(step%NCCL_STEPS);
         // Yang: replacing to scattered irecv.
+        // printf("irecv_scattered: subcount %d, ptrs[0] %p, sizes[0] %d\n", subCount, ptrs[0], sizes[0]);
         NCCLCHECK(proxyState->ncclNet->irecv_scattered(resources->netRecvComm, tags, mhandles, requestPtr));
         // NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
         if (*requestPtr) {
+          // Yang: record the ptrs so we can use during sg_copy.
+          static const uint32_t kPtrsStart = 4168;
+          void** uccl_req_ptrs = (void**)((char*)(*requestPtr) + kPtrsStart);
+          for (int i = 0; i < subCount; i++) {
+            uccl_req_ptrs[i] = ptrs[i];
+          }
+          // TODO(Yang) we will handle multi-recv case in the future.
+          assert(subCount == 1);
           subGroup->recvRequestsCache[step%NCCL_STEPS] = *requestPtr;
           subGroup->recvRequestsSubCount = subCount;
           for (int i=0; i<subGroup->groupSize; i++) {
@@ -1395,11 +1409,10 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
     }
     if (args->idle == 0) return ncclSuccess;
 
-    // TODO(yang): input the iovs to our own persistent kernel to finish scattered memcpy. 
-
     for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
       struct ncclProxySubArgs* subGroup = args->subs+s;
       if (subGroup->received > subGroup->transmitted) {
+        bool isDone = false;
         uint64_t step = subGroup->transmitted;
         int done = 1;
         void* request = subGroup->requests[step%NCCL_STEPS];
@@ -1408,47 +1421,82 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup + i;
 
-            // Yang: need to keep the same as transport.h
-            #define kMaxIovs 256
-            #define kIovStart 64
-            // Yang: Getting the scattered GDR IOV buffers from the plugin-managered request.
-            void* requestPtr = subGroup->recvRequestsCache[step%NCCL_STEPS];
-            void** iov_addrs = (void**)((char*)requestPtr + kIovStart);
-            int* iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
-            int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
-            int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
-
             sub->transmitted += args->sliceSteps;
             ncclProfilerRecordProxyOpEventState(s+i, args, sub->transmitted, sub->transSize, ncclProfilerProxyOpRecvTransmitted);
             ncclProfilerRecordProxyStepEventStates(s+i, args, sub->transmitted-args->sliceSteps, sub->transmitted, ncclProfilerProxyStepRecvGPUWait);
+            if (step < sub->nsteps) {           
+              // Yang: delay dispatching data to the nccl kernel to after sg_copy.  
+              // Yang: record if it is flushed. 
+              isDone = true;
+            }
+          }
+          // Yang: input the iovs to our own persistent kernel to finish scattered memcpy. 
+          if (isDone) {
+              // Yang: need to keep the same as transport.h
+              #define kMaxIovs 256
+              #define kIovStart 64
+              // Yang: Getting the scattered GDR IOV buffers from the plugin-managered request.
+              void* requestPtr = subGroup->recvRequestsCache[step%NCCL_STEPS];
+              void** iov_addrs = (void**)((char*)requestPtr + kIovStart);
+              int* iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
+              int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
+              int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
+              
+              static const uint32_t kPtrsStart = 4168;
+              void** uccl_req_ptrs = (void**)((char*)requestPtr + kPtrsStart);
+              // Yang: load balance among the SG copy engines.
+              auto fifo_idx = step % kNumThBlocks;
+              auto reserve_handler = proxyState->sgCopyEngine->reserve_fifo_slot(fifo_idx);
+              auto slot_idx = std::get<0>(reserve_handler);
+              auto gpu_iov = std::get<1>(reserve_handler);
+              for (int j = 0; j < *iov_n; j++) {
+                gpu_iov->srcs[j] = iov_addrs[j];
+                gpu_iov->dsts[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
+                gpu_iov->lens[j] = iov_lens[j];
+                // printf("sg_copy: iov %d, src %p, dst %p, len %d, dst_offset %d\n", j, gpu_iov->srcs[j], gpu_iov->dsts[j], gpu_iov->lens[j], dst_offsets[j]);
+              }
+              gpu_iov->iov_n = *iov_n;
+
+              subGroup->fifoPollHandlerCache[step%NCCL_STEPS] = {fifo_idx, slot_idx};
+              // printf("sg_copy: group %d dispatch sg_copy kernel, fifo_idx %ld, slot_idx %ld\n", s, fifo_idx, slot_idx);
+              proxyState->sgCopyEngine->dispatch_task(fifo_idx);
+          }
+
+          args->idle = 0;
+        }
+      }
+    }
+    if (args->idle == 0) return ncclSuccess;
+
+    // Yang: check if the sg_copy task has finished.
+    for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
+      struct ncclProxySubArgs* subGroup = args->subs+s;
+      if (subGroup->transmitted > subGroup->sg_copied) {
+        uint64_t step = subGroup->sg_copied;
+        int done = 1;
+        auto poll_handler = subGroup->fifoPollHandlerCache[step%NCCL_STEPS];
+        done = proxyState->sgCopyEngine->check_completion(poll_handler.fifo_idx, poll_handler.slot_idx);
+
+        if (done) {
+          // printf("sg_copy: group %d poll sg_copy kernel, fifo_idx %ld, slot_idx %ld\n", s, poll_handler.fifo_idx, poll_handler.slot_idx);
+
+          for (int i=0; i<subGroup->groupSize; i++) {
+            struct ncclProxySubArgs* sub = subGroup + i;
+
+            sub->sg_copied += args->sliceSteps;
+            ncclProfilerRecordProxyOpEventState(s+i, args, sub->sg_copied, sub->transSize, ncclProfilerProxyOpRecvSGCopied);
+            ncclProfilerRecordProxyStepEventStates(s+i, args, sub->sg_copied-args->sliceSteps, sub->sg_copied, ncclProfilerProxyStepRecvGPUWait);
             if (step < sub->nsteps) {
+              // Yang: delay dispatching data to the nccl kernel to now.
               __sync_synchronize();
               struct recvNetResources* resources = (struct recvNetResources*) (sub->connection->transportResources);
               // Yang: GDRCOPY support is off by default. 
               volatile uint64_t* recvTail = resources->gdcSync ? resources->gdcSync : &resources->recvMem->tail;
               if (sub->reg) {
                 // We may have added more net steps, but reg operations only have a single step w.r.t. the GPU.
-                if (sub->transmitted == sub->nsteps) *recvTail = sub->base + args->sliceSteps;
-              } else {
-                // // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
-                // auto* recv_mem = resources->recvMem;
-                // // Yang: recvTail might get overwritten, the same for the iov_addrs.
-                // auto iov_idx = (*recvTail) % NCCL_STEPS;
-                // volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);
-
-                // cur_iov->iov_n = *iov_n;
-                // // int gpu_idx;
-                // // cudaGetDevice(&gpu_idx);
-                // // cur_iov->gpu_idx = gpu_idx; // for debugging
-                // cur_iov->step = iov_idx;
-                // for (int j=0; j < cur_iov->iov_n; j++) {
-                //   cur_iov->iov_addrs[j] = iov_addrs[j];
-                //   cur_iov->iov_lens[j] = iov_lens[j];
-                //   cur_iov->dst_offsets[j] = dst_offsets[j];
-                // }
-                *recvTail = sub->base + sub->transmitted;
-                // __sync_synchronize();
-              }
+                if (sub->sg_copied == sub->nsteps) *recvTail = sub->base + args->sliceSteps;
+              } else
+                *recvTail = sub->base + sub->sg_copied;
               if (resources->gdcSync) wc_store_fence(); // Flush out WC write
             }
           }
@@ -1463,13 +1511,13 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       for (int i=0; i<subGroup->groupSize; i++) {
         struct ncclProxySubArgs* sub = subGroup + i;
         if (sub->done == sub->nsteps) continue;
-        if (sub->transmitted > sub->done) {
+        if (sub->sg_copied > sub->done) {
           struct recvNetResources* resources = (struct recvNetResources*) (sub->connection->transportResources);
           volatile uint64_t* sendHead = &resources->sendMem->head;
           uint64_t done = sub->reg ? sub->base + sub->nsteps : *sendHead;
           while (done > sub->base + sub->done &&
               // LL and LL128 can acknowledge 0-bytes send before they even happen. Don't go past what we transmitted.
-              sub->transmitted > sub->done) {
+              sub->sg_copied > sub->done) {
             if (subGroup->recvRequestsCache[sub->done%NCCL_STEPS]) {
               // the multirecv requests are only cached in the first sub.
               if (proxyState->ncclNet->irecvConsumed)
@@ -1498,10 +1546,17 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
       }
     }
     if (args->done == args->nsubs) {
+      // Yang: abort our customized sg_copy kernel.
+      // printf("sg_copy: abort sg_copy kernel\n");
+      proxyState->sgCopyEngine->abort();
+
       args->state = ncclProxyOpNone;
       for (int s=0; s<args->nsubs; s++) {
         ncclProfilerStopProxyOpEvent(s, args);
       }
+
+      // Yang: The sg_copy kernel is launched in ncclLaunchKernel by app thread, so we should not sync it here; Instead we just let it finish quitely, and we do not sync for the sg_copy kernel to finish.
+      proxyState->sgCopyEngine->sync_stream();
     }
   }
   return ncclSuccess;

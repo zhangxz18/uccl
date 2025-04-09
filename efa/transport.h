@@ -29,6 +29,7 @@
 
 #include "cuda_runtime.h"
 #include "driver_types.h"
+#include "eqds.h"
 #include "scattered_memcpy.cuh"
 #include "transport_cc.h"
 #include "transport_config.h"
@@ -39,7 +40,6 @@
 #include "util_latency.h"
 #include "util_shared_pool.h"
 #include "util_timer.h"
-#include "eqds.h"
 
 namespace uccl {
 
@@ -124,9 +124,12 @@ struct UcclRequest {
     int iov_lens[kMaxIovs];
     int dst_offsets[kMaxIovs];
     int iov_n;
+    int pad;
+    void *ptrs[32];
     /***********************/
 };
 static const uint32_t kIovStart = offsetof(struct UcclRequest, iov_addrs);
+static const uint32_t kPtrsStart = offsetof(struct UcclRequest, ptrs);
 
 /**
  * @class Channel
@@ -151,7 +154,7 @@ class Channel {
         int *len_p;
         union {
             void *data;
-            UcclRequest* req;
+            UcclRequest *req;
         };
         Mhandle *mhandle;
         FlowID flow_id;
@@ -179,7 +182,8 @@ class Channel {
         PollCtx *poll_ctx;
     };
     const static uint32_t kCtrlMsgSize = sizeof(CtrlMsg);
-    static_assert(sizeof(kCtrlMsgSize) % 4 == 0, "CtrlMsg must be 32-bit aligned");
+    static_assert(sizeof(kCtrlMsgSize) % 4 == 0,
+                  "CtrlMsg must be 32-bit aligned");
 
     Channel() {
         tx_task_q_ = create_ring(sizeof(Msg), kChannelSize);
@@ -256,7 +260,7 @@ class TXTracking {
     std::optional<FrameDesc *> get_and_update_oldest_unsent();
 
     uint32_t convert_permitted_bytes_to_packets(uint32_t permitted_bytes);
-    
+
     uint32_t convert_permitted_packets_to_bytes(uint32_t permitted_packets);
 
     inline const uint32_t num_unacked_msgbufs() const {
@@ -439,8 +443,8 @@ class UcclFlow {
     UcclFlow(std::string local_ip_str, std::string remote_ip_str,
              ConnMeta *local_meta, ConnMeta *remote_meta,
              uint32_t local_engine_idx, uint32_t remote_engine_idx,
-             EFASocket *socket, eqds::CreditQPContext *credit_qp_ctx, eqds::EQDSChannel *eqds_channel,
-             Channel *channel, FlowID flow_id,
+             EFASocket *socket, eqds::CreditQPContext *credit_qp_ctx,
+             eqds::EQDSChannel *eqds_channel, Channel *channel, FlowID flow_id,
              std::unordered_map<FlowID, UcclFlow *> &active_flows_map_,
              bool is_sender)
         : remote_ip_str_(remote_ip_str),
@@ -478,17 +482,19 @@ class UcclFlow {
         peer_flow_id_ = get_peer_flow_id(flow_id);
 
         if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
-            eqds_cc_.send_pullpacket = [this](const PullQuanta &pullno) -> bool {
+            eqds_cc_.send_pullpacket =
+                [this](const PullQuanta &pullno) -> bool {
                 return this->send_pullpacket(pullno);
             };
         }
-
     }
     ~UcclFlow() {
         delete local_meta_;
         delete remote_meta_;
-        if constexpr (kSenderCCType == SenderCCType::kTimelyPP) delete[] timely_pp_;
-        if constexpr (kSenderCCType == SenderCCType::kCubicPP) delete[] cubic_pp_;
+        if constexpr (kSenderCCType == SenderCCType::kTimelyPP)
+            delete[] timely_pp_;
+        if constexpr (kSenderCCType == SenderCCType::kCubicPP)
+            delete[] cubic_pp_;
     }
 
     friend class UcclEngine;
@@ -549,7 +555,9 @@ class UcclFlow {
             .opcode = eqds::EQDSChannel::Msg::Op::kRequestPull,
             .eqds_cc = &eqds_cc_,
         };
-        while (jring_mp_enqueue_bulk(eqds_channel_->cmdq_, &msg, 1, nullptr) != 1) {}
+        while (jring_mp_enqueue_bulk(eqds_channel_->cmdq_, &msg, 1, nullptr) !=
+               1) {
+        }
     }
 
    private:
@@ -567,7 +575,8 @@ class UcclFlow {
         // // The following code may have BUG.
         // if constexpr (kReceiverCCType == ReceiverCCType::kEQDS) {
         //     if (eqds_cc_.credit() < msgbuf->get_pkt_data_len()) return false;
-        //     if (!eqds_cc_.spend_credit(msgbuf->get_pkt_data_len())) return false; 
+        //     if (!eqds_cc_.spend_credit(msgbuf->get_pkt_data_len())) return
+        //     false;
         // }
 
         return true;
@@ -584,20 +593,16 @@ class UcclFlow {
      * work in a Deficit Round Robin manner.
      */
     inline void transmit_pending_packets_drr(bool bypass) {
-
         if (bypass) {
             transmit_pending_packets(SEND_BATCH_SIZE);
             return;
         }
 
-        if (deficit_ <= 0)
-            deficit_ += quantum_;
+        if (deficit_ <= 0) deficit_ += quantum_;
 
-        if (deficit_ > 0)
-            deficit_ -= transmit_pending_packets(deficit_);
+        if (deficit_ > 0) deficit_ -= transmit_pending_packets(deficit_);
 
-        if (!has_pending_packets())
-            deficit_ = 0;
+        if (!has_pending_packets()) deficit_ = 0;
     }
 
     inline bool has_pending_packets() {
@@ -622,7 +627,7 @@ class UcclFlow {
     FrameDesc *craft_ackpacket(uint32_t path_id, uint32_t seqno, uint32_t ackno,
                                const UcclPktHdr::UcclFlags net_flags,
                                uint64_t ts1, uint64_t ts2, uint32_t rwnd);
-    
+
     bool send_pullpacket(const PullQuanta &pullno);
 
     std::string local_ip_str_;
@@ -639,7 +644,7 @@ class UcclFlow {
 
     // The underlying EFASocket.
     EFASocket *socket_;
-    
+
     eqds::CreditQPContext *credit_qp_ctx_;
     eqds::EQDSChannel *eqds_channel_;
     uint32_t credit_qpidx_rr_ = 0;
@@ -775,8 +780,9 @@ class UcclEngine {
      * future it may be responsible for multiple channels.
      */
     UcclEngine(std::string local_ip_str, int gpu_idx, int dev_idx,
-               int socket_idx, Channel *channel, eqds::CreditQPContext *credit_qp_ctx, 
-                eqds::EQDSChannel *eqds_channel)
+               int socket_idx, Channel *channel,
+               eqds::CreditQPContext *credit_qp_ctx,
+               eqds::EQDSChannel *eqds_channel)
         : local_ip_str_(local_ip_str),
           local_engine_idx_(socket_idx),
           socket_(EFAFactory::CreateSocket(gpu_idx, dev_idx, socket_idx)),
@@ -843,7 +849,7 @@ class UcclEngine {
     EFASocket *socket_;
 
     // Receiver-driven CC.
-    eqds::CreditQPContext * credit_qp_ctx_;
+    eqds::CreditQPContext *credit_qp_ctx_;
     eqds::EQDSChannel *eqds_channel_;
 
     // UcclFlow map

@@ -1534,6 +1534,12 @@ void* ncclProxyService(void* _args) {
 
   INFO(NCCL_INIT, "[Proxy Service] Device %d CPU core %d", proxyState->cudaDev, sched_getcpu());
 
+  // Yang: creating the sg_copy module here.
+  int gpu_id = 0;
+  cudaGetDevice(&gpu_id);
+  printf("sg_copy: creating sg_copy module, gpu_id %d\n", gpu_id);
+  proxyState->sgCopyEngine = new iovMultiFifo(kNumThBlocks);
+  
   // Prepare poll descriptor
   struct ncclProxyConnectionPool connectionPool;
   connectionPool.pools = NULL;
@@ -1783,7 +1789,7 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm) {
     proxyState->profilerContext = comm->profilerContext;
     proxyState->directMode = comm->directMode;
     memcpy(proxyState->buffSizes, comm->buffSizes, sizeof(comm->buffSizes));
-
+    
     PTHREADCHECK(pthread_create(&comm->proxyState->thread, NULL, ncclProxyService, comm->proxyState), "pthread_create");
     ncclSetThreadName(comm->proxyState->thread, "NCCL Service %2d", comm->cudaDev);
 
