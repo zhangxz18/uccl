@@ -107,6 +107,9 @@ enum ncclRegBufferType {
   NCCL_COLLNET_REG_BUFFER = 3
 };
 
+// Yang: ncclConnInfo is used by GPU device, ncclRecvMem and ncclSendMem are used by CPU proxy thread. 
+// Yang: ncclConnInfo.tail and .head point to ncclRecvMem.tail and ncclSendMem.head. 
+// Yang: ncclConnInfo.connFifo points to ncclRecvMem.connFifo, see net.cc->recvConnect().
 struct ncclConnInfo {
   // Regular comm mechanism
   char *buffs[NCCL_NUM_PROTOCOLS]; // Local for recv, remote for send
