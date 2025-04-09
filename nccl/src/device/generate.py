@@ -150,19 +150,26 @@ def best_kernel(coll, redop, ty, algo, proto):
 
 # Order rows are enumerated must match formula of `ncclDevFuncId()`:
 def enumerate_func_rows():
+  # Yang: commented out the following to make compilation faster.
+  # yield ("SendRecv", None, None, None, None)
+  # for coll in ("AllGather", "Broadcast"):
+  #   algos = algos_of_coll[coll]
+  #   for algo in algos:
+  #     for proto in all_protos:
+  #       yield (coll, None, None, algo, proto)
+  # for coll in ("AllReduce", "Reduce", "ReduceScatter"):
+  #   algos = algos_of_coll[coll]
+  #   for redop in all_redops:
+  #     for ty in all_tys:
+  #       for algo in algos:
+  #         for proto in all_protos:
+  #           yield (coll, redop, ty, algo, proto)
+
+  # Yang: hack to make compilation faster.
   yield ("SendRecv", None, None, None, None)
-  for coll in ("AllGather", "Broadcast"):
-    algos = algos_of_coll[coll]
-    for algo in algos:
-      for proto in all_protos:
-        yield (coll, None, None, algo, proto)
-  for coll in ("AllReduce", "Reduce", "ReduceScatter"):
-    algos = algos_of_coll[coll]
-    for redop in all_redops:
-      for ty in all_tys:
-        for algo in algos:
-          for proto in all_protos:
-            yield (coll, redop, ty, algo, proto)
+  # Yang: must add "LL" to make generate.py happy.
+  yield ("AllReduce", "Sum", "f32", "RING", "LL")
+  yield ("AllReduce", "Sum", "f32", "RING", "SIMPLE")
 
 ################################################################################
 

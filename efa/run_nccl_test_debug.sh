@@ -24,7 +24,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_NET_DISABLE=0 \
     -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
     -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
-    -x NCCL_PROTO=simple \
+    -x NCCL_PROTO=Simple \
     -x NCCL_ALGO=Ring \
     -x NCCL_MAX_NCHANNELS=${COPY_CHANNELS} \
     -x NCCL_MIN_NCHANNELS=${COPY_CHANNELS} \
@@ -37,7 +37,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x UCCL_ENGINE_QUIET=1 \
     -x CUDA_MODULE_LOADING=EAGER \
     ${BIN_PATH} \
-    -b 1K -e 1M -f 2 -w 50 -n 100 -c 1 -g 1 -t 8 \
+    -b 1K -e 1M -f 2 -w 5 -n 10 -c 1 -g 1 -t 2 \
     >& alltoall_debug.log
 
     # -x NCCL_DEBUG=INFO \
