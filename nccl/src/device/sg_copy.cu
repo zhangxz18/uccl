@@ -32,25 +32,26 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
         if (iov_len == 0) return;
 
         // Copy t-byte chunks first (if possible)
-        uint64_t num_full = iov_len / sizeof(T);
+        int num_full = iov_len / sizeof(T);
         T *src_T = (T *)src_ptr;
         T *dst_T = (T *)dst_ptr;
 
         int depth = 0;
         // Each thread in the group copies its portion of data.
-        for (uint64_t i = local_tid; i < num_full; i += nthreads_per_iov) {
-            // dst_T[i] = src_T[i];
+        for (int j = local_tid; j < num_full; j += nthreads_per_iov) {
+            // dst_T[j] = src_T[j];
 
             void *smemBytePtr = (void *)&smem[tid + nthreads * depth++];
-            const void *gmemBytePtr = (const void *)&src_T[i];
+            const void *gmemBytePtr = (const void *)&src_T[j];
             __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(T));
 
-            if (depth == kCpAsycDepth || i + nthreads_per_iov >= num_full) {
+            if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
                 __pipeline_commit();
                 __pipeline_wait_prior(0);
                 // Copy the data from shared memory to global memory
-                for (int j = 0; j < depth; j++) {
-                    dst_T[i - j * nthreads_per_iov] = smem[tid + nthreads * j];
+                for (int k = 0; k < depth; k++) {
+                    dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
+                        smem[tid + nthreads * k];
                 }
                 depth = 0;
             }
@@ -60,9 +61,9 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
         // the tail.
         if (local_tid == 0) {
             // Handle the remaining tail bytes (if any)
-            uint64_t tail_start = num_full * 8;
-            for (uint64_t i = tail_start; i < iov_len; i++) {
-                dst_ptr[i] = src_ptr[i];
+            int tail_start = num_full * 8;
+            for (int j = tail_start; j < iov_len; j++) {
+                dst_ptr[j] = src_ptr[j];
             }
         }
     }

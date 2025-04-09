@@ -1200,8 +1200,9 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
   if (args->state == ncclProxyOpReady) {
+    // TODO(Yang): each channel will enter this once, we need to dedup to make it only launch sgcopy kernel once. 
     // Yang: launch our customized sg_copy kernel.
-    // printf("sg_copy: launch sg_copy kernel after cuLaunchKernelEx\n");
+    // printf("sg_copy: launch sg_copy kernel\n");
     proxyState->sgCopyEngine->initFifo();
     proxyState->sgCopyEngine->launchSGCopyKernel();
 
@@ -1417,6 +1418,8 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         int done = 1;
         void* request = subGroup->requests[step%NCCL_STEPS];
         if (request) NCCLCHECK(proxyState->ncclNet->test(request, &done, NULL));
+        // TODO(Yang): why this can be null.
+        // assert(request);
         if (done) {
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup + i;
@@ -1445,7 +1448,8 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
               static const uint32_t kPtrsStart = 4168;
               void** uccl_req_ptrs = (void**)((char*)requestPtr + kPtrsStart);
               // Yang: load balance among the SG copy engines.
-              auto fifo_idx = step % kNumThBlocks;
+              static uint32_t next_fifo_idx = 0;
+              auto fifo_idx = next_fifo_idx++ % kNumThBlocks;
               auto reserve_handler = proxyState->sgCopyEngine->reserve_fifo_slot(fifo_idx);
               auto slot_idx = std::get<0>(reserve_handler);
               auto gpu_iov = std::get<1>(reserve_handler);
@@ -1453,13 +1457,25 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                 gpu_iov->srcs[j] = iov_addrs[j];
                 gpu_iov->dsts[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
                 gpu_iov->lens[j] = iov_lens[j];
-                // printf("sg_copy: iov %d, src %p, dst %p, len %d, dst_offset %d\n", j, gpu_iov->srcs[j], gpu_iov->dsts[j], gpu_iov->lens[j], dst_offsets[j]);
               }
               gpu_iov->iov_n = *iov_n;
 
+              // printf("sg_copy: fifo_idx %ld, slot_idx %ld, iov_n %d, src %p, dst %p, len %d\n", fifo_idx, slot_idx,*iov_n, gpu_iov->srcs[0], gpu_iov->dsts[0], gpu_iov->lens[0]);
+
               subGroup->fifoPollHandlerCache[step%NCCL_STEPS] = {fifo_idx, slot_idx};
-              // printf("sg_copy: group %d dispatch sg_copy kernel, fifo_idx %ld, slot_idx %ld\n", s, fifo_idx, slot_idx);
               proxyState->sgCopyEngine->dispatch_task(fifo_idx);
+              // printf("sg_copy: group %d dispatch sg_copy kernel, fifo_idx %ld, slot_idx %ld\n", s, fifo_idx, slot_idx);
+
+              // Yang: busy-wait for testing -> this does not work!
+              // while(!proxyState->sgCopyEngine->check_completion(fifo_idx, slot_idx)) {
+              // }
+
+              // Yang: dump memcpy for testing -> this works! 
+              // for (int j=0; j<gpu_iov->iov_n; j++) {
+              //   cudaMemcpyAsync(gpu_iov->dsts[j], gpu_iov->srcs[j], gpu_iov->lens[j], cudaMemcpyDeviceToDevice, proxyState->copyTestStream);
+              //   cudaCheckErrors("cudaStreamCreate failed");
+              // }
+              // cudaStreamSynchronize(proxyState->copyTestStream);
           }
 
           args->idle = 0;
@@ -1478,7 +1494,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         done = proxyState->sgCopyEngine->check_completion(poll_handler.fifo_idx, poll_handler.slot_idx);
 
         if (done) {
-          // printf("sg_copy: group %d poll sg_copy kernel, fifo_idx %ld, slot_idx %ld\n", s, poll_handler.fifo_idx, poll_handler.slot_idx);
+          // printf("sg_copy done: group %d poll sg_copy kernel, fifo_idx %ld, slot_idx %ld\n", s, poll_handler.fifo_idx, poll_handler.slot_idx);
 
           for (int i=0; i<subGroup->groupSize; i++) {
             struct ncclProxySubArgs* sub = subGroup + i;

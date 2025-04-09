@@ -120,25 +120,26 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
         if (iov_len == 0) return;
 
         // Copy t-byte chunks first (if possible)
-        uint64_t num_full = iov_len / sizeof(T);
+        int num_full = iov_len / sizeof(T);
         T *src_T = (T *)src_ptr;
         T *dst_T = (T *)dst_ptr;
 
         int depth = 0;
         // Each thread in the group copies its portion of data.
-        for (uint64_t i = local_tid; i < num_full; i += nthreads_per_iov) {
-            // dst_T[i] = src_T[i];
+        for (int j = local_tid; j < num_full; j += nthreads_per_iov) {
+            // dst_T[j] = src_T[j];
 
             void *smemBytePtr = (void *)&smem[tid + nthreads * depth++];
-            const void *gmemBytePtr = (const void *)&src_T[i];
+            const void *gmemBytePtr = (const void *)&src_T[j];
             __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(T));
 
-            if (depth == kCpAsycDepth || i + nthreads_per_iov >= num_full) {
+            if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
                 __pipeline_commit();
                 __pipeline_wait_prior(0);
                 // Copy the data from shared memory to global memory
-                for (int j = 0; j < depth; j++) {
-                    dst_T[i - j * nthreads_per_iov] = smem[tid + nthreads * j];
+                for (int k = 0; k < depth; k++) {
+                    dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
+                        smem[tid + nthreads * k];
                 }
                 depth = 0;
             }
@@ -148,9 +149,9 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
         // the tail.
         if (local_tid == 0) {
             // Handle the remaining tail bytes (if any)
-            uint64_t tail_start = num_full * 8;
-            for (uint64_t i = tail_start; i < iov_len; i++) {
-                dst_ptr[i] = src_ptr[i];
+            int tail_start = num_full * 8;
+            for (int j = tail_start; j < iov_len; j++) {
+                dst_ptr[j] = src_ptr[j];
             }
         }
     }
@@ -284,15 +285,15 @@ class iovMultiFifo {
     }
 };
 
-void fill_data(void **srcs_gpu, int iov_n, int len, uint64_t value,
+void fill_data(void **srcs_gpu, int iov_n, int *lens, uint8_t value,
                cudaStream_t stream) {
     // make a CPU buffer, then copy to GPU
-    uint64_t *cpu_buf = (uint64_t *)malloc(len);
-    for (int i = 0; i < len / sizeof(uint64_t); i++) {
+    uint8_t *cpu_buf = (uint8_t *)malloc(kCopySize);
+    for (int i = 0; i < kCopySize / sizeof(uint8_t); i++) {
         cpu_buf[i] = value;
     }
     for (int i = 0; i < iov_n; i++) {
-        cudaMemcpyAsync(srcs_gpu[i], cpu_buf, len, cudaMemcpyHostToDevice,
+        cudaMemcpyAsync(srcs_gpu[i], cpu_buf, lens[i], cudaMemcpyHostToDevice,
                         stream);
         cudaStreamSynchronize(stream);
         cudaCheckErrors("cudaMemcpy failed");
@@ -300,16 +301,16 @@ void fill_data(void **srcs_gpu, int iov_n, int len, uint64_t value,
     free(cpu_buf);
 }
 
-void check_data(void **dsts_gpu, int iov_n, int len, uint64_t value,
+void check_data(void **dsts_gpu, int iov_n, int *lens, uint8_t value,
                 cudaStream_t stream) {
     // check the data
-    uint64_t *cpu_buf = (uint64_t *)malloc(len);
+    uint8_t *cpu_buf = (uint8_t *)malloc(kCopySize);
     for (int i = 0; i < iov_n; i++) {
-        cudaMemcpyAsync(cpu_buf, dsts_gpu[i], len, cudaMemcpyDeviceToHost,
+        cudaMemcpyAsync(cpu_buf, dsts_gpu[i], lens[i], cudaMemcpyDeviceToHost,
                         stream);
         cudaStreamSynchronize(stream);
         cudaCheckErrors("cudaMemcpy failed");
-        for (int j = 0; j < len / sizeof(uint64_t); j++) {
+        for (int j = 0; j < lens[i] / sizeof(uint8_t); j++) {
             assert(cpu_buf[j] == value);
         }
     }
@@ -330,13 +331,14 @@ int main() {
 
     // Preallocate a iov work item.
     struct Iov *cpu_iov = (struct Iov *)malloc(sizeof(struct Iov));
-    for (int i = 0; i < kMaxIovs; i++) {
+    int copy_size_once = 0;
+    for (int i = 0; i < kTestIovs; i++) {
         cudaMalloc(&cpu_iov->srcs[i], kCopySize);
         cudaMalloc(&cpu_iov->dsts[i], kCopySize);
-        cpu_iov->lens[i] = kCopySize;
+        cpu_iov->lens[i] = kCopySize - rand() % 2048;
+        copy_size_once += cpu_iov->lens[i];
     }
-    fill_data((void **)cpu_iov->srcs, kTestIovs, kCopySize, 0xdeadbeef,
-              stream3);
+    fill_data((void **)cpu_iov->srcs, kTestIovs, cpu_iov->lens, 0, stream3);
 
     // Create a iovMultiFifo object.
     iovMultiFifo *fifo = new iovMultiFifo(kNumThBlocks);
@@ -357,7 +359,8 @@ int main() {
 
         for (int k = 0; k < kTestSteps; k++) {
             auto fifo_idx = (i + k) % kNumThBlocks;
-            fill_data((void **)cpu_iov->srcs, kTestIovs, kCopySize, i, stream3);
+            fill_data((void **)cpu_iov->srcs, kTestIovs, cpu_iov->lens, i,
+                      stream3);
 
             // Reserve a slot in the FIFO.
             auto [slot_idx, gpu_iov] = fifo->reserve_fifo_slot(fifo_idx);
@@ -371,6 +374,14 @@ int main() {
             // CPU dispatches work to GPU.
             fifo->dispatch_task(fifo_idx);
 
+            // for (int j = 0; j < kTestIovs; j++) {
+            //     cudaMemcpyAsync(gpu_iov->dsts[j], gpu_iov->srcs[j],
+            //                     gpu_iov->lens[j], cudaMemcpyDeviceToDevice,
+            //                     stream3);
+            //     cudaCheckErrors("cudaMemcpyAsync failed");
+            // }
+            // cudaStreamSynchronize(stream3);
+
             poll_handlers.push_back(std::make_tuple(fifo_idx, slot_idx));
         }
 
@@ -383,14 +394,15 @@ int main() {
             }
         }
         auto end = std::chrono::high_resolution_clock::now();
-        check_data((void **)cpu_iov->dsts, kTestIovs, kCopySize, i, stream3);
+        check_data((void **)cpu_iov->dsts, kTestIovs, cpu_iov->lens, i,
+                   stream3);
 
         if (i % 128 == 0) {
             auto elapsed_us =
                 std::chrono::duration_cast<std::chrono::microseconds>(end -
                                                                       start);
-            auto bw_GBps = kTestIovs * kTestSteps * kCopySize * 1.0 /
-                           elapsed_us.count() / 1000;
+            auto bw_GBps =
+                copy_size_once * kTestSteps * 1.0 / elapsed_us.count() / 1000;
             printf("CPU wait time: %ld us, bw: %lf GBps\n", elapsed_us.count(),
                    bw_GBps);
         }
