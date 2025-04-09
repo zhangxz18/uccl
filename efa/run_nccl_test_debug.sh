@@ -37,7 +37,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x UCCL_ENGINE_QUIET=1 \
     -x CUDA_MODULE_LOADING=EAGER \
     ${BIN_PATH} \
-    -b 1K -e 1M -f 2 -w 5 -n 10 -c 1 -g 1 -t 8 \
+    -b 1K -e 1M -f 2 -w 50 -n 100 -c 1 -g 1 -t 8 \
     >& alltoall_debug.log
 
     # -x NCCL_DEBUG=INFO \
