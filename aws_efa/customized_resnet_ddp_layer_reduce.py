@@ -37,7 +37,7 @@ class TimerContext:
 class CustomDistributedResNet(nn.Module):
     def __init__(self, local_rank):
         super().__init__()
-        self.model = torchvision.models.resnet18(num_classes=10)
+        self.model = torchvision.models.resnet152(num_classes=10)
         self.model.to(f'cuda:{local_rank}')
         
         # Track layers and their reduction times
@@ -123,6 +123,9 @@ def main():
         running_loss = 0.0
         total = 0
         correct = 0
+
+        # Epoch timing
+        total_epoch_time = 0
         
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             with TimerContext("batch") as batch_timer:
@@ -150,7 +153,9 @@ def main():
                 _, predicted = outputs.max(1)
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()
-            
+
+            total_epoch_time += batch_timer.elapsed
+
             # Print statistics every 20 batches
             if batch_idx % 20 == 0 and local_rank == 0:
                 print(f'\nBatch {batch_idx}:')
@@ -168,7 +173,7 @@ def main():
             train_acc = 100. * correct / total
             print(f"\nEpoch {epoch+1}/{args.epochs}")
             print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-    
+            print(f"Total Epoch Time: {total_epoch_time:.2f}s")
     # Clean up
     dist.destroy_process_group()
 
