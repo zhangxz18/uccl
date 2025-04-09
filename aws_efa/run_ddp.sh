@@ -15,7 +15,7 @@ BUFFSIZE=8388608    # for UCCL to run allreduce
 UCCL_QUITE=1
 
 if [ "$TEST" = "srd" ]; then
-    LD_PRELOAD="/opt/uccl_rdma_zc/nccl/build/lib/libnccl.so" \
+    LD_PRELOAD="${UCCL_HOME}/nccl/build/lib/libnccl.so" \
         NCCL_NET_PLUGIN="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so" \
         NCCL_DEBUG=INFO \
         NCCL_PROTO=Simple \
