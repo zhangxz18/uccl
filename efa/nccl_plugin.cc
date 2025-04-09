@@ -96,7 +96,7 @@ ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
 
 ncclResult_t pluginDevices(int *ndev) {
     // To ease NIC-GPU mapping on p4d, we virtualize each NIC into two.
-    *ndev = kNumVdevices;
+    *ndev = 4;
     return ncclSuccess;
 }
 
@@ -113,29 +113,18 @@ ncclResult_t pluginPciPath(const char *ib_name, char **path) {
     return ncclSuccess;
 }
 
-ncclResult_t pluginGetProperties(int vdev, ncclNetProperties_v8_t *props) {
-    auto pdev = get_pdev(vdev);
+ncclResult_t pluginGetProperties(int pdev, ncclNetProperties_v8_t *props) {
     auto factory_dev = EFAFactory::GetEFADevice(pdev);
-
-    int vc_int = vdev % 2;
-    auto vc_str = "_" + std::to_string(vc_int);
-    const char *vc_suffix = vc_str.c_str();
-
-    char *vc_name = new char[40];
-    strcpy(vc_name, factory_dev->ib_name);
-    strcat(vc_name, vc_suffix);
-
-    props->name = vc_name;
+    props->name = factory_dev->ib_name;
 
     // Speed in *Mbps*. 100000 means 100G
     props->speed = kLinkBandwidth * 8 / 1e6;
 
     pluginPciPath(factory_dev->ib_name, &props->pciPath);
-    strcat(props->pciPath, vc_suffix);
 
     // Only used to detect NICs with multiple PCI attachments.
-    props->guid = factory_dev->dev_attr.sys_image_guid + vdev;
-    LOG(INFO) << "pluginGetProperties dev " << vdev << " guid " << props->guid
+    props->guid = factory_dev->dev_attr.sys_image_guid + pdev;
+    LOG(INFO) << "pluginGetProperties dev " << pdev << " guid " << props->guid
               << " name " << props->name << " pciPath " << props->pciPath;
 
     props->ptrSupport = NCCL_PTR_HOST;
@@ -395,10 +384,11 @@ ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
     // LOG(INFO) << "pluginIsend on size " << size;
 
 #ifdef POLLCTX_DEBUG
-    LOG(INFO) << std::this_thread::get_id() << " pluginIsend on vdev: " << vdev << " size " << size
-              << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
-              << conn_id.flow_id << " req_id " << req->poll_ctx->req_id
-              << " data ptr " << std::hex << data << " req ptr " << req;
+    LOG(INFO) << std::this_thread::get_id() << " pluginIsend on vdev: " << vdev
+              << " size " << size << " engine_id " << req->poll_ctx->engine_idx
+              << " flow_id " << conn_id.flow_id << " req_id "
+              << req->poll_ctx->req_id << " data ptr " << std::hex << data
+              << " req ptr " << req;
 #endif
     return ncclSuccess;
 }
@@ -428,10 +418,11 @@ ncclResult_t pluginIrecv(void *recvComm, int n, void **data, int *sizes,
     *request = req;
 
 #ifdef POLLCTX_DEBUG
-    LOG(INFO) << std::this_thread::get_id() << " pluginIrecv on vdev: " << vdev << " size " << sizes[0]
-              << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
-              << conn_id.flow_id << " n " << n << " req_id "
-              << req->poll_ctx->req_id << " data ptr " << std::hex << data;
+    LOG(INFO) << std::this_thread::get_id() << " pluginIrecv on vdev: " << vdev
+              << " size " << sizes[0] << " engine_id "
+              << req->poll_ctx->engine_idx << " flow_id " << conn_id.flow_id
+              << " n " << n << " req_id " << req->poll_ctx->req_id
+              << " data ptr " << std::hex << data;
 #endif
 
     return ncclSuccess;
@@ -462,9 +453,11 @@ ncclResult_t pluginIrecvScattered(void *recvComm, int *tags, void *mhandles,
     *request = req;
 
 #ifdef POLLCTX_DEBUG
-    LOG(INFO) << std::this_thread::get_id() << " pluginIrecvScattered on vdev: " << vdev << " engine_id " << req->poll_ctx->engine_idx
-              << " flow_id " << conn_id.flow_id << " n " << 1 << " req_id "
-              << req->poll_ctx->req_id << " req ptr" << req;
+    LOG(INFO) << std::this_thread::get_id()
+              << " pluginIrecvScattered on vdev: " << vdev << " engine_id "
+              << req->poll_ctx->engine_idx << " flow_id " << conn_id.flow_id
+              << " n " << 1 << " req_id " << req->poll_ctx->req_id << " req ptr"
+              << req;
 #endif
 
     return ncclSuccess;
@@ -481,9 +474,11 @@ ncclResult_t pluginIrecvFreePtrs(void *recvComm, void *request) {
     uccl_req_pool->free_buff(reinterpret_cast<uint64_t>(req));
 
 #ifdef POLLCTX_DEBUG
-    LOG(INFO) << std::this_thread::get_id() << " pluginIrecvFreePtrs on vdev: " << rcomm->base.vdev
+    LOG(INFO) << std::this_thread::get_id()
+              << " pluginIrecvFreePtrs on vdev: " << rcomm->base.vdev
               << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
-              << conn_id.flow_id << " req_id " << req->poll_ctx->req_id << " req ptr " << req;
+              << conn_id.flow_id << " req_id " << req->poll_ctx->req_id
+              << " req ptr " << req;
 #endif
 
     return ncclSuccess;
@@ -512,10 +507,11 @@ ncclResult_t pluginIflush(void *recvComm, int n, void **data, int *sizes,
     *request = req;
 
 #ifdef POLLCTX_DEBUG
-    LOG(INFO) << std::this_thread::get_id() << " pluginIflush on vdev: " << vdev << " size " << sizes[0]
-              << " engine_id " << req->poll_ctx->engine_idx << " flow_id "
-              << conn_id.flow_id << " n " << n << " req_id "
-              << req->poll_ctx->req_id << " data ptr " << std::hex << data;
+    LOG(INFO) << std::this_thread::get_id() << " pluginIflush on vdev: " << vdev
+              << " size " << sizes[0] << " engine_id "
+              << req->poll_ctx->engine_idx << " flow_id " << conn_id.flow_id
+              << " n " << n << " req_id " << req->poll_ctx->req_id
+              << " data ptr " << std::hex << data;
 #endif
 
     return ncclSuccess;
@@ -543,11 +539,11 @@ ncclResult_t pluginTest(void *request, int *done, int *size) {
         }
 
 #ifdef POLLCTX_DEBUG
-        LOG(INFO) << std::this_thread::get_id() << " pluginTest " << req->type << " done: engine_id "
-                  << req->poll_ctx->engine_idx << " flow_id "
-                  << req->poll_ctx->flow_id << " req_id "
-                  << req->poll_ctx->req_id << " size " << size[0] <<
-                  " req ptr" << req;
+        LOG(INFO) << std::this_thread::get_id() << " pluginTest " << req->type
+                  << " done: engine_id " << req->poll_ctx->engine_idx
+                  << " flow_id " << req->poll_ctx->flow_id << " req_id "
+                  << req->poll_ctx->req_id << " size " << size[0] << " req ptr"
+                  << req;
 #endif
     } else {
         *done = 0;
