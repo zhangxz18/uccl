@@ -8,8 +8,9 @@
 
 // #define STATS
 
-/// Interface configuration.
-static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
+/// Interface configuration. 
+// For Azure HPC Ubuntu 22.04 only, normally it should be "mlx5_".
+static const char *IB_DEVICE_NAME_PREFIX = "mlx5_ib";
 static constexpr bool ROCE_NET = false;
 // If SINGLE_IP is set, all devices will use the same IP.
 static std::string SINGLE_IP("10.0.0.11");
