@@ -58,9 +58,6 @@
    void*    netDeviceHandle;
    uint64_t accSize; // Accumulated size. Used by PAT operations
  
-   // Yang: for current step, the iov buffers and lengths
-   uint64_t* tail_ptr; // Pointing to the CPU proxy thread's ncclRecvMem.tail
-   
    // Don't use barrier 0 as it's used by the final sync
    __device__ void barrier() {
      if (nthreads == WARP_SIZE) __syncwarp();
@@ -134,6 +131,9 @@
          if (checkAbort(spins)) break;
          //if (spins == 0) printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x, int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
        }
+       // Yang: instrument. 
+       uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+      //  printf("[gpu %ld gpu] waitPeer connStepCache %ld isSendNotRecv %d step %ld StepPerSlice %d\n", gpu_idx, connStepCache, isSendNotRecv, step, StepPerSlice);
      }
  
      if (flags & (Recv*RoleWaitRecv | Send*RoleWaitSend)) {
@@ -178,13 +178,22 @@
  
        // Yang: using one thread to load the step into sharemem.
        ncclShmem.groups[group].step = step;
-     }
+
+       if (flags & (RoleWaitRecv|RolePostRecv)) {
+         uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+         printf("[recv %ld] step %ld connStepCache %ld\n", gpu_idx, step, connStepCache);
+       }
+    }
    }
  
    template<int Recv, int Send>
    inline __device__ void postPeer(bool dataStored) {
      if (flags & (Recv*RolePostRecv | Send*RolePostSend)) {
        step += StepPerSlice;
+
+       // Yang: using one thread to load the step into sharemem.
+      //  ncclShmem.groups[group].step = step;
+
        if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
          fence_acq_rel_sys();
        }
@@ -229,8 +238,8 @@
    __device__ __forceinline__ void genericOp(
        intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp
      ) {
-     if (tid == 0)
-       printf("genericOp Recv %d Send %d SrcBuf %d DstBuf %d\n", Recv, Send, SrcBuf, DstBuf);
+    //  if (tid == 0)
+    //    printf("genericOp Recv %d Send %d SrcBuf %d DstBuf %d\n", Recv, Send, SrcBuf, DstBuf);
      constexpr int DirectRecv = 1 && Direct && DirectRecv1;
      constexpr int DirectSend = 1 && Direct && DirectSend1;
      constexpr int Src = SrcBuf != -1;
@@ -284,6 +293,13 @@
          // Yang: srcs is filled up with RDMA GDR buffer. 
          waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(srcIx, dstIx, offset, sliceSize);
          subBarrier();
+
+         if (tid ==0) {
+          uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+          uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
+          printf("[gpu %ld gpu] genericOp0: step %ld cpu_tail %ld\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail);
+         }
+
          /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
           * to 0 to avoid unnecessary workload. */
          int workSize = ncclShmem.aborted ? 0 : sliceSize;
@@ -318,9 +334,9 @@
              #define kIovStart 328
              #define kMaxIovs 256
              struct alignas(8) iov {
-               void* iov_addrs[kMaxIovs];
+               void* src_addrs[kMaxIovs];
+               void* dst_addrs[kMaxIovs];
                int iov_lens[kMaxIovs];
-               int dst_offsets[kMaxIovs];
                int iov_n;
                int gpu_idx; // for debugging
                int step; // for debugging
@@ -328,24 +344,20 @@
              const uint32_t kIovSize = sizeof(struct iov);
  
              uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
-             int iov_idx = prevStep % NCCL_STEPS;
+             int iov_idx = prevStep % (NCCL_STEPS);
              // printf("genericOp: tid %d prevStep %lu iov_idx %d\n", tid, prevStep, iov_idx);
-             struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+             struct iov *cur_iov = (struct iov *)((char *)ncclShmem.groups[group].tail_ptr + kIovStart + iov_idx * kIovSize);
              
-             void** iov_addrs = cur_iov->iov_addrs;
+             void** src_addrs = cur_iov->src_addrs;
+             void** dst_addrs = cur_iov->dst_addrs;
              int* iov_lens = cur_iov->iov_lens;
-             int* dst_offsets = cur_iov->dst_offsets;
              int iov_n = cur_iov->iov_n;
-             // if (tid == 0)
-             //   printf("genericOp: tid %d Recv %d Send %d SrcBuf %d DstBuf %d iov_n %d\n", Recv, Send, SrcBuf, DstBuf, tid, iov_n);
-             // int iov_datasize = dst_offsets[iov_n - 1] + iov_lens[iov_n - 1];
-             // printf("genericOp: tid %d iov_datasize %d\n", tid, iov_datasize);
+             int step_recv = cur_iov->step;
  
              // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-             uintptr_t dst_base = cvta_to_global(Src ? ncclShmem.groups[group].srcs[1] : ncclShmem.groups[group].srcs[0]);
              for (int i = 0; i < iov_n; i++) {
-               char *src = (char*)iov_addrs[i];
-               char *dst = (char*)(dst_base + dst_offsets[i]);
+               char *src = (char*)src_addrs[i];
+               char *dst = (char*)dst_addrs[i];
                int iov_len = iov_lens[i];
  
                // Make it t-byte aligned to avoid GPU SEGV.
@@ -355,6 +367,12 @@
                int end = min(start + len_per_th, iov_len);
                int len = end - start;
                if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
+             }
+
+             if (tid ==0) {
+               uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+               uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
+               printf("[gpu %ld gpu] genericOp1: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
              }
  
              subBarrier();
@@ -393,6 +411,55 @@
        { // Only workers could have Wait roles so we know the slice must be empty
          // since we've exited the loop above.
          waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, 0);
+         
+        if (Recv) {
+          // Yang: need to keep the same as comm.h
+          #define kIovStart 328
+          #define kMaxIovs 256
+          struct alignas(8) iov {
+            void* src_addrs[kMaxIovs];
+            void* dst_addrs[kMaxIovs];
+            int iov_lens[kMaxIovs];
+            int iov_n;
+            int gpu_idx; // for debugging
+            int step; // for debugging
+          };
+          const uint32_t kIovSize = sizeof(struct iov);
+
+          uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
+          int iov_idx = prevStep % (NCCL_STEPS);
+          // printf("genericOp: tid %d prevStep %lu iov_idx %d\n", tid, prevStep, iov_idx);
+          struct iov *cur_iov = (struct iov *)((char *)ncclShmem.groups[group].tail_ptr + kIovStart + iov_idx * kIovSize);
+          
+          void** src_addrs = cur_iov->src_addrs;
+          void** dst_addrs = cur_iov->dst_addrs;
+          int* iov_lens = cur_iov->iov_lens;
+          int iov_n = cur_iov->iov_n;
+          int step_recv = cur_iov->step;
+
+          // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+          for (int i = 0; i < iov_n; i++) {
+            char *src = (char*)src_addrs[i];
+            char *dst = (char*)dst_addrs[i];
+            int iov_len = iov_lens[i];
+
+            // Make it t-byte aligned to avoid GPU SEGV.
+            int num_packs = iov_len / 8;
+            int len_per_th = divUp(num_packs, nworkers) * 8;
+            int start = len_per_th * tid;
+            int end = min(start + len_per_th, iov_len);
+            int len = end - start;
+            if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
+          }
+
+          // Yang: debuging
+          if (tid ==0) {
+            uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+            uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
+            printf("[gpu %ld gpu] genericOp2: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
+            // printf("[gpu %ld gpu] genericOp2: step %ld cpu_tail %ld\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail);
+          }
+        }
        }
        barrier(); // Has couterpart in preceding worker-only loop.
        postPeer<Recv, Send>(0 < sliceSize);
@@ -575,6 +642,10 @@
  
    __device__ __forceinline__ void loadRecvConn(ncclDevChannelPeer *peer, int connIndex, uint32_t direct, int regFlag) {
      conn = &peer->recv[connIndex];
+ 
+     // Yang: setup tail_ptr based on peer
+    ncclShmem.groups[group].tail_ptr = conn->tail;
+ 
      if (conn->netDeviceHandle.netDeviceType == NCCL_NET_DEVICE_UNPACK) {
        // handle must be a device ptr
        netDeviceHandle = conn->netDeviceHandle.handle;
@@ -594,6 +665,10 @@
        connStepPtr = conn->tail;
        // Yang: this should load the tail value from CPU.
        connStepCache = loadStepValue(connStepPtr);
+
+       uint64_t gpu_idx = loadStepValue(conn->tail + 1);
+      //  printf("[gpu %ld gpu] loadRecvConn connStepCache %ld step %ld\n", gpu_idx, connStepCache, step);       
+
        connStepSize = conn->stepSize/sizeof(T);
        // Yang: for recv, loading RDMA GDR buffer to connEltsFifo
        connEltsFifo = (T*)conn->buffs[NCCL_PROTO_SIMPLE];
@@ -763,9 +838,9 @@
      // coverity[negative_returns:FALSE]
      setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclDevWorkCollReg*)e, (uint8_t)(e ? e->regUsed : ipcReg), peer);
  
-     // Yang: only for receive primitives.
-     if (recvPeers)
-       tail_ptr = ncclShmem.channel.peers[recvPeers[0]]->recv[connIndexRecv].tail;
+    //  // Yang: only for receive primitives.
+    //  if (recvPeers)
+    //    tail_ptr = ncclShmem.channel.peers[recvPeers[0]]->recv[connIndexRecv].tail;
    }
  
    __device__ ~Primitives() {

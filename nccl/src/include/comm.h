@@ -55,9 +55,9 @@
  // Yang: 128 max scattered IOVs
  #define kMaxIovs 256
  struct alignas(8) iov {
-   void* iov_addrs[kMaxIovs];
+   void* src_addrs[kMaxIovs];
+   void* dst_addrs[kMaxIovs];
    int iov_lens[kMaxIovs];
-   int dst_offsets[kMaxIovs];
    int iov_n;
    int gpu_idx; // for debugging
    int step; // for debugging
@@ -74,7 +74,7 @@
        struct iov iovFifo[NCCL_STEPS];
        /************************** */
      };
-     char pad4[MEM_ALIGN + MEM_ALIGN * 8];
+     char pad4[MEM_ALIGN + MEM_ALIGN * 15];
    };
  };
  // Yang: iovFifo is the starting address of the scattered IOVs.

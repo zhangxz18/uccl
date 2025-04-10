@@ -1199,7 +1199,7 @@
  }
  
  static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
-   if (args->state == ncclProxyOpReady) {
+  if (args->state == ncclProxyOpReady) {
      // Initialize subs and group them by same recvComm.
      void* recvComm;
      int groupSize = 0;
@@ -1240,6 +1240,11 @@
        } else {
          sub->mhandle = resources->mhandles[args->protocol];
        }
+
+        // Yang: passing gpu_idx to GPU for debugging
+        volatile uint64_t* gpu_idx_ptr = &resources->recvMem->tail + 1;
+        *gpu_idx_ptr = proxyState->cudaDev;
+        __sync_synchronize();
      }
      args->state = ncclProxyOpProgress;
    }
@@ -1248,7 +1253,7 @@
      int p = args->protocol;
      int maxDepth = std::min(NCCL_STEPS, NCCL_SHARED_STEPS/args->nsubs);
      // Yang: one can use 1 to avoid iov being overwritten.
-     // int maxDepth = 1;
+     maxDepth = 4;
      for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
        struct ncclProxySubArgs* subGroup = args->subs+s;
        int subCount = 0;
@@ -1300,6 +1305,15 @@
          NCCLCHECK(proxyState->ncclNet->irecv_scattered(resources->netRecvComm, tags, mhandles, requestPtr));
          // NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
          if (*requestPtr) {
+            // Yang: record the ptrs so we can use during sg_copy.
+            static const uint32_t kPtrsStart = 4168;
+            void** uccl_req_ptrs = (void**)((char*)(*requestPtr) + kPtrsStart);
+            for (int i = 0; i < subCount; i++) {
+              uccl_req_ptrs[i] = ptrs[i];
+            }
+            // TODO(Yang) we will handle multi-recv case in the future.
+            assert(subCount == 1);
+
            subGroup->recvRequestsCache[step%NCCL_STEPS] = *requestPtr;
            subGroup->recvRequestsSubCount = subCount;
            for (int i=0; i<subGroup->groupSize; i++) {
@@ -1405,16 +1419,6 @@
          if (done) {
            for (int i=0; i<subGroup->groupSize; i++) {
              struct ncclProxySubArgs* sub = subGroup + i;
- 
-             // Yang: need to keep the same as transport.h
-             #define kIovStart 64
-             // Yang: Getting the scattered GDR IOV buffers from the plugin-managered request.
-             void* requestPtr = subGroup->recvRequestsCache[step%NCCL_STEPS];
-             void** iov_addrs = (void**)((char*)requestPtr + kIovStart);
-             int* iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
-             int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
-             int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
- 
              sub->transmitted += args->sliceSteps;
              ncclProfilerRecordProxyOpEventState(s+i, args, sub->transmitted, sub->transSize, ncclProfilerProxyOpRecvTransmitted);
              ncclProfilerRecordProxyStepEventStates(s+i, args, sub->transmitted-args->sliceSteps, sub->transmitted, ncclProfilerProxyStepRecvGPUWait);
@@ -1429,22 +1433,36 @@
                    *recvTail = sub->base + args->sliceSteps;
                  } 
                } else {
-                 // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
+                  // Yang: need to keep the same as transport.h
+                  #define kIovStart 64
+                  // Yang: Getting the scattered GDR IOV buffers from the plugin-managered request.
+                  void* requestPtr = subGroup->recvRequestsCache[step%NCCL_STEPS];
+                  void** iov_addrs = (void**)((char*)requestPtr + kIovStart);
+                  int* iov_lens = (int*)((char*)iov_addrs + sizeof(void*)*kMaxIovs);
+                  int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
+                  int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
+      
+                  static const uint32_t kPtrsStart = 4168;
+                  void** uccl_req_ptrs = (void**)((char*)requestPtr + kPtrsStart);
+
+                // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
                  auto* recv_mem = resources->recvMem;
                  // Yang: recvTail might get overwritten, the same for the iov_addrs.
-                 auto iov_idx = (*recvTail) % NCCL_STEPS;
-                 volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);
- 
+                 auto iov_idx = step % (NCCL_STEPS);
+                 volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);                  
+
                  cur_iov->iov_n = *iov_n;
                  // int gpu_idx;
                  // cudaGetDevice(&gpu_idx);
                  // cur_iov->gpu_idx = gpu_idx; // for debugging
-                 cur_iov->step = iov_idx;
+                 cur_iov->step = step;
                  for (int j=0; j < cur_iov->iov_n; j++) {
-                   cur_iov->iov_addrs[j] = iov_addrs[j];
+                   cur_iov->src_addrs[j] = iov_addrs[j];
+                   cur_iov->dst_addrs[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
                    cur_iov->iov_lens[j] = iov_lens[j];
-                   cur_iov->dst_offsets[j] = dst_offsets[j];
                  }
+                 printf("[gpu %d net]: cur recvTail %ld next recvTail %ld base %ld step %ld iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+                 
                  *recvTail = sub->base + sub->transmitted;
                  __sync_synchronize();
                }

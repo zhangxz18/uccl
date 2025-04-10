@@ -39,6 +39,8 @@ struct ncclShmemGroup {
   int32_t dstSizes[NCCL_MAX_ARITY+1];
   // Yang: adding this it record step for each group
   uint64_t step;
+   // Yang: for current step, the iov buffers and lengths
+  uint64_t* tail_ptr; // Pointing to the CPU proxy thread's ncclRecvMem.tail
 };
 
 struct ncclShmemData {
