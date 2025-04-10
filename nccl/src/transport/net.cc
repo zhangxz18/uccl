@@ -1242,9 +1242,9 @@
        }
 
         // Yang: passing gpu_idx to GPU for debugging
-        volatile uint64_t* gpu_idx_ptr = &resources->recvMem->tail + 1;
-        *gpu_idx_ptr = proxyState->cudaDev;
-        __sync_synchronize();
+        // volatile uint64_t* gpu_idx_ptr = &resources->recvMem->tail + 1;
+        // *gpu_idx_ptr = proxyState->cudaDev;
+        // __sync_synchronize();
      }
      args->state = ncclProxyOpProgress;
    }
@@ -1253,7 +1253,7 @@
      int p = args->protocol;
      int maxDepth = std::min(NCCL_STEPS, NCCL_SHARED_STEPS/args->nsubs);
      // Yang: one can use 1 to avoid iov being overwritten.
-     maxDepth = 4;
+    //  maxDepth = 1;
      for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
        struct ncclProxySubArgs* subGroup = args->subs+s;
        int subCount = 0;
@@ -1452,16 +1452,14 @@
                  volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);                  
 
                  cur_iov->iov_n = *iov_n;
-                 // int gpu_idx;
-                 // cudaGetDevice(&gpu_idx);
-                 // cur_iov->gpu_idx = gpu_idx; // for debugging
+                 // cur_iov->gpu_idx = proxyState->cudaDev; // for debugging
                  cur_iov->step = step;
                  for (int j=0; j < cur_iov->iov_n; j++) {
                    cur_iov->src_addrs[j] = iov_addrs[j];
                    cur_iov->dst_addrs[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
                    cur_iov->iov_lens[j] = iov_lens[j];
                  }
-                 printf("[gpu %d net]: cur recvTail %ld next recvTail %ld base %ld step %ld iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+                //  printf("[gpu %d net]: cur recvTail %ld next recvTail %ld base %ld step %ld iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
                  
                  *recvTail = sub->base + sub->transmitted;
                  __sync_synchronize();

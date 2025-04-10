@@ -131,8 +131,8 @@
          if (checkAbort(spins)) break;
          //if (spins == 0) printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x, int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
        }
-       // Yang: instrument. 
-       uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+       // Yang: debugging. 
+      //  uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
       //  printf("[gpu %ld gpu] waitPeer connStepCache %ld isSendNotRecv %d step %ld StepPerSlice %d\n", gpu_idx, connStepCache, isSendNotRecv, step, StepPerSlice);
      }
  
@@ -176,13 +176,14 @@
        
        step += StepPerSlice;
  
-       // Yang: using one thread to load the step into sharemem.
-       ncclShmem.groups[group].step = step;
+      // Yang: only care recv-side step value.
+      if (flags & (Recv*RoleWaitRecv)) {
+        // Yang: using one thread to load the step into sharemem.
+        ncclShmem.groups[group].step = step;
 
-       if (flags & (RoleWaitRecv|RolePostRecv)) {
-         uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-         printf("[recv %ld] step %ld connStepCache %ld\n", gpu_idx, step, connStepCache);
-       }
+        uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+        // printf("[waitPeer %ld] step %ld connStepCache %ld\n", gpu_idx, step, connStepCache);
+      }
     }
    }
  
@@ -191,8 +192,8 @@
      if (flags & (Recv*RolePostRecv | Send*RolePostSend)) {
        step += StepPerSlice;
 
-       // Yang: using one thread to load the step into sharemem.
-      //  ncclShmem.groups[group].step = step;
+       // Yang: no need to load the step into sharemem, as this is for posting to CPU.
+       // ncclShmem.groups[group].step = step;
 
        if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
          fence_acq_rel_sys();
@@ -294,11 +295,12 @@
          waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(srcIx, dstIx, offset, sliceSize);
          subBarrier();
 
-         if (tid ==0) {
-          uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-          uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
-          printf("[gpu %ld gpu] genericOp0: step %ld cpu_tail %ld\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail);
-         }
+         // Yang: debugging
+        //  if (tid ==0) {
+        //   uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+        //   uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
+        //   printf("[gpu %ld gpu] genericOp0: step %ld cpu_tail %ld\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail);
+        //  }
 
          /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
           * to 0 to avoid unnecessary workload. */
@@ -352,7 +354,6 @@
              void** dst_addrs = cur_iov->dst_addrs;
              int* iov_lens = cur_iov->iov_lens;
              int iov_n = cur_iov->iov_n;
-             int step_recv = cur_iov->step;
  
              // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
              for (int i = 0; i < iov_n; i++) {
@@ -369,11 +370,13 @@
                if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
              }
 
-             if (tid ==0) {
-               uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-               uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
-               printf("[gpu %ld gpu] genericOp1: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-             }
+             // Yang: debuging
+            //  if (tid ==0) {
+            //    int step_recv = cur_iov->step;
+            //    uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+            //    uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
+            //    printf("[gpu %ld gpu] genericOp1: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
+            //  }
  
              subBarrier();
            }
@@ -435,7 +438,6 @@
           void** dst_addrs = cur_iov->dst_addrs;
           int* iov_lens = cur_iov->iov_lens;
           int iov_n = cur_iov->iov_n;
-          int step_recv = cur_iov->step;
 
           // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
           for (int i = 0; i < iov_n; i++) {
@@ -453,12 +455,12 @@
           }
 
           // Yang: debuging
-          if (tid ==0) {
-            uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-            uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
-            printf("[gpu %ld gpu] genericOp2: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-            // printf("[gpu %ld gpu] genericOp2: step %ld cpu_tail %ld\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail);
-          }
+          // if (tid ==0) {
+          //   int step_recv = cur_iov->step;
+          //   uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
+          //   uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
+          //   printf("[gpu %ld gpu] genericOp2: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
+          // }
         }
        }
        barrier(); // Has couterpart in preceding worker-only loop.

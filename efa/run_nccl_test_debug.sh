@@ -2,15 +2,20 @@
 
 TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
+# TEST="srd"
 
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 # BIN_PATH="/opt/${TEST}/nccl-tests/build/alltoall_perf"
 BIN_PATH="/opt/${TEST}/nccl-tests/build/all_reduce_perf"
 
-COPY_CHANNELS=1
-if [ "$TEST" = "uccl_rdma_zc" ]; then
-    COPY_CHANNELS=2
+COPY_CHANNELS=4
+
+if [ "$TEST" = "srd" ]; then
+    LIBNCCL_PATH="/opt/uccl_rdma_zc/nccl/build/lib/libnccl.so"
+    PLUGIN_PATH="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so"
+    # BIN_PATH="/opt/uccl_rdma_zc/nccl-tests/build/alltoall_perf"
+    BIN_PATH="/opt/uccl_rdma_zc/nccl-tests/build/all_reduce_perf"
 fi
 
 mpirun --bind-to none -np 1 -N 1 --host localhost \
@@ -37,7 +42,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x UCCL_ENGINE_QUIET=1 \
     -x CUDA_MODULE_LOADING=EAGER \
     ${BIN_PATH} \
-    -b 1K -e 1M -f 2 -w 0 -n 1 -c 1 -g 1 -t 8 \
+    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 8 \
     >& alltoall_debug.log
 
     # -x NCCL_DEBUG=INFO \

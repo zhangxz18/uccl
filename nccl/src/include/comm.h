@@ -74,7 +74,7 @@
        struct iov iovFifo[NCCL_STEPS];
        /************************** */
      };
-     char pad4[MEM_ALIGN + MEM_ALIGN * 15];
+     char pad4[MEM_ALIGN + MEM_ALIGN * 10];
    };
  };
  // Yang: iovFifo is the starting address of the scattered IOVs.
