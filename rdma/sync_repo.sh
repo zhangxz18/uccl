@@ -15,20 +15,20 @@ for MACHINE in "${TARGET_MACHINES[@]}"; do
   (
     echo "Installing on machine: $MACHINE"
 
-    ssh "azureuser@$MACHINE" "mkdir $TARGET_DIR" > /dev/null 2>&1
+    ssh -o StrictHostKeyChecking=no "azureuser@$MACHINE" "mkdir $TARGET_DIR" > /dev/null 2>&1
 
-    rsync -avz --delete "$SOURCE_DIR/" "azureuser@$MACHINE:$TARGET_DIR" > /dev/null 2>&1
+    rsync -avz -e 'ssh -o StrictHostKeyChecking=no' --delete "$SOURCE_DIR/" "azureuser@$MACHINE:$TARGET_DIR" > /dev/null 2>&1
 
     if [ $? -eq 0 ]; then
       echo "Copy done on machine: $MACHINE"
 
-      ssh "azureuser@$MACHINE" "cd $TARGET_DIR/rdma && bash configure_rdma_ip.sh && make -j" > /dev/null 2>&1
+      ssh -o StrictHostKeyChecking=no "azureuser@$MACHINE" "cd $TARGET_DIR/rdma && bash configure_rdma_ip.sh && make -j" > /dev/null 2>&1
       if [ $? -eq 0 ]; then
         echo "Compile rdma successfully on machine: $MACHINE"
       else
         echo "Compile error on machine: $MACHINE"
       fi
-      ssh "azureuser@$MACHINE" "cd $TARGET_DIR/rdma/permutation_traffic/ && make clean && make" > /dev/null 2>&1
+      ssh -o StrictHostKeyChecking=no "azureuser@$MACHINE" "cd $TARGET_DIR/rdma/permutation_traffic/ && make clean && make" > /dev/null 2>&1
       if [ $? -eq 0 ]; then
         echo "Compile pt successfully on machine: $MACHINE"
       else
