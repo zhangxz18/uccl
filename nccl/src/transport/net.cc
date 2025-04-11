@@ -1448,18 +1448,18 @@
                 // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
                  auto* recv_mem = resources->recvMem;
                  // Yang: recvTail might get overwritten, the same for the iov_addrs.
-                 auto iov_idx = step % (NCCL_STEPS);
+                 auto iov_idx = (*recvTail) % (NCCL_STEPS);
                  volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);                  
 
                  cur_iov->iov_n = *iov_n;
                  // cur_iov->gpu_idx = proxyState->cudaDev; // for debugging
-                 cur_iov->step = step;
+                 cur_iov->step = *recvTail;
                  for (int j=0; j < cur_iov->iov_n; j++) {
                    cur_iov->src_addrs[j] = iov_addrs[j];
                    cur_iov->dst_addrs[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
                    cur_iov->iov_lens[j] = iov_lens[j];
                  }
-                //  printf("[gpu %d net]: cur recvTail %ld next recvTail %ld base %ld step %ld iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+                //  printf("[gpu %d net]: cur_recvTail %ld next_recvTail %ld base %ld step %ld recvTail_ptr %p iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, recvTail, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
                  
                  *recvTail = sub->base + sub->transmitted;
                  __sync_synchronize();

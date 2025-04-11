@@ -118,6 +118,11 @@
  
    template <int DirectRecv, int DirectSend, int Recv, int Send, int Src, int Dst>
    __device__ __forceinline__ void waitPeer(intptr_t srcIx, intptr_t dstIx, int offset, int nelts) {
+     // Yang: initing shared variable. For tree allreduce, the first two threads will have (flags & (Recv*RoleWaitRecv)).
+     if (tid == 0 || tid == 1) {
+      ncclShmem.groups[group].tail_ptr[tid] = nullptr;
+     }
+
      const bool isSendNotRecv = (Send && Recv) ? (flags & RoleWaitSend) : Send;
      const bool noRecvWait = DirectRecv && Src && (flags & (DirectRead | IpcRead));        // no wait when directly reading from remote input
      const bool noSendWait = DirectSend && (flags & (DirectRead|DirectWrite)); // no wait in empty send (e.g. directScatter) or direct remote write
@@ -131,11 +136,8 @@
          if (checkAbort(spins)) break;
          //if (spins == 0) printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x, int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
        }
-       // Yang: debugging. 
-      //  uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-      //  printf("[gpu %ld gpu] waitPeer connStepCache %ld isSendNotRecv %d step %ld StepPerSlice %d\n", gpu_idx, connStepCache, isSendNotRecv, step, StepPerSlice);
      }
- 
+
      if (flags & (Recv*RoleWaitRecv | Send*RoleWaitSend)) {
        if (flags & ConnFifoEnabled)
          connFifo[step%NCCL_STEPS].size = nelts*sizeof(T);
@@ -177,15 +179,111 @@
        step += StepPerSlice;
  
       // Yang: only care recv-side step value.
-      if (flags & (Recv*RoleWaitRecv)) {
-        // Yang: using one thread to load the step into sharemem.
-        ncclShmem.groups[group].step = step;
+      if (flags & (Recv*RoleWaitRecv)) { 
 
-        uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-        // printf("[waitPeer %ld] step %ld connStepCache %ld\n", gpu_idx, step, connStepCache);
+        // Yang: using one thread to load the step into sharemem.
+        ncclShmem.groups[group].step[tid] = step;
+ 
+        // Yang: setup tail_ptr based on peer
+        ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
+ 
+        // Yang: this gives the correct step value from CPU.
+        uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
+        uint64_t cpu_tail = loadStepValue(connStepPtr);
+        // printf("[waitPeer %ld] step %ld cpu_tail %ld connStepCache %ld tail_ptr %p tid %d group %d\n", gpu_idx, step, cpu_tail, connStepCache, connStepPtr, tid, group);
+
+        /*
+        #define kIovStart 328
+        #define kMaxIovs 256
+        struct alignas(8) iov {
+          void* src_addrs[kMaxIovs];
+          void* dst_addrs[kMaxIovs];
+          int iov_lens[kMaxIovs];
+          int iov_n;
+          int gpu_idx; // for debugging
+          int step; // for debugging
+        };
+        const uint32_t kIovSize = sizeof(struct iov);
+  
+        uint64_t prevStep = step - StepPerSlice;
+        int iov_idx = prevStep % (NCCL_STEPS);
+        struct iov *cur_iov = (struct iov *)((char *)connStepPtr + kIovStart + iov_idx * kIovSize);
+        
+        void** src_addrs = cur_iov->src_addrs;
+        void** dst_addrs = cur_iov->dst_addrs;
+        int* iov_lens = cur_iov->iov_lens;
+        int iov_n = cur_iov->iov_n;
+  
+        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+        for (int i = 0; i < iov_n; i++) {
+          char *src = (char*)src_addrs[i];
+          char *dst = (char*)dst_addrs[i];
+          int iov_len = iov_lens[i];
+          memcpy(dst, src, iov_len);
+        }
+
+        int step_recv = cur_iov->step;
+        printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
+        */
       }
     }
-   }
+
+    if (Recv) {
+      // Yang: cannot use subBarrier() as it would block the GPU threads.
+      barrier();
+      for (int t = 0; t < 2; t++) {
+        uint64_t step = ncclShmem.groups[group].step[t];
+        uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
+
+        if (tail_ptr == nullptr) continue;
+
+        // Yang: need to keep the same as comm.h
+        #define kIovStart 328
+        #define kMaxIovs 256
+        struct alignas(8) iov {
+          void* src_addrs[kMaxIovs];
+          void* dst_addrs[kMaxIovs];
+          int iov_lens[kMaxIovs];
+          int iov_n;
+          int gpu_idx; // for debugging
+          int step; // for debugging
+        };
+        const uint32_t kIovSize = sizeof(struct iov);
+
+        uint64_t prevStep = step - StepPerSlice;
+        int iov_idx = prevStep % (NCCL_STEPS);
+        struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+        
+        void** src_addrs = cur_iov->src_addrs;
+        void** dst_addrs = cur_iov->dst_addrs;
+        int* iov_lens = cur_iov->iov_lens;
+        int iov_n = cur_iov->iov_n;
+
+        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+        for (int i = 0; i < iov_n; i++) {
+          char *src = (char*)src_addrs[i];
+          char *dst = (char*)dst_addrs[i];
+          int iov_len = iov_lens[i];
+
+          // Make it t-byte aligned to avoid GPU SEGV.
+          int num_packs = iov_len / 8;
+          int len_per_th = divUp(num_packs, nworkers) * 8;
+          int start = len_per_th * tid;
+          int end = min(start + len_per_th, iov_len);
+          int len = end - start;
+          if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
+        }
+
+        // Yang: debuging
+        // if (tid ==0) {
+        //   int step_recv = cur_iov->step;
+        //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
+        //   uint64_t cpu_tail = loadStepValue(tail_ptr);
+        //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
+        // }
+      }
+    }
+  }
  
    template<int Recv, int Send>
    inline __device__ void postPeer(bool dataStored) {
@@ -193,7 +291,7 @@
        step += StepPerSlice;
 
        // Yang: no need to load the step into sharemem, as this is for posting to CPU.
-       // ncclShmem.groups[group].step = step;
+       // ncclShmem.groups[group].step[0] = step;
 
        if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
          fence_acq_rel_sys();
@@ -295,13 +393,6 @@
          waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(srcIx, dstIx, offset, sliceSize);
          subBarrier();
 
-         // Yang: debugging
-        //  if (tid ==0) {
-        //   uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-        //   uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
-        //   printf("[gpu %ld gpu] genericOp0: step %ld cpu_tail %ld\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail);
-        //  }
-
          /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
           * to 0 to avoid unnecessary workload. */
          int workSize = ncclShmem.aborted ? 0 : sliceSize;
@@ -330,59 +421,6 @@
               Dst, ncclShmem.groups[group].dsts,
               workSize);
          } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
-           // if (DirectRecv && !DirectSend) {
-           if (Recv) {
-             // Yang: need to keep the same as comm.h
-             #define kIovStart 328
-             #define kMaxIovs 256
-             struct alignas(8) iov {
-               void* src_addrs[kMaxIovs];
-               void* dst_addrs[kMaxIovs];
-               int iov_lens[kMaxIovs];
-               int iov_n;
-               int gpu_idx; // for debugging
-               int step; // for debugging
-             };
-             const uint32_t kIovSize = sizeof(struct iov);
- 
-             uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
-             int iov_idx = prevStep % (NCCL_STEPS);
-             // printf("genericOp: tid %d prevStep %lu iov_idx %d\n", tid, prevStep, iov_idx);
-             struct iov *cur_iov = (struct iov *)((char *)ncclShmem.groups[group].tail_ptr + kIovStart + iov_idx * kIovSize);
-             
-             void** src_addrs = cur_iov->src_addrs;
-             void** dst_addrs = cur_iov->dst_addrs;
-             int* iov_lens = cur_iov->iov_lens;
-             int iov_n = cur_iov->iov_n;
- 
-             // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-             for (int i = 0; i < iov_n; i++) {
-               char *src = (char*)src_addrs[i];
-               char *dst = (char*)dst_addrs[i];
-               int iov_len = iov_lens[i];
- 
-               // Make it t-byte aligned to avoid GPU SEGV.
-               int num_packs = iov_len / 8;
-               int len_per_th = divUp(num_packs, nworkers) * 8;
-               int start = len_per_th * tid;
-               int end = min(start + len_per_th, iov_len);
-               int len = end - start;
-               if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
-             }
-
-             // Yang: debuging
-            //  if (tid ==0) {
-            //    int step_recv = cur_iov->step;
-            //    uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-            //    uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
-            //    printf("[gpu %ld gpu] genericOp1: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-            //  }
- 
-             subBarrier();
-           }
-           // Yang: no need from my tests, as reduceCopy uses volitile.
-           // __threadfence();
- 
            constexpr int PreOpSrcs = SrcBuf != Input ? 0 :
                                      DirectRecv*MaxRecv == NCCL_MAX_DIRECT_ARITY ? (1+NCCL_MAX_DIRECT_ARITY) : 1;
            reduceCopy<Unroll, RedOp, T,
@@ -392,8 +430,6 @@
               Recv*fan.nrecv()+Src, ncclShmem.groups[group].srcs,
               Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
               workSize);
-           
-           // printf("genericOp: tid %d branch 4 nSrcs %d nDsts %d workSize %d \n", tid, Recv*fan.nrecv()+Src, Send*fan.nsend()+Dst, workSize);
          }
          barrier(); // This barrier has a counterpart in following loop
          postPeer<Recv, Send>(0 < sliceSize);
@@ -413,55 +449,7 @@
        sliceSize = sliceSize < nelem-offset ? sliceSize : nelem-offset;
        { // Only workers could have Wait roles so we know the slice must be empty
          // since we've exited the loop above.
-         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, 0);
-         
-        if (Recv) {
-          // Yang: need to keep the same as comm.h
-          #define kIovStart 328
-          #define kMaxIovs 256
-          struct alignas(8) iov {
-            void* src_addrs[kMaxIovs];
-            void* dst_addrs[kMaxIovs];
-            int iov_lens[kMaxIovs];
-            int iov_n;
-            int gpu_idx; // for debugging
-            int step; // for debugging
-          };
-          const uint32_t kIovSize = sizeof(struct iov);
-
-          uint64_t prevStep = ncclShmem.groups[group].step - StepPerSlice;
-          int iov_idx = prevStep % (NCCL_STEPS);
-          // printf("genericOp: tid %d prevStep %lu iov_idx %d\n", tid, prevStep, iov_idx);
-          struct iov *cur_iov = (struct iov *)((char *)ncclShmem.groups[group].tail_ptr + kIovStart + iov_idx * kIovSize);
-          
-          void** src_addrs = cur_iov->src_addrs;
-          void** dst_addrs = cur_iov->dst_addrs;
-          int* iov_lens = cur_iov->iov_lens;
-          int iov_n = cur_iov->iov_n;
-
-          // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-          for (int i = 0; i < iov_n; i++) {
-            char *src = (char*)src_addrs[i];
-            char *dst = (char*)dst_addrs[i];
-            int iov_len = iov_lens[i];
-
-            // Make it t-byte aligned to avoid GPU SEGV.
-            int num_packs = iov_len / 8;
-            int len_per_th = divUp(num_packs, nworkers) * 8;
-            int start = len_per_th * tid;
-            int end = min(start + len_per_th, iov_len);
-            int len = end - start;
-            if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
-          }
-
-          // Yang: debuging
-          // if (tid ==0) {
-          //   int step_recv = cur_iov->step;
-          //   uint64_t gpu_idx = loadStepValue(ncclShmem.groups[group].tail_ptr + 1);
-          //   uint64_t cpu_tail = loadStepValue(ncclShmem.groups[group].tail_ptr);
-          //   printf("[gpu %ld gpu] genericOp2: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, ncclShmem.groups[group].step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-          // }
-        }
+         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, 0);         
        }
        barrier(); // Has couterpart in preceding worker-only loop.
        postPeer<Recv, Send>(0 < sliceSize);
@@ -645,9 +633,6 @@
    __device__ __forceinline__ void loadRecvConn(ncclDevChannelPeer *peer, int connIndex, uint32_t direct, int regFlag) {
      conn = &peer->recv[connIndex];
  
-     // Yang: setup tail_ptr based on peer
-    ncclShmem.groups[group].tail_ptr = conn->tail;
- 
      if (conn->netDeviceHandle.netDeviceType == NCCL_NET_DEVICE_UNPACK) {
        // handle must be a device ptr
        netDeviceHandle = conn->netDeviceHandle.handle;
@@ -668,7 +653,8 @@
        // Yang: this should load the tail value from CPU.
        connStepCache = loadStepValue(connStepPtr);
 
-       uint64_t gpu_idx = loadStepValue(conn->tail + 1);
+      //  Yang: debugging
+      //  uint64_t gpu_idx = loadStepValue(conn->tail + 1);
       //  printf("[gpu %ld gpu] loadRecvConn connStepCache %ld step %ld\n", gpu_idx, connStepCache, step);       
 
        connStepSize = conn->stepSize/sizeof(T);

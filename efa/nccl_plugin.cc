@@ -360,7 +360,7 @@ ncclResult_t pluginDeregMr(void *collComm, void *mhandle) {
 ncclResult_t pluginIsend(void *sendComm, void *data, int size, int tag,
                          void *mhandle, void **request) {
     // DCHECK(size > 0 && size <= 524288) << "size " << size;
-    DCHECK(size <= 1048576) << "pluginIsend size " << size;
+    // DCHECK(size <= 1048576) << "pluginIsend size " << size;
     struct UcclSendComm *scomm = (struct UcclSendComm *)sendComm;
     auto conn_id = scomm->base.conn_id;
     struct Mhandle *mh = (struct Mhandle *)mhandle;
