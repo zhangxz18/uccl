@@ -326,8 +326,8 @@ struct ncclProxyState {
   struct ncclExpectedProxyResponse* expectedResponses;
 
   // Yang: adding sg_copy states here.
-  iovMultiFifo* sgCopyEngine;
-  cudaStream_t copyTestStream;
+  // iovMultiFifo* sgCopyEngine;
+  // cudaStream_t copyTestStream;
 };
 
 enum proxyConnectState {

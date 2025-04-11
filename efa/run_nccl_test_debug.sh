@@ -7,6 +7,9 @@ TEST="uccl_rdma"
 # BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
 BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
 
+# all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
+# hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
+
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
@@ -55,7 +58,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
     ${BIN_PATH} \
-    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 8 \
+    -b 1M -e 1M -f 2 -w 5 -n 10 -c 1 -g 1 -t 8 \
     >&alltoall_debug.log
 
     # -x NCCL_DEBUG=INFO \
