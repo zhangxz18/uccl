@@ -166,26 +166,23 @@
        int iov_n = iov->iov_n;
 
        // Speedup tricks for 1 iov copy; could be deleted for generality.
-      //  if (iov_n == 1) {
-       if (iov_n <= 64) {
+       if (iov_n == 1) {
         void** src_addrs = iov->src_addrs;
         void** dst_addrs = iov->dst_addrs;
         int* iov_lens = iov->iov_lens;
 
-        for (int i = 0; i < iov_n; i++) {
-          // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-          char *src = (char*)src_addrs[i];
-          char *dst = (char*)dst_addrs[i];
-          int iov_len = iov_lens[i];
+        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+        char *src = (char*)src_addrs[0];
+        char *dst = (char*)dst_addrs[0];
+        int iov_len = iov_lens[0];
 
-          // Make it t-byte aligned to avoid GPU SEGV.
-          int num_packs = iov_len / 8;
-          int len_per_th = divUp(num_packs, nworkers) * 8;
-          int start = len_per_th * tid;
-          int end = min(start + len_per_th, iov_len);
-          int len = end - start;
-          if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
-        }
+        // Make it t-byte aligned to avoid GPU SEGV.
+        int num_packs = iov_len / 8;
+        int len_per_th = divUp(num_packs, nworkers) * 8;
+        int start = len_per_th * tid;
+        int end = min(start + len_per_th, iov_len);
+        int len = end - start;
+        if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
         return;
       }
 
