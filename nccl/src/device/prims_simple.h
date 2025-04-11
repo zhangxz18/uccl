@@ -5,6 +5,7 @@
  ************************************************************************/
 
  #include "network/unpack/unpack.h"
+ #include <cuda_pipeline.h>
  #include <cassert>
  
  enum primsMode {
@@ -115,7 +116,132 @@
      // loads data using volatile so it doesn't see stale data in L1.
      return ld_volatile_global(ptr);
    }
+
+    // Yang: need to keep the same as comm.h
+    #define kIovStart 328
+    #define kMaxIovs 256
+    struct alignas(8) iov {
+      void* src_addrs[kMaxIovs];
+      void* dst_addrs[kMaxIovs];
+      int iov_lens[kMaxIovs];
+      int iov_n;
+      int gpu_idx; // for debugging
+      int step; // for debugging
+    };
+    const uint32_t kIovSize = sizeof(struct iov);
+
+    template<int BytePerPack>
+    __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
+      uintptr_t src_addr = (uintptr_t)src;
+      uintptr_t dst_addr = (uintptr_t)dst;
+      int i = 0;
+  
+      // BytePack<BytePerPack> acc;
+      for (; i + BytePerPack <= len; i += BytePerPack) {
+        // acc = ld_global<BytePerPack>(src_addr + i);
+        // st_global<BytePerPack>(dst_addr + i, acc);
+        *(BytePack<BytePerPack>*)(dst_addr+i) = *(BytePack<BytePerPack>*)(src_addr+i);
+      }
+  
+      // Handle the remaining tail bytes (if any)
+      if (i > len) {
+        i -= BytePerPack;
+        // BytePack<1> acc2;
+        for (; i < len; i++) {
+          // acc2 = ld_global<1>(src_addr + i);
+          // st_global<1>(dst_addr + i, acc2);
+          *(BytePack<1>*)(dst_addr+i) = *(BytePack<1>*)(src_addr+i);
+        }
+      }
+    }
  
+    inline __device__ void kernelScatteredMemcpy(struct iov* iov) {
+       typedef float2 PackT;
+       static constexpr int kCpAsycDepth = 1;
+       static constexpr int kNumThPerBlock = 512;
+       __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
+
+       int iov_n = iov->iov_n;
+
+       if (iov_n == 1) {
+        void** src_addrs = iov->src_addrs;
+        void** dst_addrs = iov->dst_addrs;
+        int* iov_lens = iov->iov_lens;
+
+        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+        char *src = (char*)src_addrs[0];
+        char *dst = (char*)dst_addrs[0];
+        int iov_len = iov_lens[0];
+
+        // Make it t-byte aligned to avoid GPU SEGV.
+        int num_packs = iov_len / 8;
+        int len_per_th = divUp(num_packs, nworkers) * 8;
+        int start = len_per_th * tid;
+        int end = min(start + len_per_th, iov_len);
+        int len = end - start;
+        if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
+        return;
+       }
+
+       // Number of threads per copy: A100 has 8 * 128bit mem transactions.
+       // https://developer.download.nvidia.com/video/gputechconf/gtc/2020/presentations/s21745-developing-cuda-kernels-to-push-tensor-cores-to-the-absolute-limit-on-nvidia-a100.pdf
+       int nthreads_per_iov = max(8, nthreads / iov_n);
+       // Ignoring some non-rounded threads
+       if (tid > nthreads_per_iov * iov_n) return;
+
+       int iov_n_per_iter = nthreads / nthreads_per_iov;
+       int start_iov = tid / nthreads_per_iov;
+
+       for (int i = start_iov; i < iov_n; i += iov_n_per_iter) {
+           // Map each thread to a iov copy.
+           int iov_idx = i;
+           // Compute local tid within the th group assigned to this iov copy.
+           int local_tid = tid % nthreads_per_iov;
+
+           // Retrieve parameters for this copy.
+           char* src_ptr = (char*)iov->src_addrs[iov_idx];
+           char* dst_ptr = (char*)iov->dst_addrs[iov_idx];
+           int iov_len = iov->iov_lens[iov_idx];
+           if (iov_len == 0) return;
+
+           // Copy t-byte chunks first (if possible)
+           int num_full = iov_len / sizeof(PackT);
+           PackT* src_T = (PackT*)src_ptr;
+           PackT* dst_T = (PackT*)dst_ptr;
+
+           int depth = 0;
+           // Each thread in the group copies its portion of data.
+           for (int j = local_tid; j < num_full; j += nthreads_per_iov) {
+               // dst_T[j] = src_T[j];
+
+               void* smemBytePtr = (void*)&smem[tid + nthreads * depth++];
+               const void* gmemBytePtr = (const void*)&src_T[j];
+               __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(PackT));
+
+               if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
+                   __pipeline_commit();
+                   __pipeline_wait_prior(0);
+                   // Copy the data from shared memory to global memory
+                   for (int k = 0; k < depth; k++) {
+                       dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
+                           smem[tid + nthreads * k];
+                   }
+                   depth = 0;
+               }
+           }
+
+           // Let only one thread in the copy group (e.g. local_tid == 0) copy
+           // the tail.
+           if (local_tid == 0) {
+               // Handle the remaining tail bytes (if any)
+               int tail_start = num_full * 8;
+               for (int j = tail_start; j < iov_len; j++) {
+                   dst_ptr[j] = src_ptr[j];
+               }
+           }
+       }
+   }
+
    template <int DirectRecv, int DirectSend, int Recv, int Send, int Src, int Dst>
    __device__ __forceinline__ void waitPeer(intptr_t srcIx, intptr_t dstIx, int offset, int nelts) {
      // Yang: initing shared variable. For tree allreduce, the first two threads will have (flags & (Recv*RoleWaitRecv)).
@@ -191,40 +317,6 @@
         uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
         uint64_t cpu_tail = loadStepValue(connStepPtr);
         // printf("[waitPeer %ld] step %ld cpu_tail %ld connStepCache %ld tail_ptr %p tid %d group %d\n", gpu_idx, step, cpu_tail, connStepCache, connStepPtr, tid, group);
-
-        /*
-        #define kIovStart 328
-        #define kMaxIovs 256
-        struct alignas(8) iov {
-          void* src_addrs[kMaxIovs];
-          void* dst_addrs[kMaxIovs];
-          int iov_lens[kMaxIovs];
-          int iov_n;
-          int gpu_idx; // for debugging
-          int step; // for debugging
-        };
-        const uint32_t kIovSize = sizeof(struct iov);
-  
-        uint64_t prevStep = step - StepPerSlice;
-        int iov_idx = prevStep % (NCCL_STEPS);
-        struct iov *cur_iov = (struct iov *)((char *)connStepPtr + kIovStart + iov_idx * kIovSize);
-        
-        void** src_addrs = cur_iov->src_addrs;
-        void** dst_addrs = cur_iov->dst_addrs;
-        int* iov_lens = cur_iov->iov_lens;
-        int iov_n = cur_iov->iov_n;
-  
-        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-        for (int i = 0; i < iov_n; i++) {
-          char *src = (char*)src_addrs[i];
-          char *dst = (char*)dst_addrs[i];
-          int iov_len = iov_lens[i];
-          memcpy(dst, src, iov_len);
-        }
-
-        int step_recv = cur_iov->step;
-        printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-        */
       }
     }
 
@@ -235,52 +327,21 @@
         uint64_t step = ncclShmem.groups[group].step[t];
         uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
 
-        if (tail_ptr == nullptr) continue;
+        if (tail_ptr) {
+          uint64_t prevStep = step - StepPerSlice;
+          int iov_idx = prevStep % (NCCL_STEPS);
+          struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+    
+          kernelScatteredMemcpy(cur_iov);
 
-        // Yang: need to keep the same as comm.h
-        #define kIovStart 328
-        #define kMaxIovs 256
-        struct alignas(8) iov {
-          void* src_addrs[kMaxIovs];
-          void* dst_addrs[kMaxIovs];
-          int iov_lens[kMaxIovs];
-          int iov_n;
-          int gpu_idx; // for debugging
-          int step; // for debugging
-        };
-        const uint32_t kIovSize = sizeof(struct iov);
-
-        uint64_t prevStep = step - StepPerSlice;
-        int iov_idx = prevStep % (NCCL_STEPS);
-        struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
-        
-        void** src_addrs = cur_iov->src_addrs;
-        void** dst_addrs = cur_iov->dst_addrs;
-        int* iov_lens = cur_iov->iov_lens;
-        int iov_n = cur_iov->iov_n;
-
-        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-        for (int i = 0; i < iov_n; i++) {
-          char *src = (char*)src_addrs[i];
-          char *dst = (char*)dst_addrs[i];
-          int iov_len = iov_lens[i];
-
-          // Make it t-byte aligned to avoid GPU SEGV.
-          int num_packs = iov_len / 8;
-          int len_per_th = divUp(num_packs, nworkers) * 8;
-          int start = len_per_th * tid;
-          int end = min(start + len_per_th, iov_len);
-          int len = end - start;
-          if (len > 0) copyGlobalMemory<8>(dst + start, src + start, len);
+          // Yang: debuging
+          // if (tid ==0) {
+          //   int step_recv = cur_iov->step;
+          //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
+          //   uint64_t cpu_tail = loadStepValue(tail_ptr);
+          //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
+          // }
         }
-
-        // Yang: debuging
-        // if (tid ==0) {
-        //   int step_recv = cur_iov->step;
-        //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
-        //   uint64_t cpu_tail = loadStepValue(tail_ptr);
-        //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-        // }
       }
     }
   }
@@ -300,32 +361,7 @@
        st_relaxed_sys_global(connStepPtr, step);
      }
    }
- 
-   template<int BytePerPack>
-   __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
-     uintptr_t src_addr = (uintptr_t)src;
-     uintptr_t dst_addr = (uintptr_t)dst;
-     int i = 0;
- 
-     // BytePack<BytePerPack> acc;
-     for (; i + BytePerPack <= len; i += BytePerPack) {
-       // acc = ld_global<BytePerPack>(src_addr + i);
-       // st_global<BytePerPack>(dst_addr + i, acc);
-       *(BytePack<BytePerPack>*)(dst_addr+i) = *(BytePack<BytePerPack>*)(src_addr+i);
-     }
- 
-     // Handle the remaining tail bytes (if any)
-     if (i > len) {
-       i -= BytePerPack;
-       // BytePack<1> acc2;
-       for (; i < len; i++) {
-         // acc2 = ld_global<1>(src_addr + i);
-         // st_global<1>(dst_addr + i, acc2);
-         *(BytePack<1>*)(dst_addr+i) = *(BytePack<1>*)(src_addr+i);
-       }
-     }
-   }
- 
+  
    // Yang: "static constexpr int Input=0, Output=1"
    // Yang: for directRecv (alltoall recv): <1, 0, 1, 0, -1, Output>
    // Yang: for directSend: <0, 1, 0, 1, Input, -1>
