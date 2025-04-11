@@ -1,0 +1,51 @@
+[1,0]<stdout>:# nThread 8 nGpus 1 minBytes 1024 maxBytes 1073741824 step: 2(factor) warmup iters: 5 iters: 10 agg iters: 1 validation: 1 graph: 0
+[1,0]<stdout>:#
+[1,0]<stdout>:# Using devices
+[1,0]<stdout>:#  Rank  0 Group  0 Pid 2228231 on ip-172-31-44-101 device  0 [0x10] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  1 Group  0 Pid 2228231 on ip-172-31-44-101 device  1 [0x10] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  2 Group  0 Pid 2228231 on ip-172-31-44-101 device  2 [0x20] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  3 Group  0 Pid 2228231 on ip-172-31-44-101 device  3 [0x20] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  4 Group  0 Pid 2228231 on ip-172-31-44-101 device  4 [0x90] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  5 Group  0 Pid 2228231 on ip-172-31-44-101 device  5 [0x90] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  6 Group  0 Pid 2228231 on ip-172-31-44-101 device  6 [0xa0] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  7 Group  0 Pid 2228231 on ip-172-31-44-101 device  7 [0xa0] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#
+[1,0]<stdout>:#                                                              out-of-place                       in-place          
+[1,0]<stdout>:#       size         count      type   redop    root     time   algbw   busbw #wrong     time   algbw   busbw #wrong
+[1,0]<stdout>:#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)       
+[1,0]<stdout>:        1024            32     float    none      -1    72.73    0.01    0.01      0    65.58    0.02    0.01    N/A
+[1,0]<stdout>:        2048            64     float    none      -1    66.01    0.03    0.03      0    66.17    0.03    0.03    N/A
+[1,0]<stdout>:        4096           128     float    none      -1    69.86    0.06    0.05      0    66.94    0.06    0.05    N/A
+[1,0]<stdout>:        8192           256     float    none      -1    66.66    0.12    0.11      0    65.26    0.13    0.11    N/A
+[1,0]<stdout>:       16384           512     float    none      -1    66.62    0.25    0.22      0    65.75    0.25    0.22    N/A
+[1,0]<stdout>:       32768          1024     float    none      -1    67.68    0.48    0.42      0    67.71    0.48    0.42    N/A
+[1,0]<stdout>:       65536          2048     float    none      -1    70.44    0.93    0.81      0    70.23    0.93    0.82    N/A
+[1,0]<stdout>:      131072          4096     float    none      -1    85.87    1.53    1.34      0    86.37    1.52    1.33    N/A
+[1,0]<stdout>:      262144          8192     float    none      -1    118.4    2.21    1.94      0    117.4    2.23    1.95    N/A
+[1,0]<stdout>:      524288         16384     float    none      -1    173.2    3.03    2.65      0    176.3    2.97    2.60    N/A
+[1,0]<stdout>:     1048576         32768     float    none      -1    276.8    3.79    3.31      0    275.7    3.80    3.33    N/A
+[1,0]<stdout>:     2097152         65536     float    none      -1    459.9    4.56    3.99  13320    462.2    4.54    3.97    N/A
+[1,0]<stdout>:     4194304        131072     float    none      -1    817.2    5.13    4.49  11100    816.9    5.13    4.49    N/A
+[1,0]<stdout>:     8388608        262144     float    none      -1   1483.2    5.66    4.95      0   1477.4    5.68    4.97    N/A
+[1,0]<stdout>:    16777216        524288     float    none      -1   2776.6    6.04    5.29      0   2763.2    6.07    5.31    N/A
+[1,0]<stdout>:    33554432       1048576     float    none      -1   5353.2    6.27    5.48      0   5301.3    6.33    5.54    N/A
+[1,0]<stdout>:    67108864       2097152     float    none      -1    10480    6.40    5.60      0    10440    6.43    5.62    N/A
+[1,0]<stdout>:   134217728       4194304     float    none      -1    20761    6.46    5.66      0    20753    6.47    5.66    N/A
+[1,0]<stdout>:   268435456       8388608     float    none      -1    41226    6.51    5.70      0    40937    6.56    5.74    N/A
+[1,0]<stdout>:   536870912      16777216     float    none      -1    81828    6.56    5.74      0    81782    6.56    5.74    N/A
+[1,0]<stdout>:  1073741824      33554432     float    none      -1   162695    6.60    5.77      0   162649    6.60    5.78    N/A
+[1,0]<stdout>:# Out of bounds values : 7 FAILED
+[1,0]<stdout>:# Avg bus bandwidth    : 3.02999 
+[1,0]<stdout>:#
+[1,0]<stdout>:
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpirun detected that one or more processes exited with non-zero status, thus causing
+the job to be terminated. The first process to do so was:
+
+  Process name: [[4818,1],0]
+  Exit code:    1
+--------------------------------------------------------------------------
