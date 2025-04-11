@@ -1,22 +1,22 @@
 # !/bin/bash
 
-# TEST="uccl_rdma"
+TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
-TEST="srd"
+# TEST="srd"
 
-BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
-# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
+# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
+BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
 
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
-# This works best for allreduce on 8 GPUs
-# COPY_CHANNELS=4
-# CHANNELS_NET_PEER=1
-
-# This works best for alltoall on 8 GPUs
-COPY_CHANNELS=8
+# This works best for allreduce (tree and ring) on 8 GPUs.
+COPY_CHANNELS=4
 CHANNELS_NET_PEER=1
+
+# This works best for alltoall on 8 GPUs.
+# COPY_CHANNELS=8
+# CHANNELS_NET_PEER=1
 
 # For allreduce with nvlink, use larger buffer to catch up with NCCL-SRD with larger buffers, and avoid performance outliers.
 # CHUNK_SIZE=524288
