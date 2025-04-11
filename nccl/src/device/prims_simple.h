@@ -163,6 +163,7 @@
 
        int iov_n = iov->iov_n;
 
+       // Speedup tricks for 1 iov copy; could be deleted for generality.
        if (iov_n == 1) {
         void** src_addrs = iov->src_addrs;
         void** dst_addrs = iov->dst_addrs;
@@ -314,13 +315,14 @@
         ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
  
         // Yang: this gives the correct step value from CPU.
-        uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
-        uint64_t cpu_tail = loadStepValue(connStepPtr);
+        // uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
+        // uint64_t cpu_tail = loadStepValue(connStepPtr);
         // printf("[waitPeer %ld] step %ld cpu_tail %ld connStepCache %ld tail_ptr %p tid %d group %d\n", gpu_idx, step, cpu_tail, connStepCache, connStepPtr, tid, group);
       }
     }
 
     if (Recv) {
+    // if (DirectRecv && !DirectSend) { // this should work for alltoall, but not, why?
       // Yang: cannot use subBarrier() as it would block the GPU threads.
       barrier();
       for (int t = 0; t < 2; t++) {
