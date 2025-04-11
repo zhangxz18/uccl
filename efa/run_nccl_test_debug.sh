@@ -1,21 +1,27 @@
 # !/bin/bash
 
-TEST="uccl_rdma"
+# TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
-# TEST="srd"
+TEST="srd"
 
-# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
-BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
+BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
+# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
 
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
-COPY_CHANNELS=4
-# COPY_CHANNELS=1
+# This works best for allreduce on 8 GPUs
+# COPY_CHANNELS=4
+# CHANNELS_NET_PEER=1
+
+# This works best for alltoall on 8 GPUs
+COPY_CHANNELS=8
+CHANNELS_NET_PEER=1
 
 # For allreduce with nvlink, use larger buffer to catch up with NCCL-SRD with larger buffers, and avoid performance outliers.
 # CHUNK_SIZE=524288
 # BUFFSIZE=8388608
+
 # For others, just use default buffer size.
 CHUNK_SIZE=131072
 BUFFSIZE=1048576
@@ -43,7 +49,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -x NCCL_MIN_NCHANNELS=${COPY_CHANNELS} \
     -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
     -x NCCL_BUFFSIZE=${BUFFSIZE} \
-    -x NCCL_NCHANNELS_PER_NET_PEER=4 \
+    -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
     -x NCCL_NET_GDR_LEVEL=SYS \
     -x GLOG_logtostderr=0 \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
@@ -68,7 +74,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
 # export NCCL_MIN_NCHANNELS=${COPY_CHANNELS}
 # export NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE}
 # export NCCL_BUFFSIZE=${BUFFSIZE}
-# export NCCL_NCHANNELS_PER_NET_PEER=1
+# export NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER}
 # export NCCL_NET_GDR_LEVEL=SYS
 # export GLOG_logtostderr=0
 # export NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml

@@ -554,11 +554,10 @@ inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) 
     row += 1;
 
     // Yang: hack to compile faster.
-    if (coll == ncclFuncAllReduce && proto == NCCL_PROTO_LL) break;
-    row += 1;
-    if (coll == ncclFuncAllReduce && proto == NCCL_PROTO_SIMPLE) break;
-    break;
-
+    // if (coll == ncclFuncAllReduce && proto == NCCL_PROTO_LL) break;
+    // row += 1;
+    // if (coll == ncclFuncAllReduce && proto == NCCL_PROTO_SIMPLE) break;
+    // break;
 
     int nAlgos = 4;
     if (coll == ncclFuncAllGather) {

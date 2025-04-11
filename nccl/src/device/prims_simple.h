@@ -157,9 +157,11 @@
  
     inline __device__ void kernelScatteredMemcpy(struct iov* iov) {
        typedef float2 PackT;
-       static constexpr int kCpAsycDepth = 1;
-       static constexpr int kNumThPerBlock = 512;
-       __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
+
+      //  Yang: this uses too much shared memory. 
+      //  static constexpr int kCpAsycDepth = 2;
+      //  static constexpr int kNumThPerBlock = 512;
+      //  __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
 
        int iov_n = iov->iov_n;
 
@@ -210,25 +212,25 @@
            PackT* src_T = (PackT*)src_ptr;
            PackT* dst_T = (PackT*)dst_ptr;
 
-           int depth = 0;
+           // int depth = 0;
            // Each thread in the group copies its portion of data.
            for (int j = local_tid; j < num_full; j += nthreads_per_iov) {
-               // dst_T[j] = src_T[j];
+               dst_T[j] = src_T[j];
 
-               void* smemBytePtr = (void*)&smem[tid + nthreads * depth++];
-               const void* gmemBytePtr = (const void*)&src_T[j];
-               __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(PackT));
+              //  void* smemBytePtr = (void*)&smem[tid + nthreads * depth++];
+              //  const void* gmemBytePtr = (const void*)&src_T[j];
+              //  __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(PackT));
 
-               if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
-                   __pipeline_commit();
-                   __pipeline_wait_prior(0);
-                   // Copy the data from shared memory to global memory
-                   for (int k = 0; k < depth; k++) {
-                       dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
-                           smem[tid + nthreads * k];
-                   }
-                   depth = 0;
-               }
+              //  if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
+              //      __pipeline_commit();
+              //      __pipeline_wait_prior(0);
+              //      // Copy the data from shared memory to global memory
+              //      for (int k = 0; k < depth; k++) {
+              //          dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
+              //              smem[tid + nthreads * k];
+              //      }
+              //      depth = 0;
+              //  }
            }
 
            // Let only one thread in the copy group (e.g. local_tid == 0) copy
