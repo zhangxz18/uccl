@@ -5,7 +5,7 @@ set -e
 set -x
 
 # Configuration variables
-UCCL_HOME="/opt/uccl_rdma"
+UCCL_HOME="/opt/uccl_rdma_mp"
 NV_LINK_DISABLE=1
 CHANNELS=4
 CHANNELS_NET_PEER=4
