@@ -144,6 +144,8 @@ ncclResult_t pluginGetProperties(int pdev, ncclNetProperties_v8_t *props) {
     props->maxComms = 1024 * 1024;
     // Maximum number of receive operations taken by irecv().
     props->maxRecvs = kMaxMultiRecv;
+    // FIXME: sg-copy hasn't supported multi-recv yet.
+    props->maxRecvs = 1;
     // Coupling with NCCL network device-side code.
     props->netDeviceType = NCCL_NET_DEVICE_HOST;
     props->netDeviceVersion = NCCL_NET_DEVICE_INVALID_VERSION;
