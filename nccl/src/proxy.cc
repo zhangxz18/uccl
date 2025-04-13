@@ -1541,7 +1541,7 @@ void* ncclProxyService(void* _args) {
   // if (CPU_COUNT(&comm->cpuAffinity)) sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
 
   INFO(NCCL_INIT, "[Proxy Service] Device %d CPU core %d", proxyState->cudaDev, sched_getcpu());
-  
+
   // Prepare poll descriptor
   struct ncclProxyConnectionPool connectionPool;
   connectionPool.pools = NULL;
@@ -1791,7 +1791,7 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm) {
     proxyState->profilerContext = comm->profilerContext;
     proxyState->directMode = comm->directMode;
     memcpy(proxyState->buffSizes, comm->buffSizes, sizeof(comm->buffSizes));
-    
+
     PTHREADCHECK(pthread_create(&comm->proxyState->thread, NULL, ncclProxyService, comm->proxyState), "pthread_create");
     ncclSetThreadName(comm->proxyState->thread, "NCCL Service %2d", comm->cudaDev);
 

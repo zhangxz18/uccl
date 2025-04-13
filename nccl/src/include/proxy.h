@@ -114,7 +114,7 @@ struct ncclProxySubArgs {
   uint64_t flushed;
   uint64_t transmitted;
   // Yang: adding sg_copied count to track if sg_copy is done.
-  uint64_t sg_copied;
+  // uint64_t sg_copied;
   uint64_t done;
   uint64_t end;
   void* requests[NCCL_STEPS];

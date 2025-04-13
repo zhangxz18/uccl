@@ -15,31 +15,31 @@ enum primsMode {
 };
 
 template<typename T, typename RedOp, typename Fan, int Direct,
-        int SlicePerChunk, int StepPerSlice, int Unroll, int P2p, int MultimemSrcs, int MultimemDsts>
+         int SlicePerChunk, int StepPerSlice, int Unroll, int P2p, int MultimemSrcs, int MultimemDsts>
 class Primitives<
     T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice, Unroll, MultimemSrcs, MultimemDsts>, P2p
   > {
   static constexpr int MaxRecv = Fan::MaxRecv, MaxSend = Fan::MaxSend;
   static constexpr int Input=0, Output=1;
   static constexpr int RoleInput = 0x01,
-                      RoleOutput = 0x02,
-                      RoleWaitRecv = 0x04,
-                      RoleWaitSend = 0x08,
-                      RolePostSend = 0x10,
-                      RolePostRecv = 0x20,
-                      Aborted = 0x40,
-                      NetRegMode = 0x80,
-                      ConnFifoEnabled = 0x100,
-                      DirectWrite = 0x200,
-                      DirectRead = 0x400,
-                      PatMode = 0x800,
-                      NvlsMinPolling = 0x1000,
-                      NetDeviceUnpack = 0x2000,
-                      AnyNetDeviceUnpack = 0x4000,
-                      NvlsDirectRead = 0x8000,
-                      NvlsDirectWrite = 0x10000,
-                      IpcWrite = 0x20000,
-                      IpcRead = 0x40000;
+                       RoleOutput = 0x02,
+                       RoleWaitRecv = 0x04,
+                       RoleWaitSend = 0x08,
+                       RolePostSend = 0x10,
+                       RolePostRecv = 0x20,
+                       Aborted = 0x40,
+                       NetRegMode = 0x80,
+                       ConnFifoEnabled = 0x100,
+                       DirectWrite = 0x200,
+                       DirectRead = 0x400,
+                       PatMode = 0x800,
+                       NvlsMinPolling = 0x1000,
+                       NetDeviceUnpack = 0x2000,
+                       AnyNetDeviceUnpack = 0x4000,
+                       NvlsDirectRead = 0x8000,
+                       NvlsDirectWrite = 0x10000,
+                       IpcWrite = 0x20000,
+                       IpcRead = 0x40000;
   const int tid, tidInBlock;
   const int nthreads;
   int nworkers;
@@ -434,7 +434,7 @@ class Primitives<
         subBarrier();
 
         /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
-        * to 0 to avoid unnecessary workload. */
+         * to 0 to avoid unnecessary workload. */
         int workSize = ncclShmem.aborted ? 0 : sliceSize;
         if (flags & AnyNetDeviceUnpack) {
           ncclNetDeviceUnpack<Recv>(tid, tidInBlock, nworkers, group, ncclShmem.groups[group].devicePlugin.unpack.unpackNetDeviceIndexMask, Src, workSize);
@@ -443,23 +443,23 @@ class Primitives<
         }
         if (DirectRecv && ncclShmem.groups[group].srcs[0] == ncclShmem.groups[group].dsts[0]
             /* NVLS can have srcs[0] == dsts[0], but we cannot enter this "if branch",
-            * so we need to check whether MultimemSrcs and MultimemDsts are 0. */
+             * so we need to check whether MultimemSrcs and MultimemDsts are 0. */
             && MultimemSrcs == 0 && MultimemDsts == 0 && !Src) {
           // We can only have one direct receive. Since srcs[0] == dstPtr+offset, skip one copy
           if (Send) {
             reduceCopy<Unroll, RedOp, T, 0, 1, 1, 0, 1, MaxSend, /*PreOpSrcs*/0>
               (tid, nworkers, /*redArg*/0, /*preOpArgs*/nullptr, /*postOp*/false,
-              1, ncclShmem.groups[group].srcs,
-              fan.nsend(), ncclShmem.groups[group].dsts+1,
-              workSize);
+               1, ncclShmem.groups[group].srcs,
+               fan.nsend(), ncclShmem.groups[group].dsts+1,
+               workSize);
           }
         } else if (DirectSend && !DirectRecv && SrcBuf != Input && ncclShmem.groups[group].dsts[Dst] == nullptr) {
           // For broadcast in CollNet to do empty send
           reduceCopy<Unroll, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs*/0>
             (tid, nworkers, ncclShmem.redOpArgs[0],  nullptr, postOp,
-            Recv, ncclShmem.groups[group].srcs,
-            Dst, ncclShmem.groups[group].dsts,
-            workSize);
+             Recv, ncclShmem.groups[group].srcs,
+             Dst, ncclShmem.groups[group].dsts,
+             workSize);
         } else if (ncclShmem.groups[group].srcs[0] && ncclShmem.groups[group].dsts[0]) {
           constexpr int PreOpSrcs = SrcBuf != Input ? 0 :
                                     DirectRecv*MaxRecv == NCCL_MAX_DIRECT_ARITY ? (1+NCCL_MAX_DIRECT_ARITY) : 1;
@@ -467,9 +467,9 @@ class Primitives<
             MultimemSrcs, Recv+Src, Recv*MaxRecv+Src,
             MultimemDsts, Send+Dst, Send*MaxSend+Dst, PreOpSrcs>
             (tid, nworkers, ncclShmem.redOpArgs[0], ncclShmem.redOpArgs, postOp,
-            Recv*fan.nrecv()+Src, ncclShmem.groups[group].srcs,
-            Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
-            workSize);
+             Recv*fan.nrecv()+Src, ncclShmem.groups[group].srcs,
+             Send*fan.nsend()+Dst, ncclShmem.groups[group].dsts,
+             workSize);
         }
         barrier(); // This barrier has a counterpart in following loop
         postPeer<Recv, Send>(0 < sliceSize);
@@ -489,7 +489,7 @@ class Primitives<
       sliceSize = sliceSize < nelem-offset ? sliceSize : nelem-offset;
       { // Only workers could have Wait roles so we know the slice must be empty
         // since we've exited the loop above.
-        waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, 0);         
+        waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, 0);
       }
       barrier(); // Has couterpart in preceding worker-only loop.
       postPeer<Recv, Send>(0 < sliceSize);
@@ -658,9 +658,7 @@ private:
             void* dst0 = (T*)ncclShmem.groups[group].dsts[0] + pOffset;
             ssize_t realPeerSize = min(realSize, totalElem-pOffset);
             if (DirectRecv && ncclShmem.groups[group].srcs[i] == dst0) realPeerSize = 0;
-            if (realPeerSize > 0) { 
-              reduceCopy<Unroll, RedOp, T, 0,1,1, 0,1,1, /*PreOpSrcs=*/0>(tid, nworkers, ncclShmem.redOpArgs[0], ncclShmem.redOpArgs, postOp, 1, ncclShmem.groups[group].srcs+i, 1, &dst0, realPeerSize);
-            }
+            if (realPeerSize > 0) reduceCopy<Unroll, RedOp, T, 0,1,1, 0,1,1, /*PreOpSrcs=*/0>(tid, nworkers, ncclShmem.redOpArgs[0], ncclShmem.redOpArgs, postOp, 1, ncclShmem.groups[group].srcs+i, 1, &dst0, realPeerSize);
           }
         }
       }
@@ -672,7 +670,6 @@ private:
 
   __device__ __forceinline__ void loadRecvConn(ncclDevChannelPeer *peer, int connIndex, uint32_t direct, int regFlag) {
     conn = &peer->recv[connIndex];
-
     if (conn->netDeviceHandle.netDeviceType == NCCL_NET_DEVICE_UNPACK) {
       // handle must be a device ptr
       netDeviceHandle = conn->netDeviceHandle.handle;
@@ -693,9 +690,9 @@ private:
       // Yang: this should load the tail value from CPU.
       connStepCache = loadStepValue(connStepPtr);
 
-    //  Yang: debugging
-    //  uint64_t gpu_idx = loadStepValue(conn->tail + 1);
-    //  printf("[gpu %ld gpu] loadRecvConn connStepCache %ld step %ld\n", gpu_idx, connStepCache, step);       
+      // Yang: debugging
+      // uint64_t gpu_idx = loadStepValue(conn->tail + 1);
+      // printf("[gpu %ld gpu] loadRecvConn connStepCache %ld step %ld\n", gpu_idx, connStepCache, step);       
 
       connStepSize = conn->stepSize/sizeof(T);
       // Yang: for recv, loading RDMA GDR buffer to connEltsFifo
@@ -774,7 +771,7 @@ private:
     }
   }
 
-public:
+ public:
   __device__ Primitives(
       int tid, int nthreads, int const *recvPeers, int const *sendPeers,
       void const *inputBuf, void *outputBuf, uint64_t redOpArg, uint8_t group=0,
@@ -1155,7 +1152,7 @@ public:
 
     reduceCopy<Unroll, RedOp, T, 0, 1, 2, 0, 1, 1, /*PreOpSrcs*/0>
       (tid, nthreads, ncclShmem.redOpArgs[0],  nullptr, /*postOp=*/false,
-      nSrcs, srcs, 1, ncclShmem.groups[group].dsts, workSize);
+       nSrcs, srcs, 1, ncclShmem.groups[group].dsts, workSize);
 
     barrier();
     if (postRecv && recvPow2 >= 0 && recvPow2 == index && (flags & RolePostRecv)) postPeer<1, 0>(0 < nelem);
@@ -1216,7 +1213,7 @@ public:
 
     reduceCopy<Unroll, RedOp, T, 0, 1, 1, 0, 1, 2, /*PreOpSrcs*/0>
       (tid, nthreads, ncclShmem.redOpArgs[0],  nullptr, /*postOp=*/false,
-      1, ncclShmem.groups[group].srcs, nDsts, dsts, workSize);
+       1, ncclShmem.groups[group].srcs, nDsts, dsts, workSize);
 
     barrier();
     if (postRecv && recvPow2 >= 0 && recvPow2 == index && (flags & RolePostRecv)) postPeer<1, 0>(0 < nelem);
