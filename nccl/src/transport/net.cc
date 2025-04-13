@@ -38,7 +38,7 @@ static_assert(sizeof(ncclNetHandle_t) <= CONNECT_SIZE, "NET Connect info is too 
 
 #define NCCL_NET_MAP_GET_POINTER(mapStruct, cpuOrGpu, offsetName) \
   (NCCL_NET_MAP_OFFSET_NULL(mapStruct, offsetName) ? NULL : \
-  (mapStruct)->mems[NCCL_NET_MAP_OFFSET_BANK(mapStruct, offsetName)].cpuOrGpu##Ptr + ((mapStruct)->offsets.offsetName & NCCL_NET_MAP_MASK_OFFSET))
+   (mapStruct)->mems[NCCL_NET_MAP_OFFSET_BANK(mapStruct, offsetName)].cpuOrGpu##Ptr + ((mapStruct)->offsets.offsetName & NCCL_NET_MAP_MASK_OFFSET))
 
 #define NCCL_NET_MAP_DEV_MEM(mapStruct, offsetName) \
   (((mapStruct)->offsets.offsetName & NCCL_NET_MAP_MASK_DEVMEM) != 0)
@@ -170,7 +170,7 @@ struct setupReq {
 static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args);
 
 /* Determine if we will use this transport for this peer and return connect
-* information for this peer */
+ * information for this peer */
 static ncclResult_t sendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* myInfo, struct ncclPeerInfo* peerInfo, struct ncclConnect* connectInfo, struct ncclConnector* send, int channelId, int connIndex) {
   struct setupReq req = { 0 };
 
@@ -327,9 +327,9 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
     if (map->mems[NCCL_NET_MAP_DEVMEM].size) {
       map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr = NULL;
       NCCLCHECK(ncclP2pImportShareableBuffer(comm, send->proxyConn.rank,
-                                            map->mems[NCCL_NET_MAP_DEVMEM].size,
-                                            &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
-                                            (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
+                                             map->mems[NCCL_NET_MAP_DEVMEM].size,
+                                             &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
+                                             (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
       map->mems[NCCL_NET_MAP_DEVMEM].cpuPtr = NULL;
     }
     if (map->mems[NCCL_NET_MAP_SHARED_DEVMEM].size) {
@@ -337,9 +337,9 @@ static ncclResult_t sendConnect(struct ncclComm* comm, struct ncclConnect* conne
       if (*sharedDevMemPtr == NULL) {
         map->mems[NCCL_NET_MAP_SHARED_DEVMEM].gpuPtr = NULL;
         NCCLCHECK(ncclP2pImportShareableBuffer(comm, send->proxyConn.rank,
-                                              map->mems[NCCL_NET_MAP_SHARED_DEVMEM].size,
-                                              &map->mems[NCCL_NET_MAP_SHARED_DEVMEM].ipcDesc,
-                                              sharedDevMemPtr));
+                                               map->mems[NCCL_NET_MAP_SHARED_DEVMEM].size,
+                                               &map->mems[NCCL_NET_MAP_SHARED_DEVMEM].ipcDesc,
+                                               sharedDevMemPtr));
       }
       map->mems[NCCL_NET_MAP_SHARED_DEVMEM].gpuPtr = (char*)(*sharedDevMemPtr);
       map->mems[NCCL_NET_MAP_SHARED_DEVMEM].cpuPtr = NULL;
@@ -397,7 +397,7 @@ static ncclResult_t recvConnect(struct ncclComm* comm, struct ncclConnect* conne
     // Use recv connector as unique identifier
     opId = recv;
     INFO(NCCL_PROXY, "recvConnect ncclProxyCallAsync opId=%p &recv->proxyConn=%p connectInfo=%p",
-      opId, &recv->proxyConn, connectInfo);
+       opId, &recv->proxyConn, connectInfo);
     netRecvConnectArgs args = {0};
     args.proxyRank = *((int*)connectInfo);
     NCCLCHECK(ncclProxyCallAsync(comm, &recv->proxyConn, ncclProxyMsgConnect, &args, sizeof(netRecvConnectArgs), sizeof(struct connectMap), opId));
@@ -737,7 +737,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
       if (!map->sameProcess || ncclCuMemEnable()) {
         ALIGN_SIZE(map->mems[NCCL_NET_MAP_DEVMEM].size, CUDA_IPC_MIN);
         NCCLCHECK(ncclP2pAllocateShareableBuffer(map->mems[NCCL_NET_MAP_DEVMEM].size, 0, &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
-                                                (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
+                                                 (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
       } else {
         NCCLCHECK(ncclCudaCalloc(&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, map->mems[NCCL_NET_MAP_DEVMEM].size));
       }
@@ -891,7 +891,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     if (resources->shared == 0) {
       if (ncclCuMemEnable()) {
         NCCLCHECK(ncclP2pAllocateShareableBuffer(map->mems[NCCL_NET_MAP_DEVMEM].size, 0, &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
-                                                (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
+                                                 (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
       } else {
         NCCLCHECK(ncclCudaCalloc(&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, map->mems[NCCL_NET_MAP_DEVMEM].size));
       }
@@ -1199,7 +1199,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
 }
 
 static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct ncclProxyArgs* args) {
-if (args->state == ncclProxyOpReady) {
+  if (args->state == ncclProxyOpReady) {
     // Initialize subs and group them by same recvComm.
     void* recvComm;
     int groupSize = 0;
@@ -1253,7 +1253,7 @@ if (args->state == ncclProxyOpReady) {
     int p = args->protocol;
     int maxDepth = std::min(NCCL_STEPS, NCCL_SHARED_STEPS/args->nsubs);
     // Yang: one can use 1 to avoid iov being overwritten.
-  //  maxDepth = 1;
+    // maxDepth = 1;
     for (int s=0; s<args->nsubs; s+=args->subs[s].groupSize) {
       struct ncclProxySubArgs* subGroup = args->subs+s;
       int subCount = 0;
@@ -1445,7 +1445,7 @@ if (args->state == ncclProxyOpReady) {
                 static const uint32_t kPtrsStart = 4168;
                 void** uccl_req_ptrs = (void**)((char*)requestPtr + kPtrsStart);
 
-              // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
+                // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
                 auto* recv_mem = resources->recvMem;
                 // Yang: recvTail might get overwritten, the same for the iov_addrs.
                 auto iov_idx = (*recvTail) % (NCCL_STEPS);
@@ -1459,7 +1459,7 @@ if (args->state == ncclProxyOpReady) {
                   cur_iov->dst_addrs[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
                   cur_iov->iov_lens[j] = iov_lens[j];
                 }
-              //  printf("[gpu %d net]: cur_recvTail %ld next_recvTail %ld base %ld step %ld recvTail_ptr %p iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, recvTail, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+                //  printf("[gpu %d net]: cur_recvTail %ld next_recvTail %ld base %ld step %ld recvTail_ptr %p iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, *recvTail, sub->base + sub->transmitted, sub->base, step, recvTail, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
                 
                 *recvTail = sub->base + sub->transmitted;
                 __sync_synchronize();

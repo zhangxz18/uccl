@@ -506,7 +506,7 @@ struct ncclComm {
   int maxThreads[NCCL_NUM_ALGORITHMS][NCCL_NUM_PROTOCOLS];
 
   /* This attribute can indicate the states of communicators and return code of
-  * asynchronous NCCL operations. */
+   * asynchronous NCCL operations. */
   ncclResult_t asyncResult;
 
   // Flag to ask NCCL kernels to abort

@@ -131,11 +131,11 @@ struct ncclProxySubArgs {
   int recvRequestsSubCount;
 
   // Yang: adding fifo poll handler cache for sg_copy.
-  struct fifoPollHandler {
-    uint64_t fifo_idx;
-    uint64_t slot_idx;
-  };
-  fifoPollHandler fifoPollHandlerCache[NCCL_STEPS];
+  // struct fifoPollHandler {
+  //   uint64_t fifo_idx;
+  //   uint64_t slot_idx;
+  // };
+  // fifoPollHandler fifoPollHandlerCache[NCCL_STEPS];
 };
 
 struct ncclProxyArgs {

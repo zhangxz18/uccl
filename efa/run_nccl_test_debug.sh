@@ -1,5 +1,8 @@
 # !/bin/bash
 
+source ../shared.sh
+NODES=$(get_nodes "../nodes.txt")
+
 TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
 # TEST="srd"
@@ -13,8 +16,8 @@ BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
-# This works best for allreduce (tree and ring) on 8 GPUs.
-COPY_CHANNELS=4
+# This works best for allreduce (tree and ring) on 8/32 GPUs.
+COPY_CHANNELS=8
 CHANNELS_NET_PEER=1
 
 # This works best for alltoall on 8 GPUs.
@@ -26,8 +29,12 @@ CHANNELS_NET_PEER=1
 # BUFFSIZE=8388608
 
 # For others, just use default buffer size.
-CHUNK_SIZE=131072
-BUFFSIZE=1048576
+# CHUNK_SIZE=131072
+# BUFFSIZE=1048576
+CHUNK_SIZE=524288
+BUFFSIZE=8388608
+
+NVLINK_DISABLE=0
 
 if [ "$TEST" = "srd" ]; then
     LIBNCCL_PATH="/opt/uccl_rdma_zc/nccl/build/lib/libnccl.so"
@@ -36,14 +43,14 @@ if [ "$TEST" = "srd" ]; then
     BUFFSIZE=8388608
 fi
 
-mpirun --bind-to none -np 1 -N 1 --host localhost \
+mpirun --bind-to none -np 4 -N 1 --host ${NODES} \
     --tag-output --merge-stderr-to-stdout \
     --mca plm_rsh_args "-o StrictHostKeyChecking=no" \
     --mca orte_base_help_aggregate 0 \
     --mca btl_tcp_if_include ens32 \
     -x LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}" \
-    -x NCCL_P2P_DISABLE=1 \
-    -x NCCL_SHM_DISABLE=1 \
+    -x NCCL_P2P_DISABLE=${NVLINK_DISABLE} \
+    -x NCCL_SHM_DISABLE=${NVLINK_DISABLE} \
     -x NCCL_NET_DISABLE=0 \
     -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
     -x NCCL_PROTO=Simple \
@@ -61,6 +68,7 @@ mpirun --bind-to none -np 1 -N 1 --host localhost \
     -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 8 \
     >&alltoall_debug.log
 
+    # gdb -ex run --args \
     # -x NCCL_DEBUG=INFO \
     # -x CUDA_MODULE_LOADING=EAGER \
     # -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \

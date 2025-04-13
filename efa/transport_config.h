@@ -75,7 +75,7 @@ static const uint32_t PACER_CPU_START[2] = {
     ENGINE_CPU_START[0] + 8 /* 4 VDEV * 2 EnginePerVdev */,
     ENGINE_CPU_START[1] + 8 /* 4 VDEV * 2 EnginePerVdev */};
 static const uint16_t BASE_PORT = 10000;
-static const uint64_t NUM_FRAMES = 65536;  // # of frames.
+static const uint64_t NUM_FRAMES = 65536 * 4;  // # of frames.
 static const uint32_t RECV_BATCH_SIZE = 32;
 static const uint32_t SEND_BATCH_SIZE = 16;
 static const uint32_t QKEY = 0x12345;
