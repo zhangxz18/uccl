@@ -84,7 +84,7 @@ int main(int argc, char* argv[]) {
     pin_thread_to_cpu(0);
 
     if (is_client) {
-        auto ep = Endpoint();
+        auto ep = Endpoint(0);
         DCHECK(FLAGS_serverip != "");
         const int kMaxArraySize = std::max(kNumConns, kNumVdevices);
         ConnID conn_id, conn_id2;
@@ -384,7 +384,7 @@ int main(int argc, char* argv[]) {
             }
         }
     } else {
-        auto ep = Endpoint();
+        auto ep = Endpoint(0);
         const int kMaxArraySize = std::max(kNumConns, kNumVdevices);
         ConnID conn_id, conn_id2;
         ConnID conn_id_vec[kMaxArraySize];

@@ -389,7 +389,7 @@ int main(int argc, char *argv[]) {
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
     std::once_flag init_flag;
-    std::call_once(init_flag, []() { EFAFactory::Init(); });
+    std::call_once(init_flag, []() { EFAFactory::Init(0); });
 
     if (argc == 1) {
         // Server

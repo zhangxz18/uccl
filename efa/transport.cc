@@ -1643,11 +1643,14 @@ std::string UcclEngine::status_to_string(bool abbrev) {
     return s;
 }
 
-Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
+Endpoint::Endpoint(int gpu) : gpu_(gpu), stats_thread_([this]() { stats_thread_fn(); }) {
+    
+    listen_port_cur_.store(kBootstrapPort + gpu_ * 1000);
+    
     LOG(INFO) << "Creating EFAFactory";
     // Create UDS socket and get umem_fd and xsk_ids.
     static std::once_flag flag_once;
-    std::call_once(flag_once, []() { EFAFactory::Init(); });
+    std::call_once(flag_once, [gpu]() { EFAFactory::Init(gpu); });
 
     CHECK_LE(kNumEngines, NUM_CPUS / 4)
         << "num_queues should be less than or equal to the number of CPUs "
@@ -1667,8 +1670,12 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
 
     std::vector<std::future<std::unique_ptr<UcclEngine>>> engine_futures;
     for (int i = 0; i < kNumEngines; i++) {
-        auto gpu_idx = get_gpu_idx_by_engine_idx(i);
-        auto dev_idx = get_dev_idx_by_engine_idx(i);
+        // auto gpu_idx = get_gpu_idx_by_engine_idx(i);
+        // auto dev_idx = get_dev_idx_by_engine_idx(i);
+
+        auto gpu_idx = gpu_;
+        auto dev_idx = gpu_;
+
         auto socket_idx = i;
 
         std::string local_ip_str;
@@ -1676,20 +1683,29 @@ Endpoint::Endpoint() : stats_thread_([this]() { stats_thread_fn(); }) {
         CHECK_EQ(ret, 0) << "Failed to get IP address from dev idx 0";
 
         // Creating engines sequentially to have inorder QPNs.
+        // auto engine = std::make_unique<UcclEngine>(
+        //     local_ip_str, gpu_idx, dev_idx, socket_idx, channel_vec_[i], 
+        //     eqds_[dev_idx]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)], &eqds_[dev_idx]->channel_);
+        
+        // FIXME: EQDS
         auto engine = std::make_unique<UcclEngine>(
             local_ip_str, gpu_idx, dev_idx, socket_idx, channel_vec_[i], 
-            eqds_[dev_idx]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)], &eqds_[dev_idx]->channel_);
+            eqds_[0]->credit_qp_ctx_[get_engine_off_by_engine_idx(i)], &eqds_[0]->channel_);
 
         std::promise<std::unique_ptr<UcclEngine>> engine_promise;
         auto engine_future = engine_promise.get_future();
         engine_futures.emplace_back(std::move(engine_future));
 
-        // GPU 0-3 on numa 0, and GPU 4-7 on numa 1.
-        auto engine_cpu_start = ENGINE_CPU_START[gpu_idx / 4];
-        // Total possible GPUs: 8 * kNumEnginesPerVdev, separated into two
-        // numas.
-        auto engine_th_cpuid =
-            engine_cpu_start + i % (8 * kNumEnginesPerVdev / 2);
+        // // GPU 0-3 on numa 0, and GPU 4-7 on numa 1.
+        // auto engine_cpu_start = ENGINE_CPU_START[gpu_idx / 4];
+        // // Total possible GPUs: 8 * kNumEnginesPerVdev, separated into two
+        // // numas.
+        // auto engine_th_cpuid =
+        //     engine_cpu_start + i % (8 * kNumEnginesPerVdev / 2);
+
+        auto engine_cpu_start = ENGINE_CPU_START[gpu_ / 4];
+
+        auto engine_th_cpuid = engine_cpu_start + (gpu_ / 4) * (kNumEnginesPerVdev * 4) +  (gpu_ % 4) * kNumEnginesPerVdev  + i;
 
         // Spawning a new thread to init engine and run the engine loop.
         engine_th_vec_.emplace_back(std::make_unique<std::thread>(
@@ -1824,13 +1840,6 @@ ConnID Endpoint::uccl_connect(int local_vdev, int remote_vdev,
 
     server = gethostbyname(remote_ip.c_str());
     DCHECK(server) << "uccl_connect: gethostbyname()";
-
-    // sockaddr_in localaddr = {0};
-    // localaddr.sin_family = AF_INET;
-    // auto *factory_dev = EFAFactory::GetEFADevice(local_pdev);
-    // localaddr.sin_addr.s_addr = str_to_ip(factory_dev->local_ip_str.c_str());
-    // ret = bind(bootstrap_fd, (sockaddr *)&localaddr, sizeof(localaddr));
-    // DCHECK(ret == 0) << "uccl_connect: bind()";
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = str_to_ip(remote_ip.c_str());
@@ -2143,7 +2152,8 @@ bool Endpoint::uccl_poll_once(PollCtx *ctx) {
 
 int Endpoint::uccl_regmr_dmabuf(int dev, void *addr, size_t len, int type,
                                 int offset, int fd, struct Mhandle **mhandle) {
-    auto factory_dev = EFAFactory::GetEFADevice(dev);
+    // auto factory_dev = EFAFactory::GetEFADevice(dev);
+    auto factory_dev = EFAFactory::GetEFADevice(gpu_);
     *mhandle = new Mhandle();
 
     (*mhandle)->mr =
@@ -2155,7 +2165,8 @@ int Endpoint::uccl_regmr_dmabuf(int dev, void *addr, size_t len, int type,
 
 int Endpoint::uccl_regmr(int dev, void *addr, size_t len,
                          int type /*unsed for now*/, struct Mhandle **mhandle) {
-    auto factory_dev = EFAFactory::GetEFADevice(dev);
+    // auto factory_dev = EFAFactory::GetEFADevice(dev);
+    auto factory_dev = EFAFactory::GetEFADevice(gpu_);
 
     *mhandle = new Mhandle();
     (*mhandle)->mr =
@@ -2180,7 +2191,7 @@ void Endpoint::install_flow_on_engine(FlowID flow_id,
     ret = send_message(bootstrap_fd, &local_engine_idx, sizeof(uint32_t));
     ret = receive_message(bootstrap_fd, &remote_engine_idx, sizeof(uint32_t));
     DCHECK(ret == sizeof(uint32_t));
-
+    
     // Exchange ConnMeta with the peer.
     auto *efa_socket = engine_vec_[local_engine_idx]->socket_;
     ConnMeta *remote_meta = new ConnMeta();

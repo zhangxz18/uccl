@@ -33,7 +33,7 @@ static_assert(
 
 #define P4D
 
-static const uint32_t kNumVdevices = 8;        // # of vEFA/GPUs.
+static const uint32_t kNumVdevices = 1;        // # of vEFA/GPUs.
 static const uint32_t kNumEnginesPerVdev = 2;  // # of engines per vEFA/GPU.
 static const uint32_t kNumEngines = kNumVdevices * kNumEnginesPerVdev;
 static const bool kSplitSendRecvEngine =
@@ -44,9 +44,31 @@ static const bool kSplitSendRecvEngine =
 static const uint8_t NUM_DEVICES = (kNumVdevices + 1) / 2;
 static const uint8_t EFA_GID_IDX = 0;
 static const std::string EFA_DEVICE_NAME_LIST[] = {
-    "rdmap16s27", "rdmap32s27", "rdmap144s27", "rdmap160s27"};
-static const std::string ENA_DEVICE_NAME_LIST[] = {"ens32", "ens65", "ens130",
-                                                   "ens163"};
+    "rdmap16s27", 
+    "rdmap16s27", 
+    
+    "rdmap32s27", 
+    "rdmap32s27", 
+    
+    "rdmap144s27", 
+    "rdmap144s27", 
+    
+    "rdmap160s27",
+    "rdmap160s27",
+};
+static const std::string ENA_DEVICE_NAME_LIST[] = {
+    "ens32", 
+    "ens32", 
+    
+    "ens65", 
+    "ens65", 
+    
+    "ens130",
+    "ens130",
+    
+    "ens163",
+    "ens163",
+};
 static constexpr double kLinkBandwidth = 100.0 * 1e9 / 8;  // 100Gbps
 #endif
 static const uint8_t EFA_PORT_NUM = 1;  // The port of EFA device to use.

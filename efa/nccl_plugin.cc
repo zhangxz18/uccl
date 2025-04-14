@@ -89,14 +89,17 @@ struct UcclSendComm {
 ncclResult_t pluginInit(ncclDebugLogger_t logFunction) {
     google::InitGoogleLogging("UCCL");
     google::InstallFailureSignalHandler();
-    // FLAGS_v = 4;
-    ep = new Endpoint();
+
+    int gpu;
+    cudaGetDevice(&gpu);
+    
+    ep = new Endpoint(gpu);
     return ncclSuccess;
 }
 
 ncclResult_t pluginDevices(int *ndev) {
     // To ease NIC-GPU mapping on p4d, we virtualize each NIC into two.
-    *ndev = 4;
+    *ndev = NUM_DEVICES;
     return ncclSuccess;
 }
 
@@ -114,7 +117,8 @@ ncclResult_t pluginPciPath(const char *ib_name, char **path) {
 }
 
 ncclResult_t pluginGetProperties(int pdev, ncclNetProperties_v8_t *props) {
-    auto factory_dev = EFAFactory::GetEFADevice(pdev);
+    // auto factory_dev = EFAFactory::GetEFADevice(pdev);
+    auto factory_dev = EFAFactory::GetEFADevice(ep->gpu_);
     props->name = factory_dev->ib_name;
 
     // Speed in *Mbps*. 100000 means 100G
@@ -162,12 +166,12 @@ ncclResult_t pluginGetProperties(int pdev, ncclNetProperties_v8_t *props) {
 ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
     int gpu_idx = 0;
     cudaGetDevice(&gpu_idx);
-    if (vdev != gpu_idx) {
-        LOG_FIRST_N(INFO, 1)
-            << "pluginListen detects different vdev " << vdev << " vs. gpu_idx "
-            << gpu_idx << ", forcely setting vdev to gpu_idx";
-        vdev = gpu_idx;
-    }
+    // if (vdev != gpu_idx) {
+    //     LOG_FIRST_N(INFO, 1)
+    //         << "pluginListen detects different vdev " << vdev << " vs. gpu_idx "
+    //         << gpu_idx << ", forcely setting vdev to gpu_idx";
+    //     vdev = gpu_idx;
+    // }
 
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
@@ -176,7 +180,8 @@ ncclResult_t pluginListen(int vdev, void *opaque_handle, void **listenComm) {
     auto [listen_port, listen_fd] = ep->uccl_listen();
 
     // Fill out handle which will be passed to the other side.
-    auto factory_dev = EFAFactory::GetEFADevice(pdev);
+    // auto factory_dev = EFAFactory::GetEFADevice(pdev);
+    auto factory_dev = EFAFactory::GetEFADevice(ep->gpu_);
     handle->ip_addr_u32 = str_to_ip(factory_dev->local_ip_str);
     handle->remote_vdev = vdev;
     handle->listen_port = listen_port;
@@ -205,12 +210,12 @@ ncclResult_t pluginConnect(int vdev, void *opaque_handle, void **sendComm,
                            ncclNetDeviceHandle_v8_t ** /*sendDevComm*/) {
     int gpu_idx = 0;
     cudaGetDevice(&gpu_idx);
-    if (vdev != gpu_idx) {
-        LOG_FIRST_N(INFO, 1) << "pluginConnect detects different vdev " << vdev
-                             << " vs. gpu_idx " << gpu_idx
-                             << ", forcely setting vdev to gpu_idx";
-        vdev = gpu_idx;
-    }
+    // if (vdev != gpu_idx) {
+    //     LOG_FIRST_N(INFO, 1) << "pluginConnect detects different vdev " << vdev
+    //                          << " vs. gpu_idx " << gpu_idx
+    //                          << ", forcely setting vdev to gpu_idx";
+    //     vdev = gpu_idx;
+    // }
 
     auto pdev = get_pdev(vdev);
     struct UcclHandle *handle = (struct UcclHandle *)opaque_handle;
@@ -270,8 +275,8 @@ ncclResult_t pluginAccept(void *listenComm, void **recvComm,
         (struct UcclRecvComm *)calloc(1, sizeof(struct UcclRecvComm));
 
     if (lcomm->state == kConnInit) {
-        DCHECK(lcomm->vdev == gpu_idx) << "pluginAccept: vdev " << lcomm->vdev
-                                       << " vs. gpu_idx " << gpu_idx;
+        // DCHECK(lcomm->vdev == gpu_idx) << "pluginAccept: vdev " << lcomm->vdev
+        //                                << " vs. gpu_idx " << gpu_idx;
         auto vdev = lcomm->vdev;
         LOG(INFO) << "pluginAccept on vdev: " << vdev << " listen_fd "
                   << lcomm->listen_fd << " gpu_idx " << gpu_idx;

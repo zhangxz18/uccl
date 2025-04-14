@@ -767,7 +767,8 @@ class UcclFlow {
 class UcclEngine {
    public:
     // Slow timer (periodic processing) interval in microseconds.
-    const size_t kSlowTimerIntervalUs = 1000;
+    // const size_t kSlowTimerIntervalUs = 1000;
+    const size_t kSlowTimerIntervalUs = 2000;
     UcclEngine() = delete;
     UcclEngine(UcclEngine const &) = delete;
 
@@ -879,7 +880,7 @@ class UcclEngine {
  * its all queues.
  */
 class Endpoint {
-    constexpr static uint16_t kBootstrapPort = 30000;
+    constexpr static uint16_t kBootstrapPort = 5000;
     constexpr static uint32_t kStatsTimerIntervalSec = 2;
 
     Channel *channel_vec_[kNumEngines];
@@ -887,7 +888,7 @@ class Endpoint {
     std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
     std::vector<std::unique_ptr<std::thread>> copy_th_vec_;
 
-    std::atomic<uint16_t> listen_port_cur_ = kBootstrapPort;
+    std::atomic<uint16_t> listen_port_cur_;
 
     // Number of flows on each engine, indexed by engine_idx.
     std::mutex engine_load_vec_mu_;
@@ -907,8 +908,11 @@ class Endpoint {
     // Each physical device has its own EQDS pacer.
     eqds::EQDS *eqds_[NUM_DEVICES] = {};
 
-   public:
-    Endpoint();
+    
+    public:
+    
+    int gpu_;
+    Endpoint(int gpu);
     ~Endpoint();
 
     std::mutex listen_mu_;

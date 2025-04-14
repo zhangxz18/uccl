@@ -33,6 +33,7 @@
 #include "transport_config.h"
 #include "transport_header.h"
 #include "util.h"
+#include "util_flock.h"
 #include "util_buffpool.h"
 #include "util_list.h"
 #include "util_timer.h"
@@ -294,7 +295,7 @@ class EFAFactory {
     std::deque<EFASocket *> socket_q_;
 
     // Not thread-safe; should be called just once.
-    static void Init();
+    static void Init(int gpu);
 
     // dev_idx from [1, ..., NUM_DEVICES];
     // socket_idx from [0, ..., kNumEngines - 1].

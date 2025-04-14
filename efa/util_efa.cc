@@ -5,10 +5,11 @@
 namespace uccl {
 
 EFAFactory efa_ctl;
+ProcessFileLock uccl_flock;
 
-void EFAFactory::Init() {
+void EFAFactory::Init(int gpu) {
     for (int i = 0; i < NUM_DEVICES; i++) {
-        EFAFactory::InitDev(i);
+        EFAFactory::InitDev(gpu + i);
     }
 }
 
@@ -46,7 +47,7 @@ void EFAFactory::InitDev(int dev_idx) {
         fprintf(stderr, "No device found for %s\n", dev->ib_name);
         goto free_devices;
     }
-    DCHECK(i == dev_idx);
+    DCHECK(i == (dev_idx / 2));
     LOG(INFO) << "Found device: " << dev->ib_name << " at dev_idx " << i
               << " with gid_idx " << (uint32_t)EFA_GID_IDX;
 
@@ -153,13 +154,19 @@ error:
 }
 
 EFASocket *EFAFactory::CreateSocket(int gpu_idx, int dev_idx, int socket_idx) {
-    std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
+    // std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
+    
+    uccl_flock.lock();
+    
     // Yang: magic here---we need to keep QPN allocated for each socket
     // continuous, so that they can be evenly distirbuted to differnet EFA
     // microcores; otherwise, interleaved QPNs for different sockets will cause
     // unstable performance.
     auto socket = new EFASocket(gpu_idx, dev_idx, socket_idx);
     efa_ctl.socket_q_.push_back(socket);
+
+    uccl_flock.unlock();
+
     return socket;
 }
 
@@ -171,7 +178,7 @@ struct EFADevice *EFAFactory::GetEFADevice(int dev_idx) {
 }
 
 void EFAFactory::Shutdown() {
-    std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
+    // std::lock_guard<std::mutex> lock(efa_ctl.socket_q_lock_);
     for (auto socket : efa_ctl.socket_q_) {
         delete socket;
     }
