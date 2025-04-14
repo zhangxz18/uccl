@@ -46,12 +46,10 @@ static uint32_t ENGINE_CPU_START_LIST[8] = {
 };
 
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
-// static constexpr uint32_t kPortEntropy = 1;
 static constexpr uint32_t kPortEntropy = 64;
 // Use RC rather than UC.
 static constexpr bool kRCMode = false;
 // Maximum chunk size (Bytes) for each WQE.
-// static constexpr uint32_t kChunkSize = 1024 << 10; // kEQDSMaxCwnd should set to a low threshold. 
 static constexpr uint32_t kChunkSize = 32 << 10;
 // Bypass the pacing stage.
 static constexpr bool kBypassPacing = true;
@@ -77,8 +75,8 @@ enum ReceiverCCA {
     // EQDS [NSDI'22]
     RECEIVER_CCA_EQDS,
 };
-static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_NONE;
-static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_EQDS;
+static constexpr enum SenderCCA kSenderCCA = SENDER_CCA_TIMELY;
+static constexpr enum ReceiverCCA kReceiverCCA = RECEIVER_CCA_NONE;
 static_assert(kSenderCCA != SENDER_CCA_NONE ||
                   kReceiverCCA != RECEIVER_CCA_NONE,
               "At least one of the sender and receiver must have a congestion "

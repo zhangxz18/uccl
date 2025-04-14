@@ -92,7 +92,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     -f 2 \
     --minbytes 1K --maxbytes 1G \
     --warmup_iters 50 --iters 50 \
-    -n 1 -t ${NUM_GPUS_PER_NODE}
+    -g 1 -t ${NUM_GPUS_PER_NODE}
     
     # --map-by ppr:1:node:PE=32 \
     # --bind-to core \
