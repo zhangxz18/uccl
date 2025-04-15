@@ -49,6 +49,8 @@ class Primitives<
   int flags;
   int group;
   uint64_t step;
+  // Yang: is current ReduceCopy for network transfer?
+  bool is_net_transfer;
   struct ncclConnInfo* conn = NULL;
   struct ncclConnFifo* connFifo = NULL;
   T* connEltsFifo;
@@ -244,12 +246,16 @@ class Primitives<
           }
       }
   }
+  
+  // Yang: this is used for network transfer.
+  #define REMOVE_FLAGS(x) (uint64_t(x) & 0x7FFFFFFFFFFFFFFFULL)
+  #define GET_FLAGS(x) (uint64_t(x) >> 63)
 
   template <int DirectRecv, int DirectSend, int Recv, int Send, int Src, int Dst>
   __device__ __forceinline__ void waitPeer(intptr_t srcIx, intptr_t dstIx, int offset, int nelts) {
     // Yang: initing shared variable. For tree allreduce, the first two threads will have (flags & (Recv*RoleWaitRecv)).
     if (tid == 0 || tid == 1) {
-    ncclShmem.groups[group].tail_ptr[tid] = nullptr;
+      ncclShmem.groups[group].is_net_transfer[tid] = false;
     }
 
     const bool isSendNotRecv = (Send && Recv) ? (flags & RoleWaitSend) : Send;
@@ -260,8 +266,17 @@ class Primitives<
     if (((flags & (Recv*RoleWaitRecv)) && !noRecvWait) ||
         ((flags & (Send*RoleWaitSend)) && !noSendWait)) {
       int spins = 0;
+      // Yang: added
+      uint64_t connStepCache_tmp;
       while (connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) < step + StepPerSlice) {
-        connStepCache = loadStepValue(connStepPtr);
+        // connStepCache = loadStepValue(connStepPtr);
+
+        // Yang: load the is_net_transfer flag that is set by net.cc, non-zero means network transfer.
+        connStepCache_tmp = loadStepValue(connStepPtr);
+        is_net_transfer = GET_FLAGS(connStepCache_tmp);
+        // Yang: clear the network transfer bit.
+        connStepCache = REMOVE_FLAGS(connStepCache_tmp);
+
         if (checkAbort(spins)) break;
         //if (spins == 0) printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x, int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
       }
@@ -307,48 +322,54 @@ class Primitives<
       
       step += StepPerSlice;
 
-    // Yang: only care recv-side step value.
-    if (flags & (Recv*RoleWaitRecv)) { 
+      // Yang: only care recv-side step value.
+      if (flags & (Recv*RoleWaitRecv)) { 
 
-      // Yang: using one thread to load the step into sharemem.
-      ncclShmem.groups[group].step[tid] = step;
+        // Yang: is this step for network transfer?
+        ncclShmem.groups[group].is_net_transfer[tid] = is_net_transfer;
 
-      // Yang: setup tail_ptr based on peer
-      ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
+        // Yang: using one thread to load the step into sharemem.
+        ncclShmem.groups[group].step[tid] = step;
 
-      // Yang: this gives the correct step value from CPU.
-      // uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
-      // uint64_t cpu_tail = loadStepValue(connStepPtr);
-      // printf("[waitPeer %ld] step %ld cpu_tail %ld connStepCache %ld tail_ptr %p tid %d group %d\n", gpu_idx, step, cpu_tail, connStepCache, connStepPtr, tid, group);
+        // Yang: setup tail_ptr based on peer
+        ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
+
+        // Yang: this gives the correct step value from CPU.
+        // uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
+        // uint64_t cpu_tail = loadStepValue(connStepPtr);
+        // printf("[waitPeer %ld] step %ld cpu_tail %ld connStepCache %ld tail_ptr %p tid %d group %d\n", gpu_idx, step, cpu_tail, connStepCache, connStepPtr, tid, group);
+      }
     }
-  }
 
-  if (Recv) {
-  // if (DirectRecv && !DirectSend) { // this should work for alltoall, but not, why?
-    // Yang: cannot use subBarrier() as it would block the GPU threads.
-    barrier();
-    for (int t = 0; t < 2; t++) {
-      uint64_t step = ncclShmem.groups[group].step[t];
-      uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
+    if (Recv) {
+      // Yang: cannot use subBarrier() as it would block the GPU threads.
+      barrier();
+      if ((ncclShmem.groups[group].is_net_transfer[0] || ncclShmem.groups[group].is_net_transfer[1])) {
+        for (int t = 0; t < 2; t++) {
+          if (ncclShmem.groups[group].is_net_transfer[t]) {
+            uint64_t step = ncclShmem.groups[group].step[t];
+            uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
 
-      if (tail_ptr) {
-        uint64_t prevStep = step - StepPerSlice;
-        int iov_idx = prevStep % (NCCL_STEPS);
-        struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
-  
-        kernelScatteredMemcpy(cur_iov);
+            if (tail_ptr) {
+              uint64_t prevStep = step - StepPerSlice;
+              int iov_idx = prevStep % (NCCL_STEPS);
+              struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+        
+              kernelScatteredMemcpy(cur_iov);
 
-        // Yang: debuging
-        // if (tid ==0) {
-        //   int step_recv = cur_iov->step;
-        //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
-        //   uint64_t cpu_tail = loadStepValue(tail_ptr);
-        //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, iov_n, src_addrs[0], dst_addrs[0], iov_lens[0]);
-        // }
+              // Yang: debuging
+              // if (tid == 0) {
+              //   int step_recv = cur_iov->step;
+              //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
+              //   uint64_t cpu_tail = REMOVE_FLAGS(loadStepValue(tail_ptr));
+              //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, cur_iov->iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+              // }
+            }
+          }
+        }
       }
     }
   }
-}
 
   template<int Recv, int Send>
   inline __device__ void postPeer(bool dataStored) {
@@ -532,6 +553,8 @@ public:
           int spins = 0;
           while (connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) < step + StepPerSlice) {
             connStepCache = loadStepValue(connStepPtr);
+            // Yang: added
+            connStepCache = REMOVE_FLAGS(connStepCache);
             if (checkAbort(spins)) break;
           }
           void **ptrs = isSendNotRecv ? ncclShmem.groups[group].dsts
@@ -677,7 +700,7 @@ private:
       ncclNetDeviceUnpackSetup(netDeviceHandle, group, index);
       flags |= NetDeviceUnpack;
     }
-    step = conn->step;
+    step = REMOVE_FLAGS(conn->step);
     step = roundUp(step, SlicePerChunk*StepPerSlice);
     if (flags & RolePostRecv) {
       connStepPtr = conn->head;
@@ -689,6 +712,8 @@ private:
       connStepPtr = conn->tail;
       // Yang: this should load the tail value from CPU.
       connStepCache = loadStepValue(connStepPtr);
+      // Yang: added
+      connStepCache = REMOVE_FLAGS(connStepCache);
 
       // Yang: debugging
       // uint64_t gpu_idx = loadStepValue(conn->tail + 1);
@@ -728,7 +753,7 @@ private:
 
   __device__ __forceinline__ void loadSendConn(ncclDevChannelPeer *peer, int connIndex, uint32_t direct, int regFlag) {
     conn = &peer->send[connIndex];
-    step = conn->step;
+    step = REMOVE_FLAGS(conn->step);
     step = roundUp(step, SlicePerChunk*StepPerSlice);
 
     connFifo = conn->connFifo;
@@ -743,6 +768,8 @@ private:
       flags |= (conn->flags & NCCL_NVLS_MIN_POLL) ? NvlsMinPolling : 0;
       connStepPtr = conn->head;
       connStepCache = loadStepValue(connStepPtr);
+      // Yang: added
+      connStepCache = REMOVE_FLAGS(connStepCache);
       connStepSize = conn->stepSize/sizeof(T);
       connEltsFifo = (T*)conn->buffs[NCCL_PROTO_SIMPLE];
       if (connFifo == nullptr && Direct && regFlag) {
@@ -1109,6 +1136,8 @@ private:
       int spins = 0;
       while (connStepCache < step + StepPerSlice) {
         connStepCache = loadStepValue(connStepPtr);
+        // Yang: added
+        connStepCache = REMOVE_FLAGS(connStepCache);
         if (checkAbort(spins)) break;
       }
       if (postRecv) step += StepPerSlice;
@@ -1117,6 +1146,8 @@ private:
       int spins = 0;
       while (connStepCache + NCCL_STEPS < step + sendStepOffset + StepPerSlice) {
         connStepCache = loadStepValue(connStepPtr);
+        // Yang: added
+        connStepCache = REMOVE_FLAGS(connStepCache);
         if (checkAbort(spins)) break;
       }
       ncclShmem.groups[group].dsts[0] = (T*)(connEltsFifo + ((step+sendStepOffset)%NCCL_STEPS)*connStepSize) + sendOffset;
@@ -1169,6 +1200,8 @@ private:
       int spins = 0;
       while (connStepCache < step + recvStepOffset + StepPerSlice) {
         connStepCache = loadStepValue(connStepPtr);
+        // Yang: added
+        connStepCache = REMOVE_FLAGS(connStepCache);
         if (checkAbort(spins)) break;
       }
       if (accSize < recvOffset + nelem + (step+recvStepOffset)*connStepSize) {
@@ -1184,6 +1217,8 @@ private:
       int spins = 0;
       while (connStepCache + NCCL_STEPS < step + StepPerSlice) {
         connStepCache = loadStepValue(connStepPtr);
+        // Yang: added
+        connStepCache = REMOVE_FLAGS(connStepCache);
         if (checkAbort(spins)) break;
       }
       ncclShmem.groups[group].dsts[0] = (T*)(connEltsFifo + (step%NCCL_STEPS)*connStepSize) + sendOffset;

@@ -79,6 +79,10 @@ struct ncclRecvMem {
 };
 // Yang: iovFifo is the starting address of the scattered IOVs.
 const uint32_t kIovStart = offsetof(struct ncclRecvMem, iovFifo);
+// Yang: excluding the is_net_transfer flag
+#define REMOVE_FLAGS(x) (uint64_t(x) & 0x7FFFFFFFFFFFFFFFULL)
+#define GET_FLAGS(x) (uint64_t(x) >> 63)
+
 
 enum helperThreadState {ThreadStart, ThreadStop};
 
