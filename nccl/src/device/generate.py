@@ -170,6 +170,8 @@ def enumerate_func_rows():
   # Yang: must add "LL" to make generate.py happy.
   yield ("AllReduce", "Sum", "f32", "TREE", "LL")
   yield ("AllReduce", "Sum", "f32", "TREE", "SIMPLE")
+  yield ("AllReduce", "Sum", "f32", "RING", "LL")
+  yield ("AllReduce", "Sum", "f32", "RING", "SIMPLE")
 
 ################################################################################
 

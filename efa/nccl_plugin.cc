@@ -143,7 +143,9 @@ ncclResult_t pluginGetProperties(int pdev, ncclNetProperties_v8_t *props) {
     // Maximum number of comm objects we can create.
     props->maxComms = 1024 * 1024;
     // Maximum number of receive operations taken by irecv().
-    props->maxRecvs = kMaxMultiRecv;
+    // props->maxRecvs = kMaxMultiRecv;
+    // Yang: to make alltoall nvlink on work! 
+    props->maxRecvs = 1;
     // Coupling with NCCL network device-side code.
     props->netDeviceType = NCCL_NET_DEVICE_HOST;
     props->netDeviceVersion = NCCL_NET_DEVICE_INVALID_VERSION;

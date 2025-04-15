@@ -1092,7 +1092,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
         int buffSlot = (sub->base+sub->transmitted)%NCCL_STEPS;
         volatile uint64_t* recvTail = &resources->recvMem->tail;
         uint64_t tail = sub->base + (sub->reg ? 0 : sub->transmitted);
-        if ((sub->reg || connFifo[buffSlot].size != -1) && ((REMOVE_FLAGS(*recvTail) > tail) || p == NCCL_PROTO_LL)) {
+        if ((sub->reg || connFifo[buffSlot].size != -1) && ((*recvTail > tail) || p == NCCL_PROTO_LL)) {
           // We have something to receive, let's check if it's completely ready.
           int size = sub->reg ? std::min(MAX_NET_SIZE, sub->nbytes) : connFifo[buffSlot].size;
           bool shared = (p == NCCL_PROTO_SIMPLE) && resources->shared;
@@ -1314,6 +1314,10 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
           // TODO(Yang) we will handle multi-recv case in the future.
           assert(subCount == 1);
 
+          // auto cur_recvTail = subGroup->base + subGroup->posted;
+          // volatile uint64_t* recvTail = resources->gdcSync ? resources->gdcSync : &resources->recvMem->tail;
+          // printf("[gpu %d net]: cur_recvTail %ld base %ld step %lu subGroup->groupSize %d recvTail %p\n", proxyState->cudaDev, cur_recvTail, subGroup->base, step, subGroup->groupSize, recvTail);
+
           subGroup->recvRequestsCache[step%NCCL_STEPS] = *requestPtr;
           subGroup->recvRequestsSubCount = subCount;
           for (int i=0; i<subGroup->groupSize; i++) {
@@ -1449,7 +1453,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
 
                 // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.
                 auto* recv_mem = resources->recvMem;
-                auto cur_recvTail = REMOVE_FLAGS(*recvTail);
+                uint64_t cur_recvTail = *recvTail;
                 // Yang: recvTail might get overwritten, the same for the iov_addrs.
                 auto iov_idx = cur_recvTail % (NCCL_STEPS);
                 volatile struct iov* cur_iov = (volatile struct iov*)(recv_mem->iovFifo + iov_idx);                  
@@ -1462,10 +1466,14 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                   cur_iov->dst_addrs[j] = (void*)((char*)(uccl_req_ptrs[0]) + dst_offsets[j]);
                   cur_iov->iov_lens[j] = iov_lens[j];
                 }
-                //  printf("[gpu %d net]: cur_recvTail %ld next_recvTail %ld base %ld step %ld recvTail_ptr %p iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, cur_recvTail, sub->base + sub->transmitted, sub->base, step, recvTail, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+                // printf("[gpu %d net]: cur_recvTail %ld next_recvTail %ld base %ld step %ld recvTail_ptr %p iov_n %d src %p dst %p len %d\n", proxyState->cudaDev, cur_recvTail, sub->base + sub->transmitted, sub->base, step, recvTail, *iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
 
+                // This does not work, as recvTail could be < 0;
+                // *recvTail = (sub->base + sub->transmitted) | (uint64_t(1) << 63);
+
+                *recvTail = (sub->base + sub->transmitted);
                 // Yang: passing a marker to GPU to indicate this is network transfer and requires sg_copy.
-                *recvTail = (sub->base + sub->transmitted) | (uint64_t(1) << 63);
+                *(recvTail + 1) = 1;
 
                 __sync_synchronize();
               }
