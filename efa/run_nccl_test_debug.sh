@@ -7,8 +7,10 @@ TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
 # TEST="srd"
 
-BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
-# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
+# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
+BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
+# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_gather_perf"
+# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/reduce_scatter_perf"
 
 # all_gather_perf  all_reduce_perf  alltoall_perf  broadcast_perf  gather_perf
 # hypercube_perf  reduce_perf  reduce_scatter_perf  scatter_perf  sendrecv_perf
@@ -16,31 +18,47 @@ BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
-# This works best for allreduce (tree and ring) on 8 GPUs.
+# Best for allreduce with nvlink off
 # COPY_CHANNELS=8
 # CHANNELS_NET_PEER=1
 
-# This works best for alltoall on 8 GPUs.
+# Best for alltoall with nvlink off
 # COPY_CHANNELS=8
 # CHANNELS_NET_PEER=1
 
-# This works best for alltoall on 32 GPUs with nvlink on. PXN_DISABLE=1 is critical for uccl alltoall with nvlink performance.
-COPY_CHANNELS=16
-CHANNELS_NET_PEER=4
-CHUNK_SIZE=131072
-BUFFSIZE=1048576
-PXN_DISABLE=1
-
-# This works best for allreduce on 32 GPUs with nvlink on: use larger buffer to catch up with NCCL-SRD with larger buffers, and avoid performance outliers.
+# Best for alltoall with nvlink on. PXN_DISABLE=1 is critical for uccl alltoall with nvlink performance.
+# kSplitSendRecvEngine = true;
 # COPY_CHANNELS=16
 # CHANNELS_NET_PEER=4
-# CHUNK_SIZE=524288
-# BUFFSIZE=8388608
-# PXN_DISABLE=0
+# CHUNK_SIZE=131072
+# BUFFSIZE=1048576
+# PXN_DISABLE=1
+
+# Best for allreduce with nvlink on. Use larger buffer to catch up with NCCL-SRD with larger buffers, and avoid performance outliers.
+# # kSplitSendRecvEngine = false;
+COPY_CHANNELS=16
+CHANNELS_NET_PEER=4
+CHUNK_SIZE=524288
+BUFFSIZE=8388608
+PXN_DISABLE=0
 
 # For others, just use default buffer size.
 # CHUNK_SIZE=524288
 # BUFFSIZE=8388608
+
+# Best for allgather with nvlink off
+# COPY_CHANNELS=4
+# CHANNELS_NET_PEER=1
+# CHUNK_SIZE=131072
+# BUFFSIZE=1048576
+# PXN_DISABLE=1
+
+# Best for reduce-scatter with nvlink off
+# COPY_CHANNELS=4
+# CHANNELS_NET_PEER=1
+# CHUNK_SIZE=131072
+# BUFFSIZE=1048576
+# PXN_DISABLE=1
 
 NVLINK_DISABLE=0
 
@@ -53,6 +71,15 @@ if [ "$TEST" = "srd" ]; then
     BUFFSIZE=8388608
     # PXN_DISABLE=0 is critical for srd alltoall with nvlink performance.
     PXN_DISABLE=0
+
+    # Best for allgather with nvlink off
+    # COPY_CHANNELS=-1
+    # CHANNELS_NET_PEER=-1
+
+    # Best for reduce-scatter with nvlink off
+    # COPY_CHANNELS=4
+    # CHANNELS_NET_PEER=-1
+
 fi
 
 mpirun --bind-to none -np 4 -N 1 --host ${NODES} \
