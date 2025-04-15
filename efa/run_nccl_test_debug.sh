@@ -1,6 +1,7 @@
 # !/bin/bash
 
-TEST="zhongjie/uccl_rdma"
+# TEST="zhongjie/uccl_rdma"
+TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
 # TEST="srd"
 
@@ -10,14 +11,19 @@ BIN_PATH="/opt/zhongjie/uccl_rdma/nccl-tests/build/all_reduce_perf"
 LIBNCCL_PATH="/opt/${TEST}/nccl/build/lib/libnccl.so"
 PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
-MULTI_GROUP=0x7
+# MULTI_GROUP=0x7
+MULTI_GROUP=0
 
-NVLINK_DISABLE=1
+NVLINK_DISABLE=0
 
 # For others, just use default buffer size.
 CHUNK_SIZE=131072
 # CHUNK_SIZE=262144 # EQDS
 BUFFSIZE=1048576
+
+# allreduce with nvlink across 32 GPUs
+COPY_CHANNELS=8
+CHANNELS_NET_PEER=1
 
 # This works best for allreduce (tree and ring) on 8 GPUs.
 # COPY_CHANNELS=4
@@ -32,8 +38,8 @@ BUFFSIZE=1048576
 # CHANNELS_NET_PEER=1
 
 # multi-allreduce
-COPY_CHANNELS=4
-CHANNELS_NET_PEER=1
+# COPY_CHANNELS=4
+# CHANNELS_NET_PEER=1
 
 # NVLINk
 # COPY_CHANNELS=8
@@ -61,6 +67,10 @@ if [ "$TEST" = "srd" ]; then
     # multi-allreduce
     COPY_CHANNELS=4
     CHANNELS_NET_PEER=1
+
+    # allreduce with nvlink across 32 GPUs
+    COPY_CHANNELS=8
+    CHANNELS_NET_PEER=1
 fi
 
 # For allreduce with nvlink, use larger buffer to catch up with NCCL-SRD with larger buffers, and avoid performance outliers.
@@ -78,7 +88,7 @@ mpirun --bind-to none -np 32 -N 8 --hostfile hostname \
     -x NCCL_NET_DISABLE=0 \
     -x CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
     -x NCCL_PROTO=Simple \
-    -x NCCL_ALGO=Ring \
+    -x NCCL_ALGO=Tree \
     -x NCCL_MAX_NCHANNELS=${COPY_CHANNELS} \
     -x NCCL_MIN_NCHANNELS=${COPY_CHANNELS} \
     -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \

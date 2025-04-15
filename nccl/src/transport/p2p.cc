@@ -778,7 +778,7 @@ static ncclResult_t p2pSendProxyProgress(struct ncclProxyState* proxyState, stru
         volatile struct ncclConnFifo* connFifo = resources->ceRecvMem->connFifo;
         volatile uint64_t* recvTail = &resources->ceRecvMem->tail;
         // Check GPU has sent everything
-        if ((*recvTail > sub->base+sub->transmitted)) {
+        if ((REMOVE_FLAGS(*recvTail) > sub->base+sub->transmitted)) {
           int size = connFifo[buffSlot].size;
           CUDACHECK(cudaMemcpyAsync(resources->recvFifo+buffSlot*stepSize, resources->ceDevBuff+buffSlot*stepSize, size, cudaMemcpyDeviceToDevice, resources->stream));
           CUDACHECK(cudaEventRecord(resources->events[buffSlot], resources->stream));

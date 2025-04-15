@@ -79,6 +79,10 @@ struct ncclRecvMem {
 };
 // Yang: iovFifo is the starting address of the scattered IOVs.
 const uint32_t kIovStart = offsetof(struct ncclRecvMem, iovFifo);
+// Yang: excluding the is_net_transfer flag
+#define REMOVE_FLAGS(x) (uint64_t(x) & 0x7FFFFFFFFFFFFFFFULL)
+#define GET_FLAGS(x) (uint64_t(x) >> 63)
+
 
 enum helperThreadState {ThreadStart, ThreadStop};
 
@@ -506,7 +510,7 @@ struct ncclComm {
   int maxThreads[NCCL_NUM_ALGORITHMS][NCCL_NUM_PROTOCOLS];
 
   /* This attribute can indicate the states of communicators and return code of
-  * asynchronous NCCL operations. */
+   * asynchronous NCCL operations. */
   ncclResult_t asyncResult;
 
   // Flag to ask NCCL kernels to abort
