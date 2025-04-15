@@ -335,28 +335,24 @@ class Primitives<
     if (Recv) {
       // Yang: cannot use subBarrier() as it would block the GPU threads.
       barrier();
-      if ((ncclShmem.groups[group].is_net_transfer[0] || ncclShmem.groups[group].is_net_transfer[1])) {
-        for (int t = 0; t < 2; t++) {
-          if (ncclShmem.groups[group].is_net_transfer[t]) {
-            uint64_t step = ncclShmem.groups[group].step[t];
-            uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
+      for (int t = 0; t < 2; t++) {
+        if (ncclShmem.groups[group].is_net_transfer[t]) {
+          uint64_t step = ncclShmem.groups[group].step[t];
+          uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
 
-            if (tail_ptr) {
-              uint64_t prevStep = step - StepPerSlice;
-              int iov_idx = prevStep % (NCCL_STEPS);
-              struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
-        
-              kernelScatteredMemcpy(cur_iov);
+          uint64_t prevStep = step - StepPerSlice;
+          int iov_idx = prevStep % (NCCL_STEPS);
+          struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+    
+          kernelScatteredMemcpy(cur_iov);
 
-              // Yang: debuging
-              // if (tid == 0) {
-              //   int step_recv = cur_iov->step;
-              //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
-              //   uint64_t cpu_tail = loadStepValue(tail_ptr);
-              //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, cur_iov->iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
-              // }
-            }
-          }
+          // Yang: debuging
+          // if (tid == 0) {
+          //   int step_recv = cur_iov->step;
+          //   uint64_t gpu_idx = loadStepValue(tail_ptr + 1);
+          //   uint64_t cpu_tail = loadStepValue(tail_ptr);
+          //   printf("[waitPeer2 %ld]: step %ld cpu_tail %ld step_recv %d iov_n %d src[0] %p dst[0] %p len %d\n", gpu_idx, step, cpu_tail, step_recv, cur_iov->iov_n, cur_iov->src_addrs[0], cur_iov->dst_addrs[0], cur_iov->iov_lens[0]);
+          // }
         }
       }
     }
