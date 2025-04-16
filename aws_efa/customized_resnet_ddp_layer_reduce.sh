@@ -5,7 +5,6 @@ set -e
 set -x
 
 # Configuration variables
-UCCL_HOME="/opt/uccl_rdma_mp"
 NV_LINK_DISABLE=1
 CHANNELS=4
 CHANNELS_NET_PEER=4
@@ -26,7 +25,7 @@ sudo rmmod ib_uverbs || true
 sudo modprobe ib_uverbs
 
 # Environment variables for NCCL
-export LD_PRELOAD="${UCCL_HOME}/nccl/build/lib/libnccl.so"
+export LD_PRELOAD="/opt/uccl_rdma_zc/nccl/build/lib/libnccl.so"
 export NCCL_NET_PLUGIN="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so"
 export NCCL_DEBUG=INFO
 export NCCL_PROTO=Simple
