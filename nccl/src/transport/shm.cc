@@ -365,7 +365,7 @@ static ncclResult_t shmSendProxyProgress(struct ncclProxyState* proxyState, stru
         volatile struct ncclConnFifo* connFifo = resources->ceRecvMem->connFifo;
         volatile uint64_t* recvTail = &resources->ceRecvMem->tail;
         // Check GPU has sent everything
-        if ((REMOVE_FLAGS(*recvTail) > sub->base+sub->transmitted)) {
+        if ((*recvTail > sub->base+sub->transmitted)) {
           int size = connFifo[buffSlot].size;
           CUDACHECK(cudaMemcpyAsync(resources->shmFifo+buffSlot*stepSize, resources->devFifo+buffSlot*stepSize, size, cudaMemcpyDeviceToHost, resources->stream));
           CUDACHECK(cudaEventRecord(resources->events[buffSlot], resources->stream));
@@ -424,7 +424,7 @@ static ncclResult_t shmRecvProxyProgress(struct ncclProxyState* proxyState, stru
         volatile struct ncclConnFifo* connFifo = resources->recvMem->connFifo;
         volatile uint64_t* recvTail = &resources->recvMem->tail;
         // Check data is ready in SHM
-        if ((REMOVE_FLAGS(*recvTail) > sub->base+sub->transmitted)) {
+        if ((*recvTail > sub->base+sub->transmitted)) {
           int size = connFifo[buffSlot].size;
           CUDACHECK(cudaMemcpyAsync(resources->devFifo+buffSlot*stepSize, resources->shmFifo+buffSlot*stepSize, size, cudaMemcpyHostToDevice, resources->stream));
           CUDACHECK(cudaEventRecord(resources->events[buffSlot], resources->stream));
