@@ -5,15 +5,17 @@ set -x
 
 TEST=${1:-srd}
 
-# UCCL_HOME="/opt/uccl_rdma_mp"
-UCCL_HOME="/opt/uccl_rdma"
-
 NV_LINK_DISABLE=1
 UCCL_QUITE=1
-# DEVICES=0,1,2,3,4,5,6,7
-# NUM_DEVS=8
-DEVICES=0,2,4,6
-NUM_DEVS=4
+
+# UCCL_HOME="/opt/uccl_rdma_mp"
+
+UCCL_HOME="/opt/uccl_rdma"
+DEVICES=0,1,2,3,4,5,6,7
+NUM_DEVS=8
+# UCCL_HOME="/opt/uccl_rdma_4gpu"
+# DEVICES=0,2,4,6
+# NUM_DEVS=4
 
 CHANNELS=4
 CHANNELS_NET_PEER=4

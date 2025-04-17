@@ -185,8 +185,8 @@ def benchmark_ep(num_local_tokens, num_experts, hidden_size, top_k=8, num_runs=1
         gloo_group = None
     
     # 验证我们是否有预期的16个GPU
-    if rank == 0 and world_size != 16:
-        print(f"警告：预期16个GPU，但实际得到{world_size}个")
+    if rank == 0 and world_size != 32:
+        print(f"警告：预期32个GPU，但实际得到{world_size}个")
     
     # 验证num_local_tokens * top_k是world_size的倍数
     num_routed_tokens = num_local_tokens * top_k
@@ -195,7 +195,7 @@ def benchmark_ep(num_local_tokens, num_experts, hidden_size, top_k=8, num_runs=1
             print(f"错误：num_local_tokens({num_local_tokens}) * top_k({top_k}) = {num_routed_tokens}，必须是world_size({world_size})的倍数")
         return
     
-    device = torch.device(f"cuda:{rank % 4}")  # 假设每个节点4个GPU
+    device = torch.device(f"cuda:{rank % 8}")  # 假设每个节点4个GPU
     torch.cuda.set_device(device)
     
     # 创建虚拟输入(uint8类型)

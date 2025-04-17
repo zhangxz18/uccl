@@ -8,6 +8,12 @@ async def rsync(nodes):
         )
         for node in nodes
     ]
+    tasks.extend([
+        run_command(
+            f"rsync -auv -e 'ssh -o StrictHostKeyChecking=no' /opt/uccl_rdma_4gpu/ {node}:/opt/uccl_rdma_4gpu/"
+        )
+        for node in nodes
+    ])
 
     # Run all tasks in parallel
     await asyncio.gather(*tasks)
