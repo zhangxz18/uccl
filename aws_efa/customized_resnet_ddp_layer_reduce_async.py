@@ -21,7 +21,10 @@ def parse_args():
 class AsyncCustomDistributedResNet(nn.Module):
     def __init__(self, local_rank):
         super().__init__()
-        self.model = torchvision.models.resnet152(num_classes=10)
+        # self.model = torchvision.models.resnet152(num_classes=10)
+        # self.model = torchvision.models.resnet101(num_classes=10)
+        self.model = torchvision.models.resnet50(num_classes=10)
+        self.model = self.model.to(torch.float32)
         self.model.to(f'cuda:{local_rank}')
         
         self.local_rank = local_rank
@@ -81,6 +84,7 @@ def main():
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = dist.get_world_size()
     torch.cuda.set_device(local_rank)
+    rank = dist.get_rank()
     
     # Create model with async distributed implementation
     model = AsyncCustomDistributedResNet(local_rank)
@@ -103,7 +107,7 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
-        num_workers=4,
+        num_workers=0,
         pin_memory=True
     )
 
@@ -148,12 +152,12 @@ def main():
             correct += predicted.eq(targets).sum().item()
 
             # Print statistics every 20 batches
-            if batch_idx % 20 == 0 and local_rank == 0:
+            if batch_idx % 20 == 0 and rank == 0:
                 print(f'Batch {batch_idx}, Loss: {loss.item():.4f}')
         
         # Print epoch results
         epoch_time = time.time() - epoch_start
-        if local_rank == 0:
+        if rank == 0:
             train_loss = running_loss / total
             train_acc = 100. * correct / total
             print(f"\nEpoch {epoch+1}/{args.epochs}")

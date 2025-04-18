@@ -78,7 +78,7 @@ MASTER_ADDR=${HOSTS[0]}
 # 主节点端口
 MASTER_PORT=29500
 # Python脚本路径
-SCRIPT_PATH="deepseek_ep.py"
+SCRIPT_PATH="customized_resnet_ddp_layer_reduce_async.py"
 # torchrun完整路径
 TORCHRUN_PATH="python /opt/conda/bin/torchrun"
 
@@ -111,7 +111,7 @@ for ((i=1; i<${#HOSTS[@]}; i++)); do
     export WORLD_SIZE=$WORLD_SIZE && \
     export NODE_RANK=$NODE_RANK && \
     export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES && \
-    export UCCL_HOME="/opt/uccl_rdma_mp" && \
+    export UCCL_HOME="/opt/uccl_rdma_zc" && \
     export NV_LINK_DISABLE=1 && \
     export CHANNELS=16 && \
     export CHANNELS_NET_PEER=4 && \
@@ -141,9 +141,9 @@ for ((i=1; i<${#HOSTS[@]}; i++)); do
       --master_addr=$MASTER_ADDR \
       --master_port=$MASTER_PORT \
       $SCRIPT_PATH \
-      --hidden-size 7168 \
-      --num-experts 256 \
-      --top-k 8 2>&1 | sed 's/^/[NODE-$NODE_RANK] /'"
+      --batch_size 128 \
+      --epochs 10 \
+      --lr 0.1 2>&1 | sed 's/^/[NODE-$NODE_RANK] /'"
     
     # 使用ssh在远程主机上执行命令，将输出传回并添加节点前缀
     echo "在 $HOST (rank $NODE_RANK) 上启动torchrun..."
@@ -170,7 +170,7 @@ export MASTER_PORT=$MASTER_PORT && \
 export WORLD_SIZE=$WORLD_SIZE && \
 export NODE_RANK=$NODE_RANK && \
 export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES && \
-export UCCL_HOME="/opt/uccl_rdma_mp" && \
+export UCCL_HOME="/opt/uccl_rdma_zc" && \
 export NV_LINK_DISABLE=1 && \
 export CHANNELS=16 && \
 export CHANNELS_NET_PEER=4 && \
@@ -199,9 +199,9 @@ $TORCHRUN_PATH \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   $SCRIPT_PATH \
-  --hidden-size 7168 \
-  --num-experts 256 \
-  --top-k 8 2>&1 | sed 's/^/[NODE-$NODE_RANK] /'"
+  --batch_size 128 \
+  --epochs 10 \
+  --lr 0.1 2>&1 2>&1 | sed 's/^/[NODE-$NODE_RANK] /'"
 
 # 在当前节点是rank 0时，直接在前台执行；否则，通过ssh执行
 if [ "$(hostname)" == "$HOST" ] || [ "$(hostname -i)" == "$HOST" ]; then
