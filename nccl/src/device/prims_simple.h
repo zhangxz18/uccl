@@ -146,7 +146,7 @@ class Primitives<
     }
 
     // Handle the remaining tail bytes (if any)
-    if (i > len) {
+    if (i + BytePerPack > len) {
       i -= BytePerPack;
       // BytePack<1> acc2;
       for (; i < len; i++) {

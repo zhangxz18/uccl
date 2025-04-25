@@ -66,7 +66,7 @@ static constexpr int kFifoCap = 32 * 8 / kNumThBlocks * 2;
 static constexpr uint64_t kAbortTailValue = (uint64_t)-2;
 static constexpr int kCopySize = 8888;
 static constexpr int kTestIters = 1024;
-static constexpr int kTestIovs = 256;
+static constexpr int kTestIovs = 128;
 static constexpr int kTestSteps = kNumThBlocks * 8;
 
 static_assert(kTestSteps <= kFifoCap * kNumThBlocks,
@@ -88,6 +88,25 @@ struct IovFifo {
     struct Iov iovs[kFifoCap];
 };
 
+__device__ __forceinline__ void copyGlobalMemory(void *dst, void *src,
+                                                 int len) {
+    uintptr_t src_addr = (uintptr_t)src;
+    uintptr_t dst_addr = (uintptr_t)dst;
+    int i = 0;
+
+    for (; i + 8 <= len; i += 8) {
+        *(uint64_t *)(dst_addr + i) = *(uint64_t *)(src_addr + i);
+    }
+
+    // Handle the remaining tail bytes (if any)
+    if (i + 8 > len) {
+        i -= 8;
+        for (; i < len; i++) {
+            *(uint8_t *)(dst_addr + i) = *(uint8_t *)(src_addr + i);
+        }
+    }
+}
+
 __device__ void kernelScatteredMemcpy(struct Iov *iov) {
     typedef float2 T;
     static constexpr int kCpAsycDepth = 8;
@@ -97,6 +116,27 @@ __device__ void kernelScatteredMemcpy(struct Iov *iov) {
     int nthreads = blockDim.x;
     int tid = threadIdx.x;
     int iov_n = iov->iov_n;
+
+    // Speedup tricks for 1 iov copy; could be deleted for generality.
+    if (iov_n == 1) {
+        void **src_addrs = iov->srcs;
+        void **dst_addrs = iov->dsts;
+        int *iov_lens = iov->lens;
+
+        // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
+        char *src = (char *)src_addrs[0];
+        char *dst = (char *)dst_addrs[0];
+        int iov_len = iov_lens[0];
+
+        // Make it t-byte aligned to avoid GPU SEGV.
+        int num_packs = iov_len / 8;
+        int len_per_th = divUp(num_packs, nthreads) * 8;
+        int start = len_per_th * tid;
+        int end = min(start + len_per_th, iov_len);
+        int len = end - start;
+        if (len > 0) copyGlobalMemory(dst + start, src + start, len);
+        return;
+    }
 
     // Number of threads per copy: A100 has 8 * 128bit mem transactions.
     // https://developer.download.nvidia.com/video/gputechconf/gtc/2020/presentations/s21745-developing-cuda-kernels-to-push-tensor-cores-to-the-absolute-limit-on-nvidia-a100.pdf
@@ -180,9 +220,9 @@ __global__ void persistKernel(struct IovFifo **fifo_vec) {
     }
     __syncthreads();
 
-    // We should avoid all thread loading the global memory at the same, as this
-    // will cause severe performance drop.
-    // while (ld_volatile(&fifo->abort) == 0) {
+    // We should avoid all thread loading the global memory at the same, as
+    // this will cause severe performance drop. while
+    // (ld_volatile(&fifo->abort) == 0) {
     while (true) {
         // Each thread block loads new work from CPU.
         if (tid == 0) {
@@ -376,8 +416,8 @@ int main() {
 
             // for (int j = 0; j < kTestIovs; j++) {
             //     cudaMemcpyAsync(gpu_iov->dsts[j], gpu_iov->srcs[j],
-            //                     gpu_iov->lens[j], cudaMemcpyDeviceToDevice,
-            //                     stream3);
+            //                     gpu_iov->lens[j],
+            //                     cudaMemcpyDeviceToDevice, stream3);
             //     cudaCheckErrors("cudaMemcpyAsync failed");
             // }
             // cudaStreamSynchronize(stream3);
