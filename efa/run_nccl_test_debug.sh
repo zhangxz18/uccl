@@ -3,9 +3,9 @@
 source ../shared.sh
 NODES=$(get_nodes "../nodes.txt")
 
-# TEST="uccl_rdma"
+TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
-TEST="uccl_rdma_a2a"
+# TEST="uccl_rdma_a2a"
 # TEST="srd"
 
 BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"

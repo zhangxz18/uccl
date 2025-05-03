@@ -2,12 +2,17 @@ from shared import *
 
 
 async def rsync(nodes):
-    tasks = [
-        run_command(
-            f"rsync -auv -e 'ssh -o StrictHostKeyChecking=no' /opt/uccl_rdma/ {node}:/opt/uccl_rdma/"
+    folders = ["/opt/uccl_rdma/", "/opt/uccl_rdma_a2a/", "/opt/uccl_rdma_ar/"]
+    tasks = []
+    for folder in folders:
+        tasks.extend(
+            [
+                run_command(
+                    f"rsync -auv -e 'ssh -o StrictHostKeyChecking=no' {folder} {node}:{folder}"
+                )
+                for node in nodes
+            ]
         )
-        for node in nodes
-    ]
 
     # Run all tasks in parallel
     await asyncio.gather(*tasks)
