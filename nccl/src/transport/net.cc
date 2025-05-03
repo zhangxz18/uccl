@@ -1404,6 +1404,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                 }
               }
               struct recvNetResources* resources = (struct recvNetResources*) (subGroup->connection->transportResources);
+              // Yang: our current iflush just blindly set req->done to true; so we rely on gdrcopy-based flush. 
               NCCLCHECK(proxyState->ncclNet->iflush(resources->netRecvComm, subCount, ptrs, sizes, mhandles, subGroup->requests+(step%NCCL_STEPS)));
             }
           }
