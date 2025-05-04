@@ -1306,7 +1306,8 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
         // NCCLCHECK(proxyState->ncclNet->irecv(resources->netRecvComm, subCount, ptrs, sizes, tags, mhandles, requestPtr));
         if (*requestPtr) {
           // Yang: record the ptrs so we can use during sg_copy.
-          static const uint32_t kPtrsStart = 4168;
+          // Yang: need to keep the same as transport.h
+          static const uint32_t kPtrsStart = 1096;
           void** uccl_req_ptrs = (void**)((char*)(*requestPtr) + kPtrsStart);
           for (int i = 0; i < subCount; i++) {
             uccl_req_ptrs[i] = ptrs[i];
@@ -1449,7 +1450,8 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                 int* dst_offsets = (int*)((char*)iov_lens + sizeof(int)*kMaxIovs);
                 int* iov_n = (int*)((char*)dst_offsets + sizeof(int)*kMaxIovs);
     
-                static const uint32_t kPtrsStart = 4168;
+                // Yang: need to keep the same as transport.h
+                static const uint32_t kPtrsStart = 1096;
                 void** uccl_req_ptrs = (void**)((char*)requestPtr + kPtrsStart);
 
                 // Yang: writting scattered RDMA GDR buffers to the pinned hostmem that is accessible by the GPU.

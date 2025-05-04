@@ -60,7 +60,7 @@ static constexpr int kNumThBlocks = 4;
 static constexpr int kNumThPerBlock = 512;
 
 // Yang: 256 max scattered IOVs
-static constexpr int kMaxIovs = 256;
+static constexpr int kMaxIovs = 128;
 // proxy.h: NCCL_PROXY_MAX_SUBS = 32, NCCL_STEPS = 8; double provisioning
 static constexpr int kFifoCap = 32 * 8 / kNumThBlocks * 2;
 static constexpr uint64_t kAbortTailValue = (uint64_t)-2;

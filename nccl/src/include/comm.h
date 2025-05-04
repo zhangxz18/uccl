@@ -52,17 +52,6 @@ struct ncclSendMem {
   };
 };
 
-// Yang: 128 max scattered IOVs
-#define kMaxIovs 256
-struct alignas(8) iov {
-  void* src_addrs[kMaxIovs];
-  void* dst_addrs[kMaxIovs];
-  int iov_lens[kMaxIovs];
-  int iov_n;
-  int gpu_idx; // for debugging
-  int step; // for debugging
-};
-const uint32_t kIovSize = sizeof(struct iov);
 struct ncclRecvMem {
   union {
     struct {
@@ -74,7 +63,7 @@ struct ncclRecvMem {
       struct iov iovFifo[NCCL_STEPS];
       /************************** */
     };
-    char pad4[MEM_ALIGN + MEM_ALIGN * 10];
+    char pad4[MEM_ALIGN + MEM_ALIGN * 3];
   };
 };
 // Yang: iovFifo is the starting address of the scattered IOVs.
