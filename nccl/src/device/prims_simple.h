@@ -148,7 +148,6 @@ class Primitives<
     // static constexpr int kNumThPerBlock = 512;
     // __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
 
-    // int iov_n = fromPack<int>(ld_volatile_global<4>((uintptr_t)(&iov->iov_n)));
     int iov_n = iov->iov_n;
 
     // Speedup tricks for 1 iov copy; could be deleted for generality.
@@ -158,9 +157,6 @@ class Primitives<
       int* iov_lens = iov->iov_lens;
 
       // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-      // char *src = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(src_addrs + 0)));
-      // char *dst = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(dst_addrs + 0)));
-      // int iov_len = fromPack<int>(ld_volatile_global<4>((uintptr_t)(iov_lens + 0)));
       char *src = (char*)src_addrs[0];
       char *dst = (char*)dst_addrs[0];
       int iov_len = iov_lens[0];
@@ -191,9 +187,6 @@ class Primitives<
       int local_tid = tid % nthreads_per_iov;
 
       // Retrieve parameters for this copy.
-      // char* src_ptr = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(iov->src_addrs + iov_idx)));
-      // char* dst_ptr = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(iov->dst_addrs + iov_idx)));
-      // int iov_len = fromPack<int>(ld_volatile_global<4>((uintptr_t)(iov->iov_lens + iov_idx)));
       char* src_ptr = (char*)iov->src_addrs[iov_idx];
       char* dst_ptr = (char*)iov->dst_addrs[iov_idx];
       int iov_len = iov->iov_lens[iov_idx];
@@ -238,9 +231,6 @@ class Primitives<
       }
     }
   }
-
-  // Yang: need to keep the same as comm.h
-  const int kIovStart = 328;
 
   template <int DirectRecv, int DirectSend, int Recv, int Send, int Src, int Dst>
   __device__ __forceinline__ void waitPeer(intptr_t srcIx, intptr_t dstIx, int offset, int nelts) {
@@ -314,16 +304,12 @@ class Primitives<
         // Yang: is this step for network transfer?
         ncclShmem.groups[group].is_net_transfer[tid] = is_net_transfer;
 
-        // Yang: using one thread to load the step into sharemem.
-        ncclShmem.groups[group].step[tid] = step;
-
-        // Yang: setup tail_ptr based on peer
-        ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
-
         if (is_net_transfer) {
           uint64_t prevStep = step - StepPerSlice;
           int iov_idx = prevStep % NCCL_STEPS;
           
+          // Yang: need to keep the same as comm.h
+          const int kIovStart = 328;
           struct iov *cur_iov = (struct iov *)((char *)connStepPtr + kIovStart + iov_idx * kIovSize);
 
           // Yang: single thread load iov to sharemem.
@@ -349,15 +335,8 @@ class Primitives<
       barrier();
       for (int t = 0; t < 2; t++) {
         if (ncclShmem.groups[group].is_net_transfer[t]) {
-          // uint64_t step = ncclShmem.groups[group].step[t];
-          // uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
 
-          // uint64_t prevStep = step - StepPerSlice;
-          // int iov_idx = prevStep % (NCCL_STEPS);
-          // struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
-    
           struct iov *cur_iov = ncclShmem.groups[group].cur_iovs + t;
-
           kernelScatteredMemcpy(cur_iov);
 
           // Yang: debuging
@@ -376,9 +355,6 @@ class Primitives<
   inline __device__ void postPeer(bool dataStored) {
     if (flags & (Recv*RolePostRecv | Send*RolePostSend)) {
       step += StepPerSlice;
-
-      // Yang: no need to load the step into sharemem, as this is for posting to CPU.
-      // ncclShmem.groups[group].step[0] = step;
 
       if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
         fence_acq_rel_sys();
