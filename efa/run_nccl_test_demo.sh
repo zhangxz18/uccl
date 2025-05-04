@@ -74,6 +74,10 @@ mpirun --bind-to none -np 4 -N 1 --host ${NODES} \
     -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
     -x NCCL_NET_GDR_LEVEL=SYS \
     -x NCCL_PXN_DISABLE=${PXN_DISABLE} \
+    -x NCCL_GDRCOPY_ENABLE=1 \
+    -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
+    -x NCCL_GDRCOPY_SYNC_ENABLE=0 \
+    -x NCCL_GDRCOPY_FIFO_ENABLE=0 \
     -x GLOG_logtostderr=0 \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
