@@ -258,6 +258,9 @@ class Primitives<
       is_net_transfer = loadStepValue(connStepPtr + 1);
     }
 
+    // Yang: need to keep the same as comm.h
+    const int kIovStart = 328;
+
     if (flags & (Recv*RoleWaitRecv | Send*RoleWaitSend)) {
       if (flags & ConnFifoEnabled)
         connFifo[step%NCCL_STEPS].size = nelts*sizeof(T);
@@ -300,27 +303,19 @@ class Primitives<
 
       // Yang: only care recv-side step value.
       if (flags & (Recv*RoleWaitRecv)) { 
-
         // Yang: is this step for network transfer?
         ncclShmem.groups[group].is_net_transfer[tid] = is_net_transfer;
+        // Yang: using one thread to load the step into sharemem.
+        ncclShmem.groups[group].step[tid] = step;
+        // Yang: setup tail_ptr based on peer
+        ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
 
         if (is_net_transfer) {
-          uint64_t prevStep = step - StepPerSlice;
-          int iov_idx = prevStep % NCCL_STEPS;
-          
-          // Yang: need to keep the same as comm.h
-          const int kIovStart = 328;
+          int iov_idx = (step - StepPerSlice) % NCCL_STEPS;
           struct iov *cur_iov = (struct iov *)((char *)connStepPtr + kIovStart + iov_idx * kIovSize);
-
+          
           // Yang: single thread load iov to sharemem.
-          struct iov* cur_iov_shmem = ncclShmem.groups[group].cur_iovs + tid;
-          cur_iov_shmem->iov_n = fromPack<int>(ld_volatile_global<4>((uintptr_t)(&cur_iov->iov_n)));
-
-          for (int i = 0; i < cur_iov_shmem->iov_n; i++) {
-            cur_iov_shmem->src_addrs[i] = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(cur_iov->src_addrs + i)));
-            cur_iov_shmem->dst_addrs[i] = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(cur_iov->dst_addrs + i)));
-            cur_iov_shmem->iov_lens[i] = fromPack<int>(ld_volatile_global<4>((uintptr_t)(cur_iov->iov_lens + i)));
-          }
+          ncclShmem.groups[group].cur_iovs[tid].iov_n = loadInt(&cur_iov->iov_n);
         }
 
         // Yang: this gives the correct step value from CPU.
@@ -335,8 +330,22 @@ class Primitives<
       barrier();
       for (int t = 0; t < 2; t++) {
         if (ncclShmem.groups[group].is_net_transfer[t]) {
+          uint64_t step = ncclShmem.groups[group].step[t];
+          uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
 
-          struct iov *cur_iov = ncclShmem.groups[group].cur_iovs + t;
+          int iov_idx = (step - StepPerSlice) % NCCL_STEPS;
+          struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+          struct iov *cur_iov_shmem = ncclShmem.groups[group].cur_iovs + t;
+
+          // Yang: single thread load iov to sharemem.
+          if (tid < cur_iov->iov_n) {
+            int i = tid;
+            cur_iov_shmem->src_addrs[i] = (void*)loadInt64((int64_t*)(cur_iov->src_addrs + i));
+            cur_iov_shmem->dst_addrs[i] = (void*)loadInt64((int64_t*)(cur_iov->dst_addrs + i));
+            cur_iov_shmem->iov_lens[i] = loadInt(cur_iov->iov_lens + i);
+          }
+          barrier();
+
           kernelScatteredMemcpy(cur_iov);
 
           // Yang: debuging

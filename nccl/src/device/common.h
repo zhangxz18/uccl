@@ -37,6 +37,10 @@ struct ncclShmemGroup {
     unpackGroupShmem unpack;
   } devicePlugin;
   int32_t dstSizes[NCCL_MAX_ARITY+1];
+  // Yang: adding this it record step for each group
+  uint64_t step[2];
+  // Yang: for current step, the iov buffers and lengths
+  uint64_t* tail_ptr[2]; // Pointing to the CPU proxy thread's ncclRecvMem.tail
   // Yang: if the current step of ReduceCopy is for network transfer
   bool is_net_transfer[2];
   // Yang: loaded by a single thread
