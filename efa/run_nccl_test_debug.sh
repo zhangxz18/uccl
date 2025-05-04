@@ -8,8 +8,8 @@ TEST="uccl_rdma"
 # TEST="uccl_rdma_a2a"
 # TEST="srd"
 
-BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
-# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
+# BIN_PATH="/opt/uccl_rdma/nccl-tests/build/alltoall_perf"
+BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_reduce_perf"
 # BIN_PATH="/opt/uccl_rdma/nccl-tests/build/all_gather_perf"
 # BIN_PATH="/opt/uccl_rdma/nccl-tests/build/reduce_scatter_perf"
 
@@ -101,10 +101,6 @@ mpirun --bind-to none -np 4 -N 1 --host ${NODES} \
     -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
     -x NCCL_NET_GDR_LEVEL=SYS \
     -x NCCL_PXN_DISABLE=${PXN_DISABLE} \
-    -x NCCL_GDRCOPY_ENABLE=1 \
-    -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
-    -x NCCL_GDRCOPY_SYNC_ENABLE=0 \
-    -x NCCL_GDRCOPY_FIFO_ENABLE=0 \
     -x GLOG_logtostderr=0 \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
@@ -118,9 +114,9 @@ mpirun --bind-to none -np 4 -N 1 --host ${NODES} \
     # -x NCCL_DEBUG=INFO \
     # -x CUDA_MODULE_LOADING=EAGER \
     # -x NCCL_GDRCOPY_ENABLE=1 \
-    # -x NCCL_GDRCOPY_FIFO_ENABLE=0 \
     # -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
-    # -x NCCL_GDRCOPY_SYNC_ENABLE=1 \
+    # -x NCCL_GDRCOPY_SYNC_ENABLE=0 \
+    # -x NCCL_GDRCOPY_FIFO_ENABLE=0 \
     # -x OFI_NCCL_GDR_FLUSH_DISABLE=1 \
     # -x NCCL_ALGO=Tree \
 

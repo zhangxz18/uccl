@@ -153,7 +153,7 @@ class Primitives<
     }
   }
 
-  inline __device__ void kernelScatteredMemcpy(struct iov* iov) {
+  inline __device__ void kernelScatteredMemcpy(volatile struct iov* iov) {
     typedef float2 PackT;
 
     // Yang: this uses too much shared memory. 
@@ -161,18 +161,14 @@ class Primitives<
     // static constexpr int kNumThPerBlock = 512;
     // __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
 
-    int iov_n = fromPack<int>(ld_volatile_global<4>((uintptr_t)(&iov->iov_n)));
+    int iov_n = iov->iov_n;
 
     // Speedup tricks for 1 iov copy; could be deleted for generality.
     if (iov_n == 1) {
-      void** src_addrs =  iov->src_addrs;
-      void** dst_addrs = iov->dst_addrs;
-      int* iov_lens = iov->iov_lens;
-
       // Yang: Doing the scattered memcpy here? directly copy to dst ptrs.
-      char *src = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(src_addrs + 0)));
-      char *dst = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(dst_addrs + 0)));
-      int iov_len = fromPack<int>(ld_volatile_global<4>((uintptr_t)(iov_lens + 0)));
+      char *src = (char*)iov->src_addrs[0];
+      char *dst = (char*)iov->dst_addrs[0];
+      int iov_len = iov->iov_lens[0];
 
       // Make it t-byte aligned to avoid GPU SEGV.
       int num_packs = iov_len / 8;
@@ -200,10 +196,10 @@ class Primitives<
       int local_tid = tid % nthreads_per_iov;
 
       // Retrieve parameters for this copy.
-      char* src_ptr = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(iov->src_addrs + iov_idx)));
-      char* dst_ptr = fromPack<char*>(ld_volatile_global<8>((uintptr_t)(iov->dst_addrs + iov_idx)));
-      int iov_len = fromPack<int>(ld_volatile_global<4>((uintptr_t)(iov->iov_lens + iov_idx)));
-      if (iov_len == 0) return;
+      char* src_ptr = (char*)iov->src_addrs[iov_idx];
+      char* dst_ptr = (char*)iov->dst_addrs[iov_idx];
+      int iov_len = iov->iov_lens[iov_idx];
+      // if (iov_len == 0) return;
 
       // Copy t-byte chunks first (if possible)
       int num_full = iov_len / sizeof(PackT);
@@ -340,7 +336,7 @@ class Primitives<
 
           uint64_t prevStep = step - StepPerSlice;
           int iov_idx = prevStep % (NCCL_STEPS);
-          struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
+          volatile struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
     
           kernelScatteredMemcpy(cur_iov);
 
