@@ -2,7 +2,7 @@ from shared import *
 
 
 async def rsync(nodes):
-    folders = ["/opt/uccl_rdma/", "/opt/uccl_rdma_a2a/", "/opt/uccl_rdma_ar/"]
+    folders = ["/opt/uccl_rdma/", "/opt/uccl_rdma_demo/"]
     tasks = []
     for folder in folders:
         tasks.extend(
