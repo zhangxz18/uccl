@@ -1,12 +1,12 @@
 ABS_ROOT_PATH := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 
-NCCL_HOME:=../nccl
-CUDA_HOME:=/usr/local/cuda
+NCCL_HOME:=../rccl
+HIP_HOME:=/opt/rocm-6.3.1
 
-INC = -I./ -I$(CUDA_HOME)/include
-LIBS = -lglog -lgflags -lgtest -lz -lelf -libverbs  -L /usr/local/cuda/lib64 -lcudart
+INC = -I./ -I$(HIP_HOME)/include -I/work1/yzhou/yangzhou/anaconda3/include -L/work1/yzhou/yangzhou/anaconda3/lib
+LIBS = -lglog -lgflags -lgtest -lz -lelf -libverbs  -L ${HIP_HOME}/lib -lamdhip64
 LIBS_SHARED = -lglog -lgflags -lgtest -lz -lelf -libverbs
-override CXXFLAGS += -O3 -g -std=c++17 -Wno-pointer-arith -Wno-interference-size -fPIC
+override CXXFLAGS += -O3 -g -std=c++17 -Wno-pointer-arith -Wno-interference-size -fPIC -D__HIP_PLATFORM_AMD__
 DEPS = *.h
 PLUGIN_SO = libnccl-net.so
 
@@ -34,7 +34,7 @@ plugin_test: plugin_test.cc $(DEPS) $(lib_obj)
 %.o: %.cc $(DEPS)
 	g++ -c $< -o $@ $(INC) $(CXXFLAGS)
 
-NCCL_INC:= -I$(NCCL_HOME)/build/include -I$(NCCL_HOME)/src/include -I$(CUDA_HOME)/include
+NCCL_INC:= -I$(NCCL_HOME)/build/release/include -I$(NCCL_HOME)/src/include -I$(HIP_HOME)/include
 
 $(PLUGIN_SO): nccl_plugin.cc $(DEPS) $(lib_obj)
 	g++ $(NCCL_INC) -fPIC -shared -o $@ -Wl,-soname,$(PLUGIN_SO) nccl_plugin.cc $(lib_obj) $(INC) $(LIBS_SHARED) $(CXXFLAGS)

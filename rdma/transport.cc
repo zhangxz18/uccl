@@ -9,7 +9,6 @@
 
 #include <infiniband/verbs.h>
 
-#include <cuda_runtime.h>
 #include "transport_config.h"
 #include "util.h"
 #include "util_list.h"

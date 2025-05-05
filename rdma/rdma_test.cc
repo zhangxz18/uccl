@@ -15,7 +15,7 @@
 #include "transport_config.h"
 #include "util_timer.h"
 
-#include "cuda_runtime.h"
+#include <hip/hip_runtime.h>
 
 #define GPU 0
 
@@ -315,9 +315,9 @@ static void server_worker(void) {
         printf("Server accepted connection from %s (flow#%d)\n",
                remote_ip.c_str(), i);
         #ifdef GPU
-        cudaSetDevice(GPU);
+        hipSetDevice(GPU);
         void *data;
-        cudaMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        hipMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
         #else        
         void *data =
             mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg,
@@ -363,9 +363,9 @@ static void client_worker(void) {
         auto conn_id = ep->test_uccl_connect(0, FLAGS_serverip, 0);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         #ifdef GPU
-        cudaSetDevice(GPU);
+        hipSetDevice(GPU);
         void *data;
-        cudaMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        hipMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
         #else
         void *data =
             mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg,
