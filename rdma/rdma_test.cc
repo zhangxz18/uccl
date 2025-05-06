@@ -315,9 +315,9 @@ static void server_worker(void) {
         printf("Server accepted connection from %s (flow#%d)\n",
                remote_ip.c_str(), i);
         #ifdef GPU
-        hipSetDevice(GPU);
+        CHECK(hipSetDevice(GPU) == hipSuccess);
         void *data;
-        hipMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        CHECK(hipMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg) == hipSuccess);
         #else        
         void *data =
             mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg,
@@ -363,9 +363,9 @@ static void client_worker(void) {
         auto conn_id = ep->test_uccl_connect(0, FLAGS_serverip, 0);
         printf("Client connected to %s (flow#%d)\n", FLAGS_serverip.c_str(), i);
         #ifdef GPU
-        hipSetDevice(GPU);
+        CHECK(hipSetDevice(GPU) == hipSuccess);
         void *data;
-        hipMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg);
+        CHECK(hipMalloc(&data, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg) == hipSuccess);
         #else
         void *data =
             mmap(nullptr, FLAGS_msize * FLAGS_nreq * FLAGS_nmsg,
@@ -398,8 +398,8 @@ static void client_worker(void) {
 
 // TO run on AMD: 
 // LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}"
-// ./rdma_test -server true
-// ./rdma_test -serverip 10.0.100.114
+// HIP_VISIBLE_DEVICES=6 ./rdma_test -server true
+// HIP_VISIBLE_DEVICES=6 ./rdma_test -serverip 10.0.100.114
 
 int main(int argc, char *argv[]) {
     google::InitGoogleLogging(argv[0]);

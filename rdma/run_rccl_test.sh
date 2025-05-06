@@ -22,37 +22,36 @@ if [ "$TEST" = "rccl" ]; then
     plugin_path=""
 elif [ "$TEST" = "uccl" ]; then
     echo "Running UCCL test"
-    plugin_path="${ROOT}/rdma/librccl-net.so"
+    plugin_path="${ROOT}/rdma/librccl-net-uccl.so"
 else
     echo "Unsupport benchmark type."
     exit 1
 fi
 
-mpirun --bind-to none -np 4 -N 1 --hostfile $NODEFILE --map-by ppr:1:node \
-    -x LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${ROOT}/rccl/build/release/librccl.so:${LD_LIBRARY_PATH}" \
+mpirun --bind-to none -np 2 -N 1 --hostfile $NODEFILE --map-by ppr:1:node \
+    -x LD_LIBRARY_PATH=${ROOT}/rccl/build/release:/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH} \
     -x NCCL_NET_PLUGIN=${plugin_path} \
     -x NCCL_DEBUG=INFO \
     -x NCCL_P2P_DISABLE=1 \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
-    -x NCCL_DMABUF_ENABLE=1 \
     -x NCCL_NET_GDR_LEVEL=SYS \
-    -x NCCL_IB_QPS_PER_CONNECTION=4 \
-    -x CUDA_VISIBLE_DEVICES=0,1,6,7 \
-    -x NCCL_IB_HCA="mlx5_0:1,mlx5_2:1" \
-    ${ROOT}/rccl-tests/build/alltoall_perf \
-    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 4 |&
+    -x NCCL_IB_QPS_PER_CONNECTION=1 \
+    -x HIP_VISIBLE_DEVICES=6 \
+    -x NCCL_IB_HCA="mlx5_2:1" \
+    ${ROOT}/rccl-tests/build/all_reduce_perf \
+    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 1 |&
     tee alltoall_debug.log
 
 # -x NCCL_DEBUG=INFO \
 
 # On mi2104x
 # -x NCCL_NET_GDR_LEVEL=SYS \
-# -x CUDA_VISIBLE_DEVICES=0 \
+# -x HIP_VISIBLE_DEVICES=0 \
 # -x NCCL_IB_HCA="mlx5_0:1" \
 
 # On mi2508x
-# -x CUDA_VISIBLE_DEVICES=0,1,6,7 \
+# -x HIP_VISIBLE_DEVICES=0,1,6,7 \
 # -x NCCL_IB_HCA="mlx5_0:1,mlx5_2:1" \
 
 # Setting to 4 will significantly degrade alltoall perf with 32 channels.

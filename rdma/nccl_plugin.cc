@@ -199,7 +199,7 @@ ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
     handle->ip_addr_u32 = str_to_ip(factory_dev->local_ip_str);
     handle->listen_port = ntohs(serv_addr.sin_port);
     handle->remote_dev = dev;
-    hipGetDevice(&handle->remote_gpuidx);
+    DCHECK(hipGetDevice(&handle->remote_gpuidx) == hipSuccess);
 
     struct ucclListenComm *lcomm =
         (struct ucclListenComm *)calloc(1, sizeof(struct ucclListenComm));
@@ -225,7 +225,7 @@ ncclResult_t pluginConnect(int dev, void *opaque_handle, void **sendComm,
     struct ucclHandle *handle = (struct ucclHandle *)opaque_handle;
 
     int local_gpuidx;
-    hipGetDevice(&local_gpuidx);
+    DCHECK(hipGetDevice(&local_gpuidx) == hipSuccess);
 
     std::string remote_ip_str = ip_to_str(handle->ip_addr_u32);
 

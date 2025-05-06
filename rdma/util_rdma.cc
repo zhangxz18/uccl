@@ -1771,10 +1771,10 @@ void RDMAContext::rx_rtx_data(struct list_head *ack_list) {
                                     sizeof(struct retr_chunk_hdr)),
             chunk_len);
 #else
-    hipMemcpy(reinterpret_cast<void *>(hdr->remote_addr),
-                reinterpret_cast<void *>(chunk_addr +
-                                        sizeof(struct retr_chunk_hdr)),
-                chunk_len, hipMemcpyHostToDevice);
+    DCHECK(hipMemcpy(reinterpret_cast<void *>(hdr->remote_addr),
+                     reinterpret_cast<void *>(chunk_addr +
+                                              sizeof(struct retr_chunk_hdr)),
+                     chunk_len, hipMemcpyHostToDevice) == hipSuccess);
 #endif
 
     subflow->pcb.stats_accept_retr++;

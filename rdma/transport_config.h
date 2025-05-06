@@ -14,7 +14,7 @@ static constexpr bool ROCE_NET = false;
 // If SINGLE_CTRL_NIC is set, all devices will use the same IP.
 static std::string SINGLE_CTRL_NIC("eth0");
 static constexpr uint8_t NUM_DEVICES = 1;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0};
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2};
 static constexpr double LINK_BANDWIDTH = 200.0 * 1e9 / 8; // 200Gbps
 static constexpr uint32_t MAX_PEER = 256;
 // Maximum number of flows (one-way) on each engine.
@@ -33,14 +33,14 @@ static constexpr uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Each dev use [ENGINE_CPU_START_LIST[dev], ENGINE_CPU_START_LIST[dev] + NUM_ENGINES)
 static uint32_t ENGINE_CPU_START_LIST[8] = {
-    16,
-    16 + NUM_ENGINES,
-    16 + 2 * NUM_ENGINES,
-    16 + 3 * NUM_ENGINES,
-    48,
-    48 + NUM_ENGINES,
-    48 + 2 * NUM_ENGINES,
-    48 + 3 * NUM_ENGINES,
+    64 + 16,
+    64 + 16 + NUM_ENGINES,
+    64 + 16 + 2 * NUM_ENGINES,
+    64 + 16 + 3 * NUM_ENGINES,
+    64 + 48,
+    64 + 48 + NUM_ENGINES,
+    64 + 48 + 2 * NUM_ENGINES,
+    64 + 48 + 3 * NUM_ENGINES,
 };
 
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
