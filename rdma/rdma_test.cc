@@ -396,14 +396,20 @@ static void client_worker(void) {
     }
 }
 
+// TO run on AMD: 
+// LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}"
+// ./rdma_test -server true
+// ./rdma_test -serverip 10.0.100.114
+
 int main(int argc, char *argv[]) {
     google::InitGoogleLogging(argv[0]);
     google::InstallFailureSignalHandler();
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-    signal(SIGINT, interrupt_handler);
-    signal(SIGTERM, interrupt_handler);
-    signal(SIGHUP, interrupt_handler);
+    // Yang: comment it out as it would cause hangs.
+    // signal(SIGINT, interrupt_handler);
+    // signal(SIGTERM, interrupt_handler);
+    // signal(SIGHUP, interrupt_handler);
 
     ep.emplace(DEVNAME_SUFFIX_LIST, NUM_DEVICES, NUM_ENGINES);
 

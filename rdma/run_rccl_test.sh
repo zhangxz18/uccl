@@ -10,55 +10,64 @@
 #   GPU 6,7 <-> mlx5_2
 # salloc -N 4 -n 4 -p mi2508x -t 00:30:00
 
-ROOT=/home1/yangzhou/uccl_rdma
 NODEFILE=node.txt
-scontrol show hostnames $SLURM_JOB_NODELIST > $NODEFILE
+scontrol show hostnames $SLURM_JOB_NODELIST >$NODEFILE
+
+ROOT=/home1/yangzhou/uccl_rdma
+
+TEST=${1:-uccl}
+
+if [ "$TEST" = "rccl" ]; then
+    echo "Running RCCL test"
+    plugin_path=""
+elif [ "$TEST" = "uccl" ]; then
+    echo "Running UCCL test"
+    plugin_path="${ROOT}/rdma/librccl-net.so"
+else
+    echo "Unsupport benchmark type."
+    exit 1
+fi
 
 mpirun --bind-to none -np 4 -N 1 --hostfile $NODEFILE --map-by ppr:1:node \
+    -x LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${ROOT}/rccl/build/release/librccl.so:${LD_LIBRARY_PATH}" \
+    -x NCCL_NET_PLUGIN=${plugin_path} \
     -x NCCL_DEBUG=INFO \
-    -x LD_PRELOAD="${ROOT}/rccl/build/release/librccl.so ${ROOT}/rdma/librccl-net.so"\
-    -x LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}" \
     -x NCCL_P2P_DISABLE=1 \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
-    -x NCCL_IB_QPS_PER_CONNECTION=1 \
+    -x NCCL_DMABUF_ENABLE=1 \
     -x NCCL_NET_GDR_LEVEL=SYS \
-    -x CUDA_VISIBLE_DEVICES=0 \
-    -x NCCL_IB_HCA="mlx5_0:1" \
-   ${ROOT}/rccl-tests/build/alltoall_perf \
-    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 1 \
-    |& tee alltoall_debug.log
+    -x NCCL_IB_QPS_PER_CONNECTION=4 \
+    -x CUDA_VISIBLE_DEVICES=0,1,6,7 \
+    -x NCCL_IB_HCA="mlx5_0:1,mlx5_2:1" \
+    ${ROOT}/rccl-tests/build/alltoall_perf \
+    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 4 |&
+    tee alltoall_debug.log
 
-    # UCCL UC
-    # -x LD_PRELOAD="${ROOT}/rccl/build/release/librccl.so ${ROOT}/rdma/librccl-net.so"\
-    # -x LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}" \
+# -x NCCL_DEBUG=INFO \
 
-    # NCCL
-    # -x LD_PRELOAD="${ROOT}/rccl/build/release/librccl.so" \
+# On mi2104x
+# -x NCCL_NET_GDR_LEVEL=SYS \
+# -x CUDA_VISIBLE_DEVICES=0 \
+# -x NCCL_IB_HCA="mlx5_0:1" \
 
-    # On mi2104x
-    # -x NCCL_NET_GDR_LEVEL=SYS \
-    # -x CUDA_VISIBLE_DEVICES=0 \
-    # -x NCCL_IB_HCA="mlx5_0:1" \
+# On mi2508x
+# -x CUDA_VISIBLE_DEVICES=0,1,6,7 \
+# -x NCCL_IB_HCA="mlx5_0:1,mlx5_2:1" \
 
-    # On mi2508x
-    # -x CUDA_VISIBLE_DEVICES=0,1,6,7 \
-    # -x NCCL_IB_HCA="mlx5_0:1,mlx5_2:1" \
+# Setting to 4 will significantly degrade alltoall perf with 32 channels.
+# -x NCCL_IB_QPS_PER_CONNECTION=1 \
 
-    # Setting to 4 will significantly degrade alltoall perf with 32 channels.
-    # -x NCCL_IB_QPS_PER_CONNECTION=1 \
+# Default has 4 channels and 1 channel per net peer.
+# -x NCCL_MAX_NCHANNELS=32 \
+# -x NCCL_MIN_NCHANNELS=32 \
+# -x NCCL_NCHANNELS_PER_NET_PEER=1 \
 
-    # Default has 4 channels and 1 channel per net peer.
-    # -x NCCL_MAX_NCHANNELS=32 \
-    # -x NCCL_MIN_NCHANNELS=32 \
-    # -x NCCL_NCHANNELS_PER_NET_PEER=1 \
-
-    # -x NCCL_DEBUG=INFO \
-    # -x NCCL_IB_SPLIT_DATA_ON_QPS=1 \
-    # -x RCCL_MSCCL_FORCE_ENABLE=1 \
-    # -x RCCL_MSCCLPP_ENABLE=1 \
-    # -x HSA_FORCE_FINE_GRAIN_PCIE=1 \
-    # -x NCCL_PROTO=Simple \
-    # -x NCCL_P2P_NET_CHUNKSIZE=524288 \
-    # -x NCCL_BUFFSIZE=8388608 \
-    # all_reduce_perf, alltoall_perf, sendrecv_perf
+# -x NCCL_IB_SPLIT_DATA_ON_QPS=1 \
+# -x RCCL_MSCCL_FORCE_ENABLE=1 \
+# -x RCCL_MSCCLPP_ENABLE=1 \
+# -x HSA_FORCE_FINE_GRAIN_PCIE=1 \
+# -x NCCL_PROTO=Simple \
+# -x NCCL_P2P_NET_CHUNKSIZE=524288 \
+# -x NCCL_BUFFSIZE=8388608 \
+# all_reduce_perf, alltoall_perf, sendrecv_perf
