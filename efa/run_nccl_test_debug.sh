@@ -1,6 +1,8 @@
 # !/bin/bash
 
-# TEST="zhongjie/uccl_rdma"
+source ../shared.sh
+NODES=$(get_nodes "../nodes.txt")
+
 TEST="uccl_rdma"
 # TEST="uccl_rdma_zc"
 # TEST="srd"
@@ -34,10 +36,10 @@ PLUGIN_PATH="/opt/${TEST}/efa/libnccl-net.so"
 
 # Best for allreduce with nvlink on. Use larger buffer to catch up with NCCL-SRD with larger buffers, and avoid performance outliers.
 # # kSplitSendRecvEngine = false;
-COPY_CHANNELS=16
-CHANNELS_NET_PEER=4
-CHUNK_SIZE=524288
-BUFFSIZE=8388608
+COPY_CHANNELS=8 # yeilds the best avg bandwidth
+CHANNELS_NET_PEER=1
+CHUNK_SIZE=262144
+BUFFSIZE=1048576
 PXN_DISABLE=0
 
 # For others, just use default buffer size.
@@ -58,13 +60,13 @@ PXN_DISABLE=0
 # BUFFSIZE=1048576
 # PXN_DISABLE=1
 
-NVLINK_DISABLE=0
+NVLINK_DISABLE=1
 
 if [ "$TEST" = "srd" ]; then
     LIBNCCL_PATH="/opt/uccl_rdma_zc/nccl/build/lib/libnccl.so"
     PLUGIN_PATH="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so"
-    COPY_CHANNELS=16
-    CHANNELS_NET_PEER=1
+    COPY_CHANNELS=-1
+    CHANNELS_NET_PEER=-1
     CHUNK_SIZE=524288
     BUFFSIZE=8388608
     # PXN_DISABLE=0 is critical for srd alltoall with nvlink performance.
@@ -95,20 +97,30 @@ mpirun --bind-to none -np 4 -N 1 --host ${NODES} \
     -x NCCL_MIN_NCHANNELS=${COPY_CHANNELS} \
     -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
     -x NCCL_BUFFSIZE=${BUFFSIZE} \
-    -x NCCL_TESTS_SPLIT_MASK=${MULTI_GROUP} \
     -x NCCL_NCHANNELS_PER_NET_PEER=${CHANNELS_NET_PEER} \
     -x NCCL_NET_GDR_LEVEL=SYS \
     -x NCCL_PXN_DISABLE=${PXN_DISABLE} \
+    -x NCCL_GDRCOPY_ENABLE=1 \
+    -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
+    -x NCCL_GDRCOPY_SYNC_ENABLE=0 \
+    -x NCCL_GDRCOPY_FIFO_ENABLE=0 \
     -x GLOG_logtostderr=0 \
-    -x NCCL_NET_GDR_LEVEL=SYS \
     -x NCCL_TOPO_FILE=/opt/uccl_rdma/efa/p4d-24xl-topo.xml \
     -x UCCL_ENGINE_QUIET=1 \
+    -x NCCL_ALGO=Tree \
     ${BIN_PATH} \
-    -b 1K -e 1G -f 2 -w 10 -n 10 -c 1 -g 1 -t 1
+    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 8 
+    # \
+    # >&alltoall_debug.log
 
+    # gdb -ex run --args \
     # -x NCCL_DEBUG=INFO \
     # -x CUDA_MODULE_LOADING=EAGER \
+    # -x NCCL_GDRCOPY_ENABLE=1 \
     # -x NCCL_GDRCOPY_FLUSH_ENABLE=1 \
+    # -x NCCL_GDRCOPY_SYNC_ENABLE=0 \
+    # -x NCCL_GDRCOPY_FIFO_ENABLE=0 \
+    # -x OFI_NCCL_GDR_FLUSH_DISABLE=1 \
     # -x NCCL_ALGO=Tree \
 
 # export LD_PRELOAD="${LIBNCCL_PATH} ${PLUGIN_PATH}"

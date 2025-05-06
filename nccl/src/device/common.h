@@ -43,6 +43,8 @@ struct ncclShmemGroup {
   uint64_t* tail_ptr[2]; // Pointing to the CPU proxy thread's ncclRecvMem.tail
   // Yang: if the current step of ReduceCopy is for network transfer
   bool is_net_transfer[2];
+  // Yang: loaded by a single thread
+  struct iov cur_iovs[2];
 };
 
 struct ncclShmemData {

@@ -119,57 +119,40 @@ class Primitives<
     return ld_volatile_global(ptr);
   }
 
-  // Yang: need to keep the same as comm.h
-  #define kIovStart 328
-  #define kMaxIovs 256
-  struct alignas(8) iov {
-    void* src_addrs[kMaxIovs];
-    void* dst_addrs[kMaxIovs];
-    int iov_lens[kMaxIovs];
-    int iov_n;
-    int gpu_idx; // for debugging
-    int step; // for debugging
-  };
-  const uint32_t kIovSize = sizeof(struct iov);
-
   template<int BytePerPack>
   __device__ __forceinline__ void copyGlobalMemory(void* dst, void* src, int len) {
     uintptr_t src_addr = (uintptr_t)src;
     uintptr_t dst_addr = (uintptr_t)dst;
     int i = 0;
 
-    // BytePack<BytePerPack> acc;
     for (; i + BytePerPack <= len; i += BytePerPack) {
-      // acc = ld_global<BytePerPack>(src_addr + i);
-      // st_global<BytePerPack>(dst_addr + i, acc);
-      *(BytePack<BytePerPack>*)(dst_addr+i) = *(BytePack<BytePerPack>*)(src_addr+i);
+      // *(BytePack<BytePerPack>*)(dst_addr+i) = *(BytePack<BytePerPack>*)(src_addr+i);
+      st_global<BytePerPack>((intptr_t)(dst_addr+i), ld_global<BytePerPack>((intptr_t)(src_addr+i)));
     }
 
     // Handle the remaining tail bytes (if any)
-    if (i > len) {
+    if (i + BytePerPack > len) {
       i -= BytePerPack;
-      // BytePack<1> acc2;
       for (; i < len; i++) {
-        // acc2 = ld_global<1>(src_addr + i);
-        // st_global<1>(dst_addr + i, acc2);
-        *(BytePack<1>*)(dst_addr+i) = *(BytePack<1>*)(src_addr+i);
+        // *(BytePack<1>*)(dst_addr+i) = *(BytePack<1>*)(src_addr+i);
+        st_global<1>((intptr_t)(dst_addr+i), ld_global<1>((intptr_t)(src_addr+i)));
       }
     }
   }
 
   inline __device__ void kernelScatteredMemcpy(struct iov* iov) {
-      typedef float2 PackT;
+    typedef float2 PackT;
 
-    //  Yang: this uses too much shared memory. 
-    //  static constexpr int kCpAsycDepth = 2;
-    //  static constexpr int kNumThPerBlock = 512;
-    //  __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
+    // Yang: this uses too much shared memory. 
+    // static constexpr int kCpAsycDepth = 2;
+    // static constexpr int kNumThPerBlock = 512;
+    // __shared__ PackT smem[kNumThPerBlock * kCpAsycDepth];
 
-      int iov_n = iov->iov_n;
+    int iov_n = iov->iov_n;
 
-      // Speedup tricks for 1 iov copy; could be deleted for generality.
-      if (iov_n == 1) {
-      void** src_addrs = iov->src_addrs;
+    // Speedup tricks for 1 iov copy; could be deleted for generality.
+    if (iov_n == 1) {
+      void** src_addrs =  iov->src_addrs;
       void** dst_addrs = iov->dst_addrs;
       int* iov_lens = iov->iov_lens;
 
@@ -188,65 +171,67 @@ class Primitives<
       return;
     }
 
-      // Number of threads per copy: A100 has 8 * 128bit mem transactions.
-      // https://developer.download.nvidia.com/video/gputechconf/gtc/2020/presentations/s21745-developing-cuda-kernels-to-push-tensor-cores-to-the-absolute-limit-on-nvidia-a100.pdf
-      int nthreads_per_iov = max(8, nthreads / iov_n);
-      // Ignoring some non-rounded threads
-      if (tid > nthreads_per_iov * iov_n) return;
+    // Number of threads per copy: A100 has 8 * 128bit mem transactions.
+    // https://developer.download.nvidia.com/video/gputechconf/gtc/2020/presentations/s21745-developing-cuda-kernels-to-push-tensor-cores-to-the-absolute-limit-on-nvidia-a100.pdf
+    int nthreads_per_iov = max(8, nthreads / iov_n);
+    // Ignoring some non-rounded threads
+    if (tid > nthreads_per_iov * iov_n) return;
 
-      int iov_n_per_iter = nthreads / nthreads_per_iov;
-      int start_iov = tid / nthreads_per_iov;
+    int iov_n_per_iter = nthreads / nthreads_per_iov;
+    int start_iov = tid / nthreads_per_iov;
 
-      for (int i = start_iov; i < iov_n; i += iov_n_per_iter) {
-          // Map each thread to a iov copy.
-          int iov_idx = i;
-          // Compute local tid within the th group assigned to this iov copy.
-          int local_tid = tid % nthreads_per_iov;
+    for (int i = start_iov; i < iov_n; i += iov_n_per_iter) {
+      // Map each thread to a iov copy.
+      int iov_idx = i;
+      // Compute local tid within the th group assigned to this iov copy.
+      int local_tid = tid % nthreads_per_iov;
 
-          // Retrieve parameters for this copy.
-          char* src_ptr = (char*)iov->src_addrs[iov_idx];
-          char* dst_ptr = (char*)iov->dst_addrs[iov_idx];
-          int iov_len = iov->iov_lens[iov_idx];
-          if (iov_len == 0) return;
+      // Retrieve parameters for this copy.
+      char* src_ptr = (char*)iov->src_addrs[iov_idx];
+      char* dst_ptr = (char*)iov->dst_addrs[iov_idx];
+      int iov_len = iov->iov_lens[iov_idx];
+      if (iov_len == 0) return;
 
-          // Copy t-byte chunks first (if possible)
-          int num_full = iov_len / sizeof(PackT);
-          PackT* src_T = (PackT*)src_ptr;
-          PackT* dst_T = (PackT*)dst_ptr;
+      // Copy t-byte chunks first (if possible)
+      int num_full = iov_len / sizeof(PackT);
+      PackT* src_T = (PackT*)src_ptr;
+      PackT* dst_T = (PackT*)dst_ptr;
 
-          // int depth = 0;
-          // Each thread in the group copies its portion of data.
-          for (int j = local_tid; j < num_full; j += nthreads_per_iov) {
-              dst_T[j] = src_T[j];
+      // int depth = 0;
+      // Each thread in the group copies its portion of data.
+      for (int j = local_tid; j < num_full; j += nthreads_per_iov) {
+        // dst_T[j] = src_T[j];
+        st_global<sizeof(PackT)>((intptr_t)&dst_T[j], ld_global<sizeof(PackT)>((intptr_t)&src_T[j]));
 
-            //  void* smemBytePtr = (void*)&smem[tid + nthreads * depth++];
-            //  const void* gmemBytePtr = (const void*)&src_T[j];
-            //  __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(PackT));
+        //  void* smemBytePtr = (void*)&smem[tid + nthreads * depth++];
+        //  const void* gmemBytePtr = (const void*)&src_T[j];
+        //  __pipeline_memcpy_async(smemBytePtr, gmemBytePtr, sizeof(PackT));
 
-            //  if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
-            //      __pipeline_commit();
-            //      __pipeline_wait_prior(0);
-            //      // Copy the data from shared memory to global memory
-            //      for (int k = 0; k < depth; k++) {
-            //          dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
-            //              smem[tid + nthreads * k];
-            //      }
-            //      depth = 0;
-            //  }
-          }
-
-          // Let only one thread in the copy group (e.g. local_tid == 0) copy
-          // the tail.
-          if (local_tid == 0) {
-              // Handle the remaining tail bytes (if any)
-              int tail_start = num_full * 8;
-              for (int j = tail_start; j < iov_len; j++) {
-                  dst_ptr[j] = src_ptr[j];
-              }
-          }
+        //  if (depth == kCpAsycDepth || j + nthreads_per_iov >= num_full) {
+        //      __pipeline_commit();
+        //      __pipeline_wait_prior(0);
+        //      // Copy the data from shared memory to global memory
+        //      for (int k = 0; k < depth; k++) {
+        //          dst_T[j - (depth - 1 - k) * nthreads_per_iov] =
+        //              smem[tid + nthreads * k];
+        //      }
+        //      depth = 0;
+        //  }
       }
+
+      // Let only one thread in the copy group (e.g. local_tid == 0) copy
+      // the tail.
+      if (local_tid == 0) {
+        // Handle the remaining tail bytes (if any)
+        int tail_start = num_full * sizeof(PackT);
+        for (int j = tail_start; j < iov_len; j++) {
+          // dst_ptr[j] = src_ptr[j];
+          st_global<1>((intptr_t)&dst_ptr[j], ld_global<1>((intptr_t)&src_ptr[j]));
+        }
+      }
+    }
   }
-  
+
   template <int DirectRecv, int DirectSend, int Recv, int Send, int Src, int Dst>
   __device__ __forceinline__ void waitPeer(intptr_t srcIx, intptr_t dstIx, int offset, int nelts) {
     // Yang: initing shared variable. For tree allreduce, the first two threads will have (flags & (Recv*RoleWaitRecv)).
@@ -272,6 +257,9 @@ class Primitives<
       // Yang: load the is_net_transfer flag that is set by net.cc, non-zero means network transfer.
       is_net_transfer = loadStepValue(connStepPtr + 1);
     }
+
+    // Yang: need to keep the same as comm.h
+    const int kIovStart = 328;
 
     if (flags & (Recv*RoleWaitRecv | Send*RoleWaitSend)) {
       if (flags & ConnFifoEnabled)
@@ -315,15 +303,20 @@ class Primitives<
 
       // Yang: only care recv-side step value.
       if (flags & (Recv*RoleWaitRecv)) { 
-
         // Yang: is this step for network transfer?
         ncclShmem.groups[group].is_net_transfer[tid] = is_net_transfer;
-
         // Yang: using one thread to load the step into sharemem.
         ncclShmem.groups[group].step[tid] = step;
-
         // Yang: setup tail_ptr based on peer
         ncclShmem.groups[group].tail_ptr[tid] = connStepPtr;
+
+        if (is_net_transfer) {
+          int iov_idx = (step - StepPerSlice) % NCCL_STEPS;
+          struct iov *cur_iov = (struct iov *)((char *)connStepPtr + kIovStart + iov_idx * kIovSize);
+          
+          // Yang: single thread load iov to sharemem.
+          ncclShmem.groups[group].cur_iovs[tid].iov_n = loadInt(&cur_iov->iov_n);
+        }
 
         // Yang: this gives the correct step value from CPU.
         // uint64_t gpu_idx = loadStepValue(connStepPtr + 1);
@@ -340,10 +333,19 @@ class Primitives<
           uint64_t step = ncclShmem.groups[group].step[t];
           uint64_t* tail_ptr = ncclShmem.groups[group].tail_ptr[t];
 
-          uint64_t prevStep = step - StepPerSlice;
-          int iov_idx = prevStep % (NCCL_STEPS);
+          int iov_idx = (step - StepPerSlice) % NCCL_STEPS;
           struct iov *cur_iov = (struct iov *)((char *)tail_ptr + kIovStart + iov_idx * kIovSize);
-    
+          struct iov *cur_iov_shmem = ncclShmem.groups[group].cur_iovs + t;
+
+          // Yang: single thread load iov to sharemem.
+          if (tid < cur_iov->iov_n) {
+            int i = tid;
+            cur_iov_shmem->src_addrs[i] = (void*)loadInt64((int64_t*)(cur_iov->src_addrs + i));
+            cur_iov_shmem->dst_addrs[i] = (void*)loadInt64((int64_t*)(cur_iov->dst_addrs + i));
+            cur_iov_shmem->iov_lens[i] = loadInt(cur_iov->iov_lens + i);
+          }
+          barrier();
+
           kernelScatteredMemcpy(cur_iov);
 
           // Yang: debuging
@@ -362,9 +364,6 @@ class Primitives<
   inline __device__ void postPeer(bool dataStored) {
     if (flags & (Recv*RolePostRecv | Send*RolePostSend)) {
       step += StepPerSlice;
-
-      // Yang: no need to load the step into sharemem, as this is for posting to CPU.
-      // ncclShmem.groups[group].step[0] = step;
 
       if (Send && (flags & RolePostSend) && (dataStored||(flags&ConnFifoEnabled))) {
         fence_acq_rel_sys();

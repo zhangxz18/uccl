@@ -6,7 +6,7 @@ source ../shared.sh
 
 # Usage: ./run_nccl_test_mp.sh [srd|ud] [Total Processes/Ranks/GPUs] [Benchtype, 0: allgather, 1: multi-allreduce]
 
-UCCL_HOME="/opt/zhongjie/uccl_rdma"
+UCCL_HOME="/opt/uccl_rdma"
 LIBNCCL_PATH="${UCCL_HOME}/nccl/build/lib/libnccl.so"
 
 # Visible GPUs to application.
@@ -80,7 +80,7 @@ if [ "$TEST" = "srd" ]; then
     -x NCCL_P2P_NET_CHUNKSIZE=${CHUNK_SIZE} \
     -x NCCL_BUFFSIZE=${BUFFSIZE} \
     ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-    -b 1K -e 1G -f 2 -c 1 -w 50 -n 50 -t 1 -g 1 \
+    -b 1K -e 1G -f 2 -c 1 -w 5 -n 10 -t 1 -g 1 \
     2>&1 | while read -r line; do
     # Extract rank from the format [1,2]
     if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
@@ -134,7 +134,7 @@ elif [ "$TEST" = "ud" ]; then
     -x NCCL_PXN_DISABLE=1 \
     -x UCCL_ENGINE_QUIET=1 \
     ${UCCL_HOME}/nccl-tests/build/${PROG_NAME} \
-    -b 1K -e 1G -f 2 -c 0 -w 50 -n 50 -t 1 -g 1 \
+    -b 1K -e 1G -f 2 -c 1 -w 5 -n 10 -t 1 -g 1 \
     2>&1 | while read -r line; do
     # Extract rank from the format [1,2]
     if [[ "$line" =~ ^\[[0-9]+,([0-9]+)\](.+) ]]; then
