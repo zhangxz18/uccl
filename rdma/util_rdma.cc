@@ -39,8 +39,8 @@ void RDMAFactory::init_dev(int devname_suffix) {
     DCHECK(util_rdma_get_ib_name_from_suffix(devname_suffix, dev.ib_name) == 0);
 
     // Get IP address from Infiniband name.
-    if (!SINGLE_IP.empty())
-        dev.local_ip_str = SINGLE_IP;
+    if (!SINGLE_CTRL_NIC.empty())
+        dev.local_ip_str = get_dev_ip(SINGLE_CTRL_NIC.c_str());
     else
         DCHECK(util_rdma_get_ip_from_ib_name(dev.ib_name, &dev.local_ip_str) ==
                0);

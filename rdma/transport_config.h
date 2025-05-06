@@ -11,13 +11,11 @@
 /// Interface configuration.
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 static constexpr bool ROCE_NET = false;
-// If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("87.120.213.6");
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-static constexpr uint8_t NUM_DEVICES = 8;
-// static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
-// static constexpr uint8_t NUM_DEVICES = 4;
-static constexpr double LINK_BANDWIDTH = 400.0 * 1e9 / 8; // 400Gbps
+// If SINGLE_CTRL_NIC is set, all devices will use the same IP.
+static std::string SINGLE_CTRL_NIC("eth0");
+static constexpr uint8_t NUM_DEVICES = 1;
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0};
+static constexpr double LINK_BANDWIDTH = 200.0 * 1e9 / 8; // 200Gbps
 static constexpr uint32_t MAX_PEER = 256;
 // Maximum number of flows (one-way) on each engine.
 static constexpr uint32_t MAX_FLOW = 256;
@@ -48,7 +46,7 @@ static uint32_t ENGINE_CPU_START_LIST[8] = {
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static constexpr uint32_t kPortEntropy = 64;
 // Use RC rather than UC.
-static constexpr bool kRCMode = true;
+static constexpr bool kRCMode = false;
 // Maximum chunk size (Bytes) for each WQE.
 static constexpr uint32_t kChunkSize = 32 << 10;
 // Bypass the pacing stage.

@@ -10,23 +10,31 @@
 #   GPU 6,7 <-> mlx5_2
 # salloc -N 4 -n 4 -p mi2508x -t 00:30:00
 
+ROOT=/home1/yangzhou/uccl_rdma
 NODEFILE=node.txt
-echo $NODEFILE
 scontrol show hostnames $SLURM_JOB_NODELIST > $NODEFILE
 
 mpirun --bind-to none -np 4 -N 1 --hostfile $NODEFILE --map-by ppr:1:node \
-    -x LD_PRELOAD="/home1/yangzhou/uccl_rdma/rccl/build/release/librccl.so" \
+    -x NCCL_DEBUG=INFO \
+    -x LD_PRELOAD="${ROOT}/rccl/build/release/librccl.so ${ROOT}/rdma/librccl-net.so"\
+    -x LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}" \
     -x NCCL_P2P_DISABLE=1 \
     -x NCCL_SHM_DISABLE=1 \
     -x NCCL_NET_DISABLE=0 \
-    -x NCCL_IB_QPS_PER_CONNECTION=64 \
-    -x CUDA_VISIBLE_DEVICES=0,1,6,7 \
-    -x NCCL_IB_HCA="mlx5_0:1,mlx5_2:1" \
-    ./rccl-tests/build/alltoall_perf \
-    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 4
-    
-    # \
-    # >& alltoall_debug.log
+    -x NCCL_IB_QPS_PER_CONNECTION=1 \
+    -x NCCL_NET_GDR_LEVEL=SYS \
+    -x CUDA_VISIBLE_DEVICES=0 \
+    -x NCCL_IB_HCA="mlx5_0:1" \
+   ${ROOT}/rccl-tests/build/alltoall_perf \
+    -b 1K -e 1G -f 2 -w 5 -n 10 -c 1 -g 1 -t 1 \
+    |& tee alltoall_debug.log
+
+    # UCCL UC
+    # -x LD_PRELOAD="${ROOT}/rccl/build/release/librccl.so ${ROOT}/rdma/librccl-net.so"\
+    # -x LD_LIBRARY_PATH="/work1/yzhou/yangzhou/anaconda3/lib:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}" \
+
+    # NCCL
+    # -x LD_PRELOAD="${ROOT}/rccl/build/release/librccl.so" \
 
     # On mi2104x
     # -x NCCL_NET_GDR_LEVEL=SYS \

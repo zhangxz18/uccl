@@ -17,7 +17,7 @@ sudo apt-get install libibverbs-dev -y
 ```
 ROCE_NET:               True (RoCE) or false (Infiniband)
 
-SINGLE_IP:              The IP address of control NIC. Set to empty string if each NIC has its own IP address. UCCL will detect them atomically.
+SINGLE_CTRL_NIC:        The device name of control NIC. Set to empty string if each RDMA NIC has its own IP address. UCCL will detect them atomically.
 ```
 
 2. NIC
