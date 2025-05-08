@@ -27,6 +27,8 @@ PROG_NAME=${3:-0}
 if [ "$PROG_NAME" -eq 0 ]; then
     PROG_NAME="all_gather_perf"
 elif [ "$PROG_NAME" -eq 1 ]; then
+    PROG_NAME="reduce_scatter_perf"
+elif [ "$PROG_NAME" -eq 2 ]; then
     PROG_NAME="all_reduce_perf"
     MULTI_GROUP=0x7
 else
@@ -59,7 +61,7 @@ if [ "$TEST" = "srd" ]; then
         >"output_rank_$rank.log" # Truncate or create empty file
     done
 
-    # PLUGIN_PATH="${UCCL_HOME}/nccl/ext-net/google-fastsocket/libnccl-net.so"
+    LIBNCCL_PATH="/opt/uccl_rdma_zc/nccl/build/lib/libnccl.so"
     PLUGIN_PATH="/opt/amazon/ofi-nccl/lib/x86_64-linux-gnu/libnccl-net.so"
 
     mpirun --bind-to none -np ${NUM_PROCS} -N ${PROCS_PER_NODE} --hostfile hostname \
@@ -117,7 +119,6 @@ elif [ "$TEST" = "ud" ]; then
     -x NCCL_NET_PLUGIN=${PLUGIN_PATH} \
     -x LD_PRELOAD="${LIBNCCL_PATH}" \
     -x NCCL_PROTO=Simple \
-    -x NCCL_ALGO=Tree \
     -x NCCL_P2P_DISABLE=${NV_LINK_DISABLE} \
     -x NCCL_SHM_DISABLE=${NV_LINK_DISABLE} \
     -x NCCL_NET_DISABLE=0 \
@@ -152,6 +153,7 @@ elif [ "$TEST" = "ud" ]; then
     fi
 
         # gdb -ex run --args \
+        # -x NCCL_ALGO=Tree \
         # -x NCCL_ALGO=Ring \
         # -x NCCL_IB_CUDA_SUPPORT=1 \
         # -x NCCL_SOCKET_NTHREADS=4 \
