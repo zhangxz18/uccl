@@ -49,7 +49,6 @@ elif [ "$TEST" = "ud" ]; then
     LD_PRELOAD="${UCCL_HOME}/nccl/build/lib/libnccl.so" \
         NCCL_NET_PLUGIN="${UCCL_HOME}/efa/libnccl-net.so" \
         NCCL_PROTO=Simple \
-        NCCL_ALGO=Tree \
         NCCL_P2P_DISABLE=${NV_LINK_DISABLE} \
         NCCL_SHM_DISABLE=${NV_LINK_DISABLE} \
         NCCL_NET_DISABLE=0 \
@@ -71,4 +70,5 @@ elif [ "$TEST" = "ud" ]; then
         # NCCL_DEBUG=INFO \
 fi
 
+        # NCCL_ALGO=Tree \
         # NCCL_ALGO=Ring \
