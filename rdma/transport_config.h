@@ -14,7 +14,7 @@ static constexpr bool ROCE_NET = false;
 // If SINGLE_CTRL_NIC is set, all devices will use the same IP.
 static std::string SINGLE_CTRL_NIC("eth0");
 static constexpr uint8_t NUM_DEVICES = 1;
-static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {2};
+static constexpr uint8_t DEVNAME_SUFFIX_LIST[NUM_DEVICES] = {0};
 static constexpr double LINK_BANDWIDTH = 200.0 * 1e9 / 8; // 200Gbps
 static constexpr uint32_t MAX_PEER = 256;
 // Maximum number of flows (one-way) on each engine.
@@ -29,11 +29,11 @@ static constexpr uint8_t GID_IDX = ROCE_NET ? 3 : 0;
 /// Interface configuration.
 
 // # of engines per device.
-static constexpr uint32_t NUM_ENGINES = 4;
+static constexpr uint32_t NUM_ENGINES = 1;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 // Each dev use [ENGINE_CPU_START_LIST[dev], ENGINE_CPU_START_LIST[dev] + NUM_ENGINES)
 static uint32_t ENGINE_CPU_START_LIST[8] = {
-    64 + 16,
+    0 + 16,
     64 + 16 + NUM_ENGINES,
     64 + 16 + 2 * NUM_ENGINES,
     64 + 16 + 3 * NUM_ENGINES,
@@ -44,11 +44,11 @@ static uint32_t ENGINE_CPU_START_LIST[8] = {
 };
 
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
-static constexpr uint32_t kPortEntropy = 64;
+static constexpr uint32_t kPortEntropy = 256;
 // Use RC rather than UC.
 static constexpr bool kRCMode = false;
 // Maximum chunk size (Bytes) for each WQE.
-static constexpr uint32_t kChunkSize = 32 << 10;
+static constexpr uint32_t kChunkSize = 128 << 10;
 // Bypass the pacing stage.
 static constexpr bool kBypassPacing = true;
 
@@ -56,9 +56,9 @@ static constexpr bool kBypassPacing = true;
 static constexpr uint32_t kMaxUnAckedBytesPerFlow = 2 * std::max(kChunkSize, 32768u);
 // Limit the outstanding bytes on each engine.
 // Low means if a flow exceeds its own budget but doesn't exceed the Low threshold, it can send until Low threshold.
-static constexpr uint32_t kMaxUnAckedBytesPerEngineLow = 18 * std::max(kChunkSize, 32768u);
+static constexpr uint32_t kMaxUnAckedBytesPerEngineLow = 9 * std::max(kChunkSize, 32768u);
 // High means if all flows reach this threshold, all flows can't send any bytes.
-static constexpr uint32_t kMaxUnAckedBytesPerEngineHigh = 24 * std::max(kChunkSize, 32768u);
+static constexpr uint32_t kMaxUnAckedBytesPerEngineHigh = 12 * std::max(kChunkSize, 32768u);
 
 // Congestion control algorithm.
 enum SenderCCA {
@@ -103,8 +103,7 @@ constexpr static int kTotalQP = kPortEntropy + 1 /* Credit QP */ +
 static constexpr uint32_t kRCSize = 8192;
 // Minimum post receive size in NCCL.
 static constexpr uint32_t NCCL_MIN_POST_RECV = 65536;
-
-// Limit the bytes of consecutive cached QP uses.
+// Limit the bytes of consecutive cached QP
 static constexpr uint32_t kMAXConsecutiveSameChoiceBytes = 16384;
 // Message size threshold for allowing using cached QP.
 static constexpr uint32_t kMAXUseCacheQPSize = 8192;

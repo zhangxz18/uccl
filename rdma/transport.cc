@@ -37,7 +37,8 @@ void UcclFlow::poll_flow_cq(void) {
         } else if (opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
             // RC recv completion.
             auto ureq = (struct ucclRequest *)wcs[i].wr_id;
-            ureq->recv.data_len[0] = ntohl(wcs[i].imm_data);
+            DCHECK(ureq);
+	    ureq->recv.data_len[0] = ntohl(wcs[i].imm_data);
             ureq->rc_or_flush_done = true;
             if (ureq->recv.data_len[0] <= NCCL_MIN_POST_RECV) {
                 auto *flow = (UcclFlow *)ureq->context;
@@ -46,7 +47,8 @@ void UcclFlow::poll_flow_cq(void) {
         } else if (opcode == IBV_WC_RDMA_READ) {
             // GPU flush completion.
             auto *rc_or_flush_done = (uint64_t *)wcs[i].wr_id;
-            *rc_or_flush_done = true;
+            DCHECK(rc_or_flush_done);
+	    *rc_or_flush_done = true;
         }
     }
     flow_cq_cnt_ -= nb_cqe;
@@ -1315,7 +1317,9 @@ int RDMAEndpoint::uccl_send_async(UcclFlow *flow, struct Mhandle *mhandle,
 
 bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest *ureq) {
     bool ret;
+    if (ureq->type == ReqFlush) return true;
     UcclFlow *flow = reinterpret_cast<UcclFlow *>(ureq->context);
+    DCHECK(flow) << ureq->type;
     if (ureq->type == ReqTxRC || ureq->type == ReqRxRC ||
         ureq->type == ReqFlush) {
         flow->poll_flow_cq();
@@ -1350,8 +1354,8 @@ int RDMAEndpoint::uccl_flush(UcclFlow *flow, struct Mhandle **mhandles,
     if (last == -1)
         return 0;
 
-    flow->post_flush(mhandles, data, size, n, &ureq->rc_or_flush_done, last);
-
+    // flow->post_flush(mhandles, data, size, n, &ureq->rc_or_flush_done, last);
+    ureq->rc_or_flush_done = true;
     ureq->type = ReqFlush;
 
     return 0;
