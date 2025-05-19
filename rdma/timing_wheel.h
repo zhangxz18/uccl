@@ -33,16 +33,14 @@ static_assert(sizeof(wr_ex) == 192, "wr_ex size mismatch");
 
 /// Used for fast recording of wheel actions for debugging
 struct wheel_record_t {
-    size_t record_tsc_;  ///< Timestamp at which this record was created
-    bool insert_;        ///< Is this a record for a wheel insertion?
-    size_t pkt_num_;     ///< The request number of the wheel entry's sslot
-    size_t abs_tx_tsc_;  ///< For inserts, the requested TX timestamp
+    size_t record_tsc_; ///< Timestamp at which this record was created
+    bool insert_;       ///< Is this a record for a wheel insertion?
+    size_t pkt_num_;    ///< The request number of the wheel entry's sslot
+    size_t abs_tx_tsc_; ///< For inserts, the requested TX timestamp
 
     /// Record an wheel insertion entry
     wheel_record_t(size_t pkt_num, size_t abs_tx_tsc)
-        : record_tsc_(rdtsc()),
-          insert_(true),
-          pkt_num_(pkt_num),
+        : record_tsc_(rdtsc()), insert_(true), pkt_num_(pkt_num),
           abs_tx_tsc_(abs_tx_tsc) {}
 
     /// Record a wheel reap entry
@@ -65,11 +63,11 @@ struct wheel_record_t {
     }
 };
 
-static constexpr double kWheelSlotWidthUs = .5;  ///< Duration per wheel slot
+static constexpr double kWheelSlotWidthUs = .5; ///< Duration per wheel slot
 static const uint32_t MAX_TIMING_WHEEL_PKTS = 1024;
 static constexpr size_t kSessionCredits = MAX_TIMING_WHEEL_PKTS;
 static constexpr double kWheelHorizonUs =
-    1000000 * (kSessionCredits * kChunkSize) / Timely::kMinRate;
+    1000000 * (kSessionCredits * kChunkSize) / timely::TimelyCC::kMinRate;
 
 // This ensures that packets for an sslot undergoing retransmission are rarely
 // in the wheel. This is recommended but not required.
@@ -78,18 +76,17 @@ static constexpr double kWheelHorizonUs =
 static constexpr size_t kWheelNumWslots =
     1 + DIVUP(kWheelHorizonUs, kWheelSlotWidthUs);
 
-static constexpr bool kWheelRecord = false;  ///< Fast-record wheel actions
+static constexpr bool kWheelRecord = false; ///< Fast-record wheel actions
 
 /// One entry in a timing wheel bucket
 struct wheel_ent_t {
     uint64_t sslot_;
-    wheel_ent_t(void *sslot)
-        : sslot_(reinterpret_cast<uint64_t>(sslot)) {}
+    wheel_ent_t(void *sslot) : sslot_(reinterpret_cast<uint64_t>(sslot)) {}
 };
 static_assert(sizeof(wheel_ent_t) == 8, "");
 
 // Handle the fact that we're not using all 64 TSC bits
-static constexpr size_t kWheelBucketCap = 5;  ///< Wheel entries per bucket
+static constexpr size_t kWheelBucketCap = 5; ///< Wheel entries per bucket
 static constexpr size_t kNumBktEntriesBits = 3;
 static_assert((1ull << kNumBktEntriesBits) > kWheelBucketCap, "");
 
@@ -101,15 +98,15 @@ static constexpr size_t kKTscTicks = 1ull << (64 - kNumBktEntriesBits);
 static_assert(kKTscTicks / (3000000000ull * 86400) > 2000, "");
 
 struct wheel_bkt_t {
-    size_t num_entries_ : kNumBktEntriesBits;  ///< Valid entries in this bucket
+    size_t num_entries_ : kNumBktEntriesBits; ///< Valid entries in this bucket
 
     /// Timestamp at which it is safe to transmit packets in this bucket's chain
     size_t tx_tsc_ : 64 - kNumBktEntriesBits;
 
     wheel_bkt_t
-        *last_;  ///< Last bucket in chain. Used only at the first bucket.
-    wheel_bkt_t *next_;                   ///< Next bucket in chain
-    wheel_ent_t entry_[kWheelBucketCap];  ///< Space for wheel entries
+        *last_; ///< Last bucket in chain. Used only at the first bucket.
+    wheel_bkt_t *next_;                  ///< Next bucket in chain
+    wheel_ent_t entry_[kWheelBucketCap]; ///< Space for wheel entries
 };
 static_assert(sizeof(wheel_bkt_t) == 64, "");
 
@@ -121,16 +118,10 @@ struct timing_wheel_args_t {
 };
 
 class TimingWheel {
-   public:
-
-    uint64_t prev_tx_tsc_[kPortEntropy] = {};
-
+  public:
     TimingWheel(timing_wheel_args_t args)
-        : freq_ghz_(args.freq_ghz_),
-        wslot_width_tsc_(args.wslot_width_tsc_),
-        horizon_tsc_(args.horizon_tsc_),
-        bkt_pool_(args.bkt_pool_)
-        {
+        : freq_ghz_(args.freq_ghz_), wslot_width_tsc_(args.wslot_width_tsc_),
+          horizon_tsc_(args.horizon_tsc_), bkt_pool_(args.bkt_pool_) {
         wheel_buffer_ = new uint8_t[kWheelNumWslots * sizeof(wheel_bkt_t)];
 
         size_t base_tsc = rdtsc();
@@ -154,22 +145,25 @@ class TimingWheel {
 
     // Queue a work request (i.e., one chunk) on the timing wheel.
     // Returns true if the work request was queued on the wheel.
-    // Otherwise, the timing wheel was bypassed and the caller can transmit directly.
-    inline bool queue_on_timing_wheel(uint32_t qpidx, double target_rate, size_t *prev_desired_tx_tsc, 
-        size_t ref_tsc, void *wr, size_t chunk_size, bool allow_bypass) {
+    // Otherwise, the timing wheel was bypassed and the caller can transmit
+    // directly.
+    inline bool queue_on_timing_wheel(double target_rate,
+                                      size_t *prev_desired_tx_tsc,
+                                      size_t ref_tsc, void *wr,
+                                      size_t chunk_size, bool allow_bypass) {
         if constexpr (kTestConstantRate)
-            target_rate = Timely::gbps_to_rate(kLinkBandwidth);
+            target_rate = gbps_to_rate(LINK_BANDWIDTH);
+
+        if (chunk_size < kBypassTimingWheelThres && allow_bypass)
+            return false;
+
         double ns_delta = 1000000000 * (chunk_size / target_rate);
         double cycle_delta = ns_to_cycles(ns_delta, freq_ghz);
 
         size_t desired_tx_tsc = *prev_desired_tx_tsc + cycle_delta;
         desired_tx_tsc = (std::max)(desired_tx_tsc, ref_tsc);
 
-        // Avoid Out-of-Order TX within each QP.
-        desired_tx_tsc = (std::max)(desired_tx_tsc, prev_tx_tsc_[qpidx]);
-
         *prev_desired_tx_tsc = desired_tx_tsc;
-        prev_tx_tsc_[qpidx] = desired_tx_tsc;
 
         if (desired_tx_tsc == ref_tsc && allow_bypass) {
             return false;
@@ -187,7 +181,8 @@ class TimingWheel {
     /// Roll the wheel forward until it catches up with current time. Hopefully
     /// this is needed only during initialization.
     void catchup() {
-        while (wheel_[cur_wslot_].tx_tsc_ < rdtsc()) reap(rdtsc());
+        while (wheel_[cur_wslot_].tx_tsc_ < rdtsc())
+            reap(rdtsc());
     }
 
     /// Move entries from all wheel slots older than reap_tsc to the ready
@@ -199,7 +194,8 @@ class TimingWheel {
             wheel_[cur_wslot_].tx_tsc_ += (wslot_width_tsc_ * kWheelNumWslots);
 
             cur_wslot_++;
-            if (cur_wslot_ == kWheelNumWslots) cur_wslot_ = 0;
+            if (cur_wslot_ == kWheelNumWslots)
+                cur_wslot_ = 0;
         }
     }
 
@@ -220,9 +216,9 @@ class TimingWheel {
         CHECK(desired_tx_tsc >= ref_tsc);
         CHECK(desired_tx_tsc - ref_tsc <= horizon_tsc_)
             << desired_tx_tsc - ref_tsc << " vs "
-            << horizon_tsc_;  // Horizon definition
+            << horizon_tsc_; // Horizon definition
 
-        reap(ref_tsc);  // Advance the wheel to a recent time
+        reap(ref_tsc); // Advance the wheel to a recent time
         assert(wheel_[cur_wslot_].tx_tsc_ > ref_tsc);
 
         size_t dst_wslot;
@@ -236,7 +232,8 @@ class TimingWheel {
                 << wslot_delta << " vs " << kWheelNumWslots;
 
             dst_wslot = cur_wslot_ + wslot_delta;
-            if (dst_wslot >= kWheelNumWslots) dst_wslot -= kWheelNumWslots;
+            if (dst_wslot >= kWheelNumWslots)
+                dst_wslot -= kWheelNumWslots;
         }
 
         if (kWheelRecord) {
@@ -247,7 +244,7 @@ class TimingWheel {
         insert_into_wslot(dst_wslot, ent);
     }
 
-   private:
+  private:
     void insert_into_wslot(size_t ws_i, const wheel_ent_t &ent) {
         wheel_bkt_t *last_bkt = wheel_[ws_i].last_;
         assert(last_bkt->next_ == nullptr);
@@ -273,20 +270,21 @@ class TimingWheel {
                 ready_entries_++;
                 ready_queue_.push_back(bkt->entry_[i]);
                 if (kWheelRecord) {
-                    auto wr = reinterpret_cast<struct wr_ex *>(bkt->entry_[i].sslot_);
-                    record_vec_.push_back(
-                        wheel_record_t(wr->sge.length));
+                    auto wr =
+                        reinterpret_cast<struct wr_ex *>(bkt->entry_[i].sslot_);
+                    record_vec_.push_back(wheel_record_t(wr->sge.length));
                 }
             }
 
             wheel_bkt_t *tmp_next = bkt->next_;
 
             reset_bkt(bkt);
-            if (bkt != &wheel_[ws_i]) CHECK(bkt_pool_.push_front(bkt));
+            if (bkt != &wheel_[ws_i])
+                CHECK(bkt_pool_.push_front(bkt));
             bkt = tmp_next;
         }
 
-        wheel_[ws_i].last_ = &wheel_[ws_i];  // Reset last pointer
+        wheel_[ws_i].last_ = &wheel_[ws_i]; // Reset last pointer
     }
 
     inline void reset_bkt(wheel_bkt_t *bkt) {
@@ -296,14 +294,14 @@ class TimingWheel {
 
     wheel_bkt_t *alloc_bkt() {
         wheel_bkt_t *bkt;
-        CHECK(bkt_pool_.pop_front(&bkt));  // Exception if allocation fails
+        CHECK(bkt_pool_.pop_front(&bkt)); // Exception if allocation fails
         reset_bkt(bkt);
         return bkt;
     }
 
-    const double freq_ghz_;  ///< TSC freq, used only for us/tsc conversion
-    const size_t wslot_width_tsc_;  ///< Time-granularity in TSC units
-    const size_t horizon_tsc_;      ///< Horizon in TSC units
+    const double freq_ghz_; ///< TSC freq, used only for us/tsc conversion
+    const size_t wslot_width_tsc_; ///< Time-granularity in TSC units
+    const size_t horizon_tsc_;     ///< Horizon in TSC units
     uint8_t *wheel_buffer_;
 
     wheel_bkt_t *wheel_;
@@ -311,9 +309,9 @@ class TimingWheel {
     CircularBuffer<wheel_bkt_t *, /*sync=*/false> bkt_pool_;
     uint8_t *bkt_pool_buf_;
 
-   public:
-    std::vector<wheel_record_t> record_vec_;  ///< Used only with kWheelRecord
+  public:
+    std::vector<wheel_record_t> record_vec_; ///< Used only with kWheelRecord
     uint64_t ready_entries_ = 0;
     std::deque<wheel_ent_t> ready_queue_;
 };
-}  // namespace uccl
+} // namespace uccl

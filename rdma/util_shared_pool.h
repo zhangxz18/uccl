@@ -13,8 +13,7 @@ namespace uccl {
 
 // Be caseful that only SharedPool with the same T and Sync will share the same
 // thread_local cache.
-template <typename T, bool Sync = false>
-class SharedPool {
+template <typename T, bool Sync = false> class SharedPool {
     constexpr static uint32_t kNumCachedItemsPerCPU = 64;
     using global_pool_t = CircularBuffer<T, /* sync = */ false>;
     using th_cache_t = CircularBuffer<T, false, kNumCachedItemsPerCPU>;
@@ -26,13 +25,15 @@ class SharedPool {
         th_cache_t cache_;
         global_pool_t *global_pool_ptr_ = nullptr;
 
-       public:
+      public:
         ThreadCache() {}
         ~ThreadCache() {
-            if (!global_pool_ptr_) return;
+            if (!global_pool_ptr_)
+                return;
 
             // global_pool_ has been deleted.
-            if (shutdown_) return;
+            if (shutdown_)
+                return;
 
             // Return all items to the global pool when thread exits normally.
             T item;
@@ -52,7 +53,7 @@ class SharedPool {
     global_pool_t global_pool_;
     static thread_local inline ThreadCache th_cache_;
 
-   public:
+  public:
     SharedPool(uint32_t capacity) : global_pool_(capacity) {}
     ~SharedPool() { shutdown_ = true; }
     void push(T item) {
@@ -104,4 +105,4 @@ class SharedPool {
     }
 };
 
-}  // namespace uccl
+} // namespace uccl
