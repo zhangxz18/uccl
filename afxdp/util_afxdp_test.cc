@@ -363,7 +363,7 @@ static void* stats_thread(void* arg) {
 }
 
 // TO RUN THE TEST:
-// On server: cd playground; sudo ./server_main
+// On server: cd misc; sudo ./server_main
 // On client: sudo ./util_afxdp_test
 int main(int argc, char* argv[]) {
     google::InitGoogleLogging(argv[0]);

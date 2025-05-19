@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     stdout, stderr = exec_command_and_wait(
         node_clients[0],
-        f'cd {UCCL_HOME}/afxdp; make -j "CXXFLAGS=-D{make_macro}"; cd playground; make -j "CXXFLAGS=-D{make_macro}"',
+        f'cd {UCCL_HOME}/afxdp; make -j "CXXFLAGS=-D{make_macro}"; cd misc; make -j "CXXFLAGS=-D{make_macro}"',
     )
 
     print(f'{stdout} {stderr}')

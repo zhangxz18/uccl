@@ -10,6 +10,7 @@
 #include <linux/if_ether.h>
 #include <linux/if_link.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/udp.h>
 #include <locale.h>
 #include <net/if.h>
@@ -33,9 +34,9 @@
 #include <xdp/libxdp.h>
 #include <xdp/xsk.h>
 
-#include "../common/common_libbpf.h"
-#include "../common/common_params.h"
-#include "../common/common_user_bpf_xdp.h"
+#include "../afxdp/common/common_libbpf.h"
+#include "../afxdp/common/common_params.h"
+#include "../afxdp/common/common_user_bpf_xdp.h"
 
 #define NUM_FRAMES 4096
 #define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
@@ -289,6 +290,16 @@ static bool process_packet(struct xsk_socket_info *xsk,
     struct ethhdr *eth = (struct ethhdr *)pkt;
     struct iphdr *iph = (struct iphdr *)(eth + 1);
     struct udphdr *udph = (struct udphdr *)((unsigned char *)iph + (iph->ihl << 2));
+    
+    printf("ntohs(eth->h_proto) = %x\n", ntohs(eth->h_proto));
+    for (int i = 0; i < ETH_ALEN; i++) {
+        printf("%x:", (int)eth->h_source[i]);
+    }
+    printf("\n");
+    for (int i = 0; i < sizeof(tmp_ip); i++) {
+        printf("%hu.", (uint16_t)((unsigned char*)&iph->saddr)[i]);
+    }
+    printf("\n");
 
     memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
     memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
@@ -297,15 +308,6 @@ static bool process_packet(struct xsk_socket_info *xsk,
     memcpy(&tmp_ip, &iph->saddr, sizeof(tmp_ip));
     memcpy(&iph->saddr, &iph->daddr, sizeof(tmp_ip));
     memcpy(&iph->daddr, &tmp_ip, sizeof(tmp_ip));
-
-    // Swap source and destination port
-    tmp_port = udph->source;
-    udph->source = udph->dest;
-    udph->dest = tmp_port;
-
-    // Causing transmission erros, but why?
-    // iph->check = compute_ip_checksum(iph);
-    udph->check = 0;
 
     /* Here we sent the packet out of the receive port. Note that
      * we allocate one entry and schedule it. Your design would be

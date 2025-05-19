@@ -139,7 +139,7 @@ UCCL currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azure and 
 
 ## Development Guide
 
-Please refer to [README_dev.md](./README_dev.md) for development setup and testing.
+Please refer to [./doc/README_dev.md](doc/README_dev.md) for development setup and testing.
 
 ## Acknowledgement
 
