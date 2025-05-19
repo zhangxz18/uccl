@@ -1,0 +1,40 @@
+[1,0]<stdout>:# nThread 8 nGpus 1 minBytes 1024 maxBytes 1073741824 step: 2(factor) warmup iters: 5 iters: 10 agg iters: 1 validation: 1 graph: 0
+[1,0]<stdout>:#
+[1,0]<stdout>:# Using devices
+[1,0]<stdout>:#  Rank  0 Group  0 Pid 2093765 on ip-172-31-44-101 device  0 [0x10] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  1 Group  0 Pid 2093765 on ip-172-31-44-101 device  1 [0x10] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  2 Group  0 Pid 2093765 on ip-172-31-44-101 device  2 [0x20] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  3 Group  0 Pid 2093765 on ip-172-31-44-101 device  3 [0x20] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  4 Group  0 Pid 2093765 on ip-172-31-44-101 device  4 [0x90] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  5 Group  0 Pid 2093765 on ip-172-31-44-101 device  5 [0x90] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  6 Group  0 Pid 2093765 on ip-172-31-44-101 device  6 [0xa0] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#  Rank  7 Group  0 Pid 2093765 on ip-172-31-44-101 device  7 [0xa0] NVIDIA A100-SXM4-40GB
+[1,0]<stdout>:#
+[1,0]<stdout>:#                                                              out-of-place                       in-place          
+[1,0]<stdout>:#       size         count      type   redop    root     time   algbw   busbw #wrong     time   algbw   busbw #wrong
+[1,0]<stdout>:#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)       
+[1,0]<stdout>:        1024           256     float     sum      -1    258.0    0.00    0.01      0    249.1    0.00    0.01      0
+[1,0]<stdout>:        2048           512     float     sum      -1    262.1    0.01    0.01      0    257.6    0.01    0.01      0
+[1,0]<stdout>:        4096          1024     float     sum      -1    267.5    0.02    0.03      0    263.5    0.02    0.03      0
+[1,0]<stdout>:        8192          2048     float     sum      -1    279.2    0.03    0.05      0    276.2    0.03    0.05      0
+[1,0]<stdout>:       16384          4096     float     sum      -1    300.7    0.05    0.10      0    302.7    0.05    0.09      0
+[1,0]<stdout>:       32768          8192     float     sum      -1    348.8    0.09    0.16      0    338.9    0.10    0.17      0
+[1,0]<stdout>:       65536         16384     float     sum      -1    387.2    0.17    0.30      0    363.0    0.18    0.32      0
+[1,0]<stdout>:      131072         32768     float     sum      -1    498.1    0.26    0.46      0    460.3    0.28    0.50      0
+[1,0]<stdout>:      262144         65536     float     sum      -1    694.1    0.38    0.66      0    606.9    0.43    0.76      0
+[1,0]<stdout>:      524288        131072     float     sum      -1   1034.6    0.51    0.89      0    876.3    0.60    1.05      0
+[1,0]<stdout>:     1048576        262144     float     sum      -1   1342.7    0.78    1.37      0   1249.6    0.84    1.47      0
+[1,0]<stdout>:     2097152        524288     float     sum      -1   1686.9    1.24    2.18      0   1638.1    1.28    2.24      0
+[1,0]<stdout>:     4194304       1048576     float     sum      -1   2841.1    1.48    2.58      0   2753.9    1.52    2.67      0
+[1,0]<stdout>:     8388608       2097152     float     sum      -1   4744.0    1.77    3.09      0   4481.4    1.87    3.28      0
+[1,0]<stdout>:    16777216       4194304     float     sum      -1   7745.4    2.17    3.79      0   7606.9    2.21    3.86      0
+[1,0]<stdout>:    33554432       8388608     float     sum      -1    14576    2.30    4.03      0    14629    2.29    4.01      0
+[1,0]<stdout>:    67108864      16777216     float     sum      -1    27161    2.47    4.32      0    27148    2.47    4.33      0
+[1,0]<stdout>:   134217728      33554432     float     sum      -1    52338    2.56    4.49      0    52205    2.57    4.50      0
+[1,0]<stdout>:   268435456      67108864     float     sum      -1   102834    2.61    4.57      0   102408    2.62    4.59      0
+[1,0]<stdout>:   536870912     134217728     float     sum      -1   203914    2.63    4.61      0   203108    2.64    4.63      0
+[1,0]<stdout>:  1073741824     268435456     float     sum      -1   405604    2.65    4.63      0   405510    2.65    4.63      0
+[1,0]<stdout>:# Out of bounds values : 0 OK
+[1,0]<stdout>:# Avg bus bandwidth    : 2.03569 
+[1,0]<stdout>:#
+[1,0]<stdout>:

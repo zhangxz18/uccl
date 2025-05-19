@@ -135,9 +135,13 @@ uint64_t tx_prev_sec_bytes = 0;
 volatile uint64_t rx_cur_sec_bytes = 0;
 uint64_t rx_prev_sec_bytes = 0;
 
+volatile uint64_t c_itr = 0;
+volatile uint64_t s_itr = 0;
+
 static void server_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle *> &mhandles, std::vector<void *> &datas)
 {    
-    FLAGS_iterations *= FLAGS_nflow;
+    s_itr = FLAGS_iterations;
+    s_itr *= FLAGS_nflow;
 
     int len[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
     struct Mhandle *mhs[FLAGS_nflow][FLAGS_nreq][FLAGS_nmsg];
@@ -163,23 +167,23 @@ static void server_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle
     for (int f = 0; f < FLAGS_nflow; f++) {
         for (int r = 0; r < FLAGS_nreq; r++) {
             DCHECK(ep->uccl_recv_async((UcclFlow *)conn_ids[f].context, mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
-            FLAGS_iterations--;
+            s_itr--;
             rx_cur_sec_bytes += FLAGS_msize * FLAGS_nmsg;
         }
     }
 
-    while (FLAGS_iterations) {
+    while (s_itr) {
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 if (quit) {
-                    FLAGS_iterations = 0;
+                    s_itr = 0;
                     break;
                 }
                 if (!ep->uccl_poll_ureq_once(&ureq_vec[f][r])) continue;
 
                 if (!FLAGS_flush) {
-                    FLAGS_iterations--;
-                    if (FLAGS_iterations == 0) break;
+                    s_itr--;
+                    if (s_itr == 0) break;
                     DCHECK(ep->uccl_recv_async((UcclFlow *)conn_ids[f].context, mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
                     rx_cur_sec_bytes += FLAGS_msize * FLAGS_nmsg;
                     continue;
@@ -190,8 +194,8 @@ static void server_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle
                     flag[f][r] = 1;
                 }
                 else if (flag[f][r] == 1) {
-                    FLAGS_iterations--;
-                    if (FLAGS_iterations == 0) break;
+                    s_itr--;
+                    if (s_itr == 0) break;
                     DCHECK(ep->uccl_recv_async((UcclFlow *)conn_ids[f].context, mhs[f][r], recv_data[f][r], len[f][r], FLAGS_nmsg, &ureq_vec[f][r]) == 0);
                     rx_cur_sec_bytes += FLAGS_msize * FLAGS_nmsg;
                     flag[f][r] = 0;
@@ -203,7 +207,8 @@ static void server_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle
 
 static void client_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle *> &mhandles, std::vector<void *> &datas)
 {
-    FLAGS_iterations *= FLAGS_nflow;
+    c_itr = FLAGS_iterations;
+    c_itr *= FLAGS_nflow;
     
     std::vector<std::vector<std::vector<struct ucclRequest>>> ureq_vec(FLAGS_nflow);
     for (int f = 0; f < FLAGS_nflow; f++) {
@@ -219,13 +224,13 @@ static void client_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle
                 while (ep->uccl_send_async((UcclFlow *)conn_ids[f].context, mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                 tx_cur_sec_bytes += FLAGS_msize;
             }
-            FLAGS_iterations--;
+            c_itr--;
         }
     }
 
     int fin_msg = 0;
 
-    while (FLAGS_iterations) {
+    while (c_itr) {
         for (int f = 0; f < FLAGS_nflow; f++) {
             for (int r = 0; r < FLAGS_nreq; r++) {
                 for (int n = 0; n < FLAGS_nmsg; n++) {
@@ -234,12 +239,12 @@ static void client_tpt(std::vector<ConnID> &conn_ids, std::vector<struct Mhandle
                         while (!quit && ep->uccl_send_async((UcclFlow *)conn_ids[f].context, mhandles[f], send_data, FLAGS_msize, &ureq_vec[f][r][n])) {}
                         tx_cur_sec_bytes += FLAGS_msize;
                         if (++fin_msg == FLAGS_nreq) {
-                            FLAGS_iterations--;
+                            c_itr--;
                             fin_msg = 0;
                         }
                     }
                     if (quit) {
-                        FLAGS_iterations = 0;
+                        c_itr = 0;
                         break;
                     }
                 }
@@ -342,10 +347,9 @@ int main(int argc, char* argv[]) {
     std::thread t([&] {
         while (!quit) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            std::cout << "(" << FLAGS_nflow << " flows) TX Tpt: " << std::fixed << std::setprecision(2) << 
-                (tx_cur_sec_bytes - tx_prev_sec_bytes) * 8.0 / 1000 / 1000 / 1000 << " Gbps, " << 
-                "RX Tpt: " << std::fixed << std::setprecision(2) << (rx_cur_sec_bytes - rx_prev_sec_bytes) * 8.0 / 1000 / 1000 / 1000 << 
-                    " Gbps" << std::endl;
+            printf("(%d flows) TX Tpt: %.2f Gbps(%lu), RX Tpt: %.2f Gbps(%lu)\n", FLAGS_nflow, 
+                (tx_cur_sec_bytes - tx_prev_sec_bytes) * 8.0 / 1000 / 1000 / 1000, c_itr,
+                (rx_cur_sec_bytes - rx_prev_sec_bytes) * 8.0 / 1000 / 1000 / 1000, s_itr);
             
             tx_prev_sec_bytes = tx_cur_sec_bytes;
             rx_prev_sec_bytes = rx_cur_sec_bytes;

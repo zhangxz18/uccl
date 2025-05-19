@@ -352,8 +352,13 @@ class RXTracking {
     AFXDPSocket *socket_;
     Channel *channel_;
 
-    // Intentionally using int for uint32_t seqno to handle integer wrapping.
-    std::map<int, FrameBuf *> reass_q_;
+    struct seqno_cmp {
+        bool operator()(const uint32_t &a, const uint32_t &b) const {
+            return swift::seqno_lt(a, b);  // assending order
+        }
+    };
+    // Using seqno_cmp to handle integer wrapping.
+    std::map<uint32_t, FrameBuf *, seqno_cmp> reass_q_;
 
     // FIFO queue for ready messages that wait for app to claim.
     std::deque<FrameBuf *> ready_msg_queue_;

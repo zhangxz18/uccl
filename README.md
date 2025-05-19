@@ -58,7 +58,7 @@ UCCL currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azure and 
         * Install dependency: 
             ```
             sudo apt update
-            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 -y
+            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 libopenmpi-dev -y
 
             wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
             bash ./Anaconda3-2024.10-1-Linux-x86_64.sh
@@ -106,7 +106,7 @@ UCCL currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azure and 
     * Build `nccl` and `nccl-tests`:
         ```
         cd $UCCL_HOME/nccl
-        make src.build -j
+        make src.build -j NVCC_GENCODE="-gencode=arch=compute_90,code=sm_90"
         cp src/include/nccl_common.h build/include/
         cd ..
 

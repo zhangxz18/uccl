@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <cuda_runtime.h>
+#include <infiniband/efadv.h>
 #include <infiniband/verbs.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -12,10 +13,18 @@
 #define GID_INDEX 0
 #define PORT_NUM 1
 #define QKEY 0x12345
-#define BUFFER_SIZE 1024
+#define MTU 8928
+#define BUFFER_SIZE1 (8)
+#define BUFFER_SIZE2 (MTU - BUFFER_SIZE1)
 #define TCP_PORT 12345  // Port for exchanging QPNs & GIDs
-#define UD_ADDITION (40)
 #define USE_GDR 1
+#define USE_SRD 0
+
+#if USE_SRD == 0
+#define UD_ADDITION (40)
+#else
+#define UD_ADDITION (0)
+#endif
 
 struct rdma_context {
     struct ibv_context *ctx;
@@ -44,7 +53,6 @@ void get_gid(struct rdma_context *rdma, int gid_index, union ibv_gid *gid) {
 // Create and configure a UD QP
 struct ibv_qp *create_qp(struct rdma_context *rdma) {
     struct ibv_qp_init_attr qp_attr = {};
-    qp_attr.qp_type = IBV_QPT_UD;
     qp_attr.send_cq = rdma->cq;
     qp_attr.recv_cq = rdma->cq;
     qp_attr.cap.max_send_wr = 256;
@@ -52,7 +60,15 @@ struct ibv_qp *create_qp(struct rdma_context *rdma) {
     qp_attr.cap.max_send_sge = 2;
     qp_attr.cap.max_recv_sge = 2;
 
+#if USE_SRD == 0
+    qp_attr.qp_type = IBV_QPT_UD;
     struct ibv_qp *qp = ibv_create_qp(rdma->pd, &qp_attr);
+#else
+    qp_attr.qp_type = IBV_QPT_DRIVER;
+    struct ibv_qp *qp = qp =
+        efadv_create_driver_qp(rdma->pd, &qp_attr, EFADV_QP_DRIVER_TYPE_SRD);
+#endif
+
     if (!qp) {
         perror("Failed to create QP");
         exit(1);
@@ -190,18 +206,21 @@ struct rdma_context *init_rdma() {
 // Register memory regions
 #if USE_GDR == 0
     rdma->buf1 = (char *)aligned_alloc(
-        4096, align_size(4096, BUFFER_SIZE + UD_ADDITION));
+        4096, align_size(4096, BUFFER_SIZE1 + UD_ADDITION));
+    rdma->mr1 = ibv_reg_mr(rdma->pd, rdma->buf1, BUFFER_SIZE1 + UD_ADDITION,
+                           IBV_ACCESS_LOCAL_WRITE);
 #else
-    if (cudaMalloc(&rdma->buf1, BUFFER_SIZE) != cudaSuccess) {
+    if (cudaMalloc(&rdma->buf1, BUFFER_SIZE1 + UD_ADDITION) != cudaSuccess) {
         perror("Failed to allocate GPU memory");
         exit(1);
     }
-#endif
-    rdma->buf2 = (char *)aligned_alloc(
-        4096, align_size(4096, BUFFER_SIZE + UD_ADDITION));
-    rdma->mr1 = ibv_reg_mr(rdma->pd, rdma->buf1, BUFFER_SIZE + UD_ADDITION,
+    rdma->mr1 = ibv_reg_mr(rdma->pd, rdma->buf1, BUFFER_SIZE1 + UD_ADDITION,
                            IBV_ACCESS_LOCAL_WRITE);
-    rdma->mr2 = ibv_reg_mr(rdma->pd, rdma->buf2, BUFFER_SIZE + UD_ADDITION,
+#endif
+
+    rdma->buf2 = (char *)aligned_alloc(
+        4096, align_size(4096, BUFFER_SIZE2 + UD_ADDITION));
+    rdma->mr2 = ibv_reg_mr(rdma->pd, rdma->buf2, BUFFER_SIZE2 + UD_ADDITION,
                            IBV_ACCESS_LOCAL_WRITE);
     if (!rdma->mr1 || !rdma->mr2) {
         perror("Failed to register memory regions");
@@ -223,8 +242,8 @@ void run_server(struct rdma_context *rdma, int gid_index) {
 
     // Post receive buffer
     struct ibv_sge sge[2] = {
-        {(uintptr_t)rdma->buf1, BUFFER_SIZE + UD_ADDITION, rdma->mr1->lkey},
-        {(uintptr_t)rdma->buf2, BUFFER_SIZE + UD_ADDITION, rdma->mr2->lkey}};
+        {(uintptr_t)rdma->buf1, BUFFER_SIZE1 + UD_ADDITION, rdma->mr1->lkey},
+        {(uintptr_t)rdma->buf2, BUFFER_SIZE2, rdma->mr2->lkey}};
 
     struct ibv_recv_wr wr = {}, *bad_wr;
     wr.num_sge = 2;
@@ -238,12 +257,14 @@ void run_server(struct rdma_context *rdma, int gid_index) {
     struct ibv_wc wc;
     printf("Server waiting for message...\n");
     while (ibv_poll_cq(rdma->cq, 1, &wc) < 1);
+
     // Only the first message is attached a hdr.
 #if USE_GDR == 0
     printf("Server received: %s | %s\n", rdma->buf1 + UD_ADDITION, rdma->buf2);
 #else
-    char *h_data = (char *)malloc(BUFFER_SIZE);
-    cudaMemcpy(h_data, rdma->buf1, BUFFER_SIZE, cudaMemcpyDeviceToHost);
+    char *h_data = (char *)malloc(BUFFER_SIZE1 + UD_ADDITION);
+    cudaMemcpy(h_data, rdma->buf1, BUFFER_SIZE1 + UD_ADDITION,
+               cudaMemcpyDeviceToHost);
     printf("Server received: %s | %s\n", h_data + UD_ADDITION, rdma->buf2);
     free(h_data);
 #endif
@@ -264,15 +285,15 @@ void run_client(struct rdma_context *rdma, const char *server_ip,
 #if USE_GDR == 0
     strcpy(rdma->buf1, "Hello");
 #else
-    char *h_data = (char *)malloc(BUFFER_SIZE);
+    char *h_data = (char *)malloc(BUFFER_SIZE1);
     strcpy(h_data, "Hello");
-    cudaMemcpy(rdma->buf1, h_data, BUFFER_SIZE, cudaMemcpyHostToDevice);
+    cudaMemcpy(rdma->buf1, h_data, BUFFER_SIZE1, cudaMemcpyHostToDevice);
 #endif
     strcpy(rdma->buf2, "World");
 
     struct ibv_sge sge[2] = {
-        {(uintptr_t)rdma->buf1, BUFFER_SIZE, rdma->mr1->lkey},
-        {(uintptr_t)rdma->buf2, BUFFER_SIZE, rdma->mr2->lkey}};
+        {(uintptr_t)rdma->buf1, BUFFER_SIZE1, rdma->mr1->lkey},
+        {(uintptr_t)rdma->buf2, BUFFER_SIZE2, rdma->mr2->lkey}};
 
     struct ibv_send_wr wr = {};
     struct ibv_send_wr *bad_wr = NULL;
@@ -301,8 +322,8 @@ void run_client(struct rdma_context *rdma, const char *server_ip,
 #if USE_GDR == 0
     printf("Client sent: %s | %s\n", rdma->buf1, rdma->buf2);
 #else
-    memset(h_data, 0, BUFFER_SIZE);
-    cudaMemcpy(h_data, rdma->buf1, BUFFER_SIZE, cudaMemcpyDeviceToHost);
+    memset(h_data, 0, BUFFER_SIZE1);
+    cudaMemcpy(h_data, rdma->buf1, BUFFER_SIZE1, cudaMemcpyDeviceToHost);
     printf("Client sent: %s | %s\n", h_data, rdma->buf2);
     free(h_data);
 #endif

@@ -39,10 +39,10 @@ static const uint32_t NUM_ENGINES = 4;
 static uint32_t NUM_CPUS = std::thread::hardware_concurrency();
 static uint32_t ENGINE_CPU_START = NUM_CPUS / 4;
 // PortEntropy/Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
-static const uint32_t kPortEntropy = 64;
+static const uint32_t kPortEntropy = 256;
 
 // Per-path cwnd or global cwnd.
-static const bool kPPCwnd = true;
+static const bool kPPCwnd = false;
 
 // Recv buffer size smaller than kRCSize will be handled by RC directly.
 static const uint32_t kRCSize = 65536;
@@ -52,8 +52,11 @@ static const uint32_t kMaxTxWork = 1;
 static const uint32_t kMaxRxWork = 8;
 // Chunk size for each WQE.
 static const uint32_t kChunkSize = 32 << 10;
+// CQ size for UC SQ and RQ.
+static const int kCQSize = 16384;
 // Interval for posting a signal WQE.
-static const uint32_t kSignalInterval = 256;
+// static const uint32_t kSignalInterval = kCQSize >> 1;
+static const uint32_t kSignalInterval = 1;
 // Interval for syncing the clock with NIC.
 static const uint32_t kSyncClockIntervalNS = 100000;
 // Maximum number of CQEs to retrieve in one loop.
@@ -89,11 +92,11 @@ static constexpr uint32_t kMAXCumBytes = kMAXCumWQE * kChunkSize;
 
 // Sack bitmap size in bits.
 static const std::size_t kSackBitmapSize = 64 << 1;
-// kFastRexmitDupAckThres equals to 0 means all duplicate acks are caused by packet loss.
+// kFastRexmitDupAckThres equals to 1 means all duplicate acks are caused by packet loss.
 // This is true for flow-level ECMP, which is the common case.
 // When the network supports adaptive routing, duplicate acks may be caused by adaptive routing.
 // In this case, kFastRexmitDupAckThres should be set to a value greater than 0.
-static const std::size_t kFastRexmitDupAckThres = 0;
+static const std::size_t kFastRexmitDupAckThres = 1;
 
 // Maximum number of Retransmission Timeout (RTO) before aborting the flow.
 static const uint32_t kRTOAbortThreshold = 50;

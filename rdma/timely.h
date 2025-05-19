@@ -21,11 +21,11 @@
  */
 static constexpr bool kPatched = true;  ///< Patch from ECN-vs-delay
 // EWMA alpha used for global CC state.
-static constexpr double kEwmaAlpha = 0.25;
-static constexpr double kBeta = 0.02;
+static constexpr double kEwmaAlpha = 0.9;
+static constexpr double kBeta = 0.008;
 
 // EWMA alpha used for per-path CC states.
-static constexpr double kPPEwmaAlpha = 0.35;
+static constexpr double kPPEwmaAlpha = 0.9;
 
 namespace uccl {
 
@@ -59,12 +59,13 @@ class Timely {
     static constexpr double kMinRate = 60 * 1000 * 1000;
     static constexpr double kAddRate = 60 * 1000 * 1000;
     static constexpr double kTLow = 50;
-    #else
-    static constexpr double kMinRate = 1.0 * 1000 * 1000 * 1000;
-    static constexpr double kAddRate = 1.0 * 1000 * 1000 * 1000;
-    static constexpr double kTLow = 5;
-    #endif
     static constexpr double kTHigh = 500;
+    #else
+    static constexpr double kMinRate = 0.1 * 1000 * 1000 * 1000;
+    static constexpr double kAddRate = 0.5 * 1000 * 1000 * 1000;
+    static constexpr double kTLow = 35;
+    static constexpr double kTHigh = 350;
+    #endif
     static constexpr double kMinRTT = 2;
     static constexpr size_t kHaiThresh = 5;
 

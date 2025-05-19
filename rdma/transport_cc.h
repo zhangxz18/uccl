@@ -61,7 +61,7 @@ struct Pcb {
         s += "[CC] snd_nxt: " + std::to_string(snd_nxt.to_uint32()) +
              " snd_una: " + std::to_string(snd_una.to_uint32()) +
              " rcv_nxt: " + std::to_string(rcv_nxt.to_uint32()) +
-             " fast/rto rexmits: " + std::to_string(fast_rexmits) + "/" + std::to_string(rto_rexmits) +
+             " fast/rto rexmits: " + std::to_string(stats_fast_rexmits) + "/" + std::to_string(stats_rto_rexmits) +
              Format(" prev_rtt: %.2lf us ", timely.get_avg_rtt()) + 
              Format(" rate: %.2lf Gbps ", rate_gbps);
         return s;
@@ -191,11 +191,18 @@ struct Pcb {
     uint16_t cwnd{kInitialCwnd};
     uint16_t duplicate_acks{0};
     int rto_timer{kRtoDisabled};
-    uint32_t fast_rexmits{0};
-    uint32_t rto_rexmits{0};
-    uint32_t accept_retr{0};
     uint16_t rto_rexmits_consectutive{0};
     double ecn_alpha{1.0};
+    
+    // Stats
+    uint32_t stats_fast_rexmits{0};
+    uint32_t stats_rto_rexmits{0};
+    uint32_t stats_accept_retr{0};
+    uint32_t stats_accept_barrier{0};
+    uint32_t stats_chunk_drop{0};
+    uint32_t stats_barrier_drop{0};
+    uint32_t stats_retr_chunk_drop{0};
+    uint32_t stats_ooo{0};
 };
 
 }  // namespace swift

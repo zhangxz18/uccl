@@ -626,6 +626,8 @@ ncclNet_t ncclNetSocket = {
   ncclNetSocketDeregMr,
   ncclNetSocketIsend,
   ncclNetSocketIrecv,
+  NULL,
+  NULL,
   ncclNetSocketIflush,
   ncclNetSocketTest,
   ncclNetSocketClose,

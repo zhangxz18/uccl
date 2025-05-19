@@ -59,10 +59,15 @@ struct ncclRecvMem {
       char pad1[CACHE_LINE_SIZE-sizeof(uint64_t)];
       struct ncclConnFifo connFifo[NCCL_STEPS];
       int flush; // For GDRCopy-based flush
+      /* Yang: add scattered IOVs */
+      struct iov iovFifo[NCCL_STEPS];
+      /************************** */
     };
-    char pad4[MEM_ALIGN];
+    char pad4[MEM_ALIGN + MEM_ALIGN * 3];
   };
 };
+// Yang: iovFifo is the starting address of the scattered IOVs.
+const uint32_t kIovStart = offsetof(struct ncclRecvMem, iovFifo);
 
 enum helperThreadState {ThreadStart, ThreadStop};
 

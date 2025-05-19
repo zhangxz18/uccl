@@ -77,3 +77,5 @@ __pycache__/
 
 compile_commands.json
 *.cache
+*-rep
+*.sqlite

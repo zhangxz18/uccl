@@ -12,7 +12,6 @@ async def rsync(nodes):
         )
         for node in nodes
     ]
-
     # Run all tasks in parallel
     await asyncio.gather(*tasks)
 

@@ -159,6 +159,10 @@ void benchmarkMemcpy() {
     cudaFree(d_continuous);
 }
 
+// cudaMemcpy performance: 1.17029 GB/s
+// cudaMemcpyAsync performance: 1.06563 GB/s
+// Kernel copy performance (32 4KB pages): 27 us, or 4.52112 GB/s
+
 int main() {
     cudaSetDevice(0);
     benchmarkMemcpy();
