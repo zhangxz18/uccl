@@ -115,6 +115,17 @@ UCCL currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azure and 
         make MPI=1 MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=$UCCL_HOME/nccl/build -j
         cd ..
         ```
+    * [For AMD] Build `rccl` and `rccl-tests` (assume the AMD HPC Fund cluster): 
+        ```
+        # Avoiding gfx950 as the HPC Fund cluster clang does not support it yet. 
+        cd rccl
+        ./install.sh --amdgpu_targets="gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201" -j 16
+        cd ..
+
+        cd rccl-tests
+        make MPI=1 MPI_HOME=/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.5 HIP_HOME=/opt/rocm-6.3.1 NCCL_HOME=/opt/rocm-6.3.1/include/rccl CUSTOM_RCCL_LIB=/opt/rocm-6.3.1/lib/librccl.so -j
+        cd ..
+        ```
     </details>
 
 3. Run UCCL transport tests on `VM1`:

@@ -1,0 +1,44 @@
+ABS_ROOT_PATH := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+
+NCCL_HOME:=../rccl
+HIP_HOME:=/opt/rocm-6.3.1
+
+INC = -I./ -I$(HIP_HOME)/include -I/work1/yzhou/yangzhou/anaconda3/include -L/work1/yzhou/yangzhou/anaconda3/lib
+LIBS = -lglog -lgflags -lgtest -lz -lelf -libverbs  -L ${HIP_HOME}/lib -lamdhip64
+LIBS_SHARED = -lglog -lgflags -lgtest -lz -lelf -libverbs
+override CXXFLAGS += -O3 -g -std=c++17 -Wno-pointer-arith -Wno-interference-size -fPIC -D__HIP_PLATFORM_AMD__
+DEPS = *.h
+PLUGIN_SO = librccl-net-uccl.so
+
+lib_src = $(wildcard *.cc)
+lib_src := $(filter-out %_main.cc,$(lib_src))
+lib_src := $(filter-out %_test.cc,$(lib_src))
+lib_src := $(filter-out %_plugin.cc,$(lib_src))
+lib_obj = $(lib_src:.cc=.o)
+
+test_src = $(wildcard *_test.cc)
+test_bin = $(test_src:.cc=)
+
+.PHONY: build
+build: $(test_bin) $(lib_obj) $(PLUGIN_SO)
+
+rdma_test: rdma_test.cc $(DEPS) $(lib_obj)
+	g++ rdma_test.cc -o rdma_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
+
+incast_test: incast_test.cc $(DEPS) $(lib_obj)
+	g++ incast_test.cc -o incast_test $(lib_obj) $(INC) $(LIBS) $(CXXFLAGS)
+
+plugin_test: plugin_test.cc $(DEPS) $(lib_obj)
+	g++ plugin_test.cc -o plugin_test $(lib_obj) $(NCCL_INC) $(INC) $(LIBS) $(CXXFLAGS) -ldl
+
+%.o: %.cc $(DEPS)
+	g++ -c $< -o $@ $(INC) $(CXXFLAGS)
+
+NCCL_INC:= -I$(NCCL_HOME)/build/release/include -I$(NCCL_HOME)/src/include -I$(HIP_HOME)/include
+
+$(PLUGIN_SO): nccl_plugin.cc $(DEPS) $(lib_obj)
+	g++ $(NCCL_INC) -fPIC -shared -o $@ -Wl,-soname,$(PLUGIN_SO) nccl_plugin.cc $(lib_obj) $(INC) $(LIBS_SHARED) $(CXXFLAGS)
+
+.PHONY: clean
+clean:
+	rm -f *.o $(test_bin) $(PLUGIN_SO)
