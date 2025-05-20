@@ -22,12 +22,24 @@ Existing network transports under NCCL (i.e., kernel TCP and RDMA) leverage one 
 * Open-source research platform for ML collectives
 
 On two AWS `g4dn.8xlarge` instances with 50G NICs and T4 GPUs under the cluster placement group, UCCL outperforms NCCL by up to **3.7x** for AllReduce: 
-![UCCL allreduce performance](./images/allreduce_perf.png)
+
+![UCCL allreduce performance](./doc/images/allreduce_perf.png)
 
 On four AWS `p4d.24xlarge` instances with 4x100G NICs and 8xA100 GPUs, UCCL outperforms NCCL by up to **3.3x** for AlltoAll: 
-![UCCL allreduce performance](./images/alltoall_perf.png)
+
+![UCCL allreduce performance](./doc/images/alltoall_perf.png)
 
 Free free to checkout our full [technical report](https://arxiv.org/pdf/2504.17307).
+
+## UCCL Dev Agenda
+
+- [] Dynamic membership with node joining and exiting
+- [] GPU-initiated network P2P that support generic NIC vendors (eg, Nvidia, EFA, Broadcom)
+    - [] For MoE all-to-all and PD separation
+- [] NCCL re-architecturing
+    - [] Scalable and effcient CPU proxy
+    - [] Low-cost async collectives with ordering guarantee
+    - [] Device kernel in vendor-agnostic Triton
 
 
 ## Getting Started
@@ -57,10 +69,10 @@ Let's first prepare dependencies for UCCL.
     ```
 
 Then you can dive into individual folders for various supports: 
-* `efa/`: AWS EFA NIC (currently support p4d.24xlarge)
-* `afxdp/`: Non-RDMA NICs (currently support AWS ENA NICs and IBM VirtIO NICs)
-* `rdma_cuda/`: Nvidia/Mellanox GPUs + RDMA NICs (both IB and RoCE)
-* `rdma_hip/`: AMD GPUs + RDMA NICs (both IB and RoCE)
+* [`efa/`](./efa/): AWS EFA NIC (currently support p4d.24xlarge)
+* [`afxdp/`](./afxdp/): Non-RDMA NICs (currently support AWS ENA NICs and IBM VirtIO NICs)
+* [`rdma_cuda/`](./rdma_cuda/): Nvidia/Mellanox GPUs + RDMA NICs (both IB and RoCE)
+* [`rdma_hip/`](./rdma_hip/): AMD GPUs + RDMA NICs (both IB and RoCE)
 
 ## Documentation
 
