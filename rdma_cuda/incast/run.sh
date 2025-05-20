@@ -1,4 +1,4 @@
-CTRL_NIC="ens10f0np0"
+CTRL_NIC="eth0"
 
 mpirun --bind-to none -np 2 \
     -hostfile hostname.txt \

@@ -855,7 +855,7 @@ void get_ips() {
         if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET)
             continue;
 
-        if (strcmp(ifa->ifa_name, "ens10f0np0") == 0) {
+        if (strcmp(ifa->ifa_name, SINGLE_CTRL_NIC.c_str()) == 0) {
             void *tmpAddrPtr = &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
             char addressBuffer[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, tmpAddrPtr, addressBuffer, INET_ADDRSTRLEN);

@@ -1,4 +1,8 @@
-# Configurating azure_perm_traffic/transport_config.h
+# Azure Permutation Traffic Benchmark
+
+This benchmark is done on Azure [HBv2/HBrsv2](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/high-performance-compute/hbv2-series) VM instances with microsoft-dsvm::ubuntu-hpc::2204 image. Each VM has a 200Gbps CX-6 IB vNIC and connects to others via a fully-provisioned fattree. Our results show that when running permutation traffic, there are always some VM pairs that cannot only reach ~100Gbps. 
+
+## Configurating azure_perm_traffic/transport_config.h
 
 `kServiceLevel`: Control the service level. Only `0-3` is valid in Azure.
 
@@ -10,7 +14,8 @@
 
 `kBypassPacing`: Timely pacing. Currently, we bypass timely pacing but a constant window limit: `kMaxUnAckedBytesPerFlow`, `kMaxUnAckedBytesPerEngineLow` and `kMaxUnAckedBytesPerEngineHigh` as it gives good performance than pacing.
 
-# Run benchmark
+## Run benchmark
+
 0. Clone this repo on a master node.
 1. Add all **public IPs** in `ips`. These IPs are `74/128.xxx.xxx.xxx`.
 2. Run `setup_nodes.sh` to install environment dependencies on all nodes: cuda,mpi,etc.
