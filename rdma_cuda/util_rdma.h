@@ -1083,6 +1083,9 @@ public:
   
     uint32_t EventOnChunkSize(SubUcclFlow *subflow, uint32_t remaining_bytes) override {
         
+        if (remaining_bytes <= kChunkSize)
+            return remaining_bytes;
+
         auto hard_budget = kMaxUnAckedBytesPerEngineHigh - *engine_unacked_bytes_;
         auto soft_budget = kMaxUnAckedBytesPerEngineLow - *engine_unacked_bytes_;
         auto flow_budget = kMaxUnAckedBytesPerFlow - subflow->unacked_bytes_;

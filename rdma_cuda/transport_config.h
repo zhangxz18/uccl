@@ -48,7 +48,7 @@ static uint32_t ENGINE_CPU_START_LIST[8] = {
 // Path/QP per engine. The total number is NUM_ENGINES * kPortEntropy.
 static constexpr uint32_t kPortEntropy = 64;
 // Use RC rather than UC.
-static constexpr bool kRCMode = true;
+static constexpr bool kRCMode = false;
 // Maximum chunk size (Bytes) for each WQE.
 static constexpr uint32_t kChunkSize = 32 << 10;
 // Bypass the pacing stage.
