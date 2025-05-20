@@ -4,9 +4,11 @@
 
 <p align="center">
     <a href="#about"><b>About</b></a> | 
+    <a href="#dev-plan"><b>Dev Plan</b></a> | 
     <a href="#getting-started"><b>Getting Started</b></a> | 
-    <a href="#development-guide"><b>Development Guide</b></a> | 
-    <a href="#acknowledgement"><b>Acknowledgement</b></a>
+    <a href="#documentation"><b>Documentation</b></a> | 
+    <a href="#acknowledgement"><b>Acknowledgement</b></a> |
+    <a href="#contact"><b>Contact</b></a>
 </p>
 
 </div>
@@ -31,14 +33,14 @@ On four AWS `p4d.24xlarge` instances with 4x100G NICs and 8xA100 GPUs, UCCL outp
 
 Free free to checkout our full [technical report](https://arxiv.org/pdf/2504.17307).
 
-## UCCL Dev Agenda
+## Dev Plan
 
 - [ ] Dynamic membership with GPU servers joining and exiting
 - [ ] GPU-initiated network P2P that support all NIC vendors including Nvidia, AWS EFA, and Broadcom, to support MoE all-to-all workload and KV cache transfers in PD disaggregation. 
 - [ ] NCCL re-architecturing
-    - [ ] Scalable and effcient CPU proxy
-    - [ ] Low-cost async collectives with ordering guarantee
-    - [ ] Device kernel in vendor-agnostic Triton
+  - [ ] Scalable and effcient CPU proxy
+  - [ ] Low-cost async collectives with compute-communication ordering guarantee
+  - [ ] Device kernels in vendor-agnostic Triton language
 
 
 ## Getting Started
@@ -80,4 +82,7 @@ Please refer to [doc/README.md](./doc/README.md) for full documentation.
 UCCL is being actively developed at [UC Berkeley Sky Computing Lab](https://sky.cs.berkeley.edu/). We welcome open-source developers. 
 
 ## Contact
-Feel free to raise issues or contact us if you have any questions or suggestions. You can reach us at: Yang Zhou (yangzhou.rpc@gmail.com), Zhongjie Chen (chenzhjthu@gmail.com), and Ziming Mao (ziming.mao@berkeley.edu). 
+Feel free to raise issues or contact us if you have any questions or suggestions. You can reach us at: 
+* Yang Zhou (yangzhou.rpc@gmail.com)
+* Zhongjie Chen (chenzhjthu@gmail.com)
+* Ziming Mao (ziming.mao@berkeley.edu)
