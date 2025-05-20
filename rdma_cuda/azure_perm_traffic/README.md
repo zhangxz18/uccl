@@ -18,12 +18,12 @@ This benchmark is done on Azure [HBv2/HBrsv2](https://learn.microsoft.com/en-us/
 
 0. Clone this repo on a master node.
 1. Add all **public IPs** in `ips`. These IPs are `74/128.xxx.xxx.xxx`.
-2. Run `setup_nodes.sh` to install environment dependencies on all nodes: cuda,mpi,etc.
+2. Run `setup_nodes.sh` to install environment dependencies on all nodes: cuda, mpi, etc.
 3. Add all **eth0 IPs** in `hostname`. These IPs are `10.0.0.x`.
 4. For Permutation Traffic, generate `matrix.txt` using the `gen_permutation_full_bisection.py` script (not needed for sequential alltoall and alltoall).
-5. Run `sync_repo.sh` to copy this repo to all nodes. It will also compile `uccl_rdma/rdma` and `uccl_rdma/rdma/permutation`.
+5. Run `sync_repo.sh` to copy this repo to all nodes. It will also compile `uccl/rdma_cuda` and `uccl/rdma_cuda/azure_perm_traffic`.
 6. ​Run the test by executing:
 
-```sheel
+```shell
 ./run.sh <number_of_nodes>
 ```
