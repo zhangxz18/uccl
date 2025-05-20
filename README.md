@@ -45,7 +45,7 @@ Free free to checkout our full [technical report](https://arxiv.org/pdf/2504.173
 
 ## Getting Started
 
-Let's first close the UCCL repo and init submodules. 
+Let's first clone the UCCL repo and init submodules. 
 ```
 git clone https://github.com/uccl-project/uccl.git --recursive
 export UCCL_HOME=$(pwd)/uccl
