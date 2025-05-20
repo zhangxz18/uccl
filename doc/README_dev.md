@@ -5,7 +5,7 @@
 ```
 sudo apt update
 sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake -y
-./setup_extra.sh
+./scripts/setup_extra.sh
 make
 ```
 

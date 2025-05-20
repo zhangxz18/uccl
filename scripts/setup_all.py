@@ -64,7 +64,7 @@ if __name__ == "__main__":
         wait_handler_vec = []
         for node_client in node_clients:
             wait_handler = exec_command_no_wait(
-                node_client, f"cd {UCCL_HOME}; ./setup_extra.sh"
+                node_client, f"cd {UCCL_HOME}; ./scripts/setup_extra.sh"
             )
             wait_handler_vec.append(wait_handler)
         for wait_handler in wait_handler_vec:

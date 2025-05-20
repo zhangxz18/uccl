@@ -70,14 +70,3 @@ $(PLUGIN_SO): nccl_plugin.cc ebpf_transport.o $(DEPS) $(lib_obj)
 .PHONY: clean
 clean:
 	rm -f *.o $(main_bin) $(PLUGIN_SO)
-
-lib: check_submodule config
-	@echo; echo lib; $(MAKE) -C lib
-	@echo; echo lib/xdp-tools; $(MAKE) -C lib/xdp-tools
-
-check_submodule:
-	@git submodule update --init
-
-config: configure
-	@sh configure
-	@sh cd lib/xdp-tools; ./configure

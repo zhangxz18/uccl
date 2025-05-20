@@ -4,7 +4,7 @@
 #include <mutex>
 #include <thread>
 
-#include "../nccl/src/include/nccl_net.h"
+#include "../thirdparty/nccl-sg/src/include/nccl_net.h"
 #include "transport.h"
 #include "transport_config.h"
 

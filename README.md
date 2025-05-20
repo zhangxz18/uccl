@@ -58,7 +58,7 @@ UCCL currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azure and 
         * Install dependency: 
             ```
             sudo apt update
-            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 libopenmpi-dev -y
+            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 libopenmpi-dev libibverbs-dev libpci-dev -y
 
             wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
             bash ./Anaconda3-2024.10-1-Linux-x86_64.sh

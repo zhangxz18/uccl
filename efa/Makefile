@@ -1,6 +1,6 @@
 ABS_ROOT_PATH := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 
-NCCL_HOME:=../nccl
+NCCL_HOME:=../thirdparty/nccl-sg
 CUDA_HOME:=/usr/local/cuda
 EFA_HOME:=/opt/amazon/efa
 

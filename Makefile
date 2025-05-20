@@ -1,49 +1,17 @@
-ifeq ("$(origin V)", "command line")
-VERBOSE = $(V)
-endif
-ifndef VERBOSE
-VERBOSE = 0
-endif
-
-ifeq ($(VERBOSE),0)
-MAKEFLAGS += --no-print-directory
-Q = @
-endif
-
-# LESSONS = $(wildcard afxdp*) $(wildcard aws*)
-LESSONS = $(wildcard aws*)
-LESSONS_CLEAN = $(addsuffix _clean,$(LESSONS))
-
-.PHONY: clean clobber distclean $(LESSONS) $(LESSONS_CLEAN)
-
-all: lib $(LESSONS)
-
-clean: $(LESSONS_CLEAN)
-	@echo; echo lib/xdp-tools; $(MAKE) -C lib/xdp-tools clean
-	@echo; echo lib; $(MAKE) -C lib clean
-	@echo; echo common; $(MAKE) -C common clean
+all: lib
 
 lib: check_submodule config
-	@echo; echo lib; $(MAKE) -C lib
-	@echo; echo lib/xdp-tools; $(MAKE) -C lib/xdp-tools
+	echo afxdp/lib; cd afxdp; $(MAKE) -C lib
+	echo afxdp/lib/xdp-tools; cd afxdp; $(MAKE) -C lib/xdp-tools
 
 check_submodule:
-	@git submodule update --init
+	git submodule update --init
 
-config: configure
-	@sh configure
-	@sh cd lib/xdp-tools; ./configure
+config: afxdp/configure
+	cd afxdp; ./configure
+	cd afxdp/lib/xdp-tools; ./configure
 
-$(LESSONS):
-	@echo; echo $@; $(MAKE) -C $@
-
-$(LESSONS_CLEAN):
-	@echo; echo $@; $(MAKE) -C $(subst _clean,,$@) clean
-
-clobber:
-	@touch config.mk
-	$(Q)$(MAKE) clean
-	$(Q)rm -f config.mk
-
-distclean:	clobber
-
+clean: $(LESSONS_CLEAN)
+	echo afxdp/lib/xdp-tools; cd afxdp; $(MAKE) -C lib/xdp-tools clean
+	echo afxdp/lib; cd afxdp; $(MAKE) -C lib clean
+	echo afxdp/common; cd afxdp; $(MAKE) -C common clean

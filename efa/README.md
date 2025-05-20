@@ -1,42 +1,79 @@
 # UCCL-EFA
 
-AWS EFA support for UCCL.
+AWS EFA support for UCCL. We are using Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.5 (Ubuntu 22.04) AMI; but latest AMI should also work. 
 
-## Install dependencies
+## Building EFA plugin
+
 ```
-sudo apt-get install libibverbs-dev libpci-dev nvtop -y
+# Eg, /home/ubuntu/uccl
+export UCCL_HOME=<the absolute path of uccl>
+
+# Build libnccl-net.so
+cd $UCCL_HOME/efa
+make -j
+
+# Build nccl-sg for UCCL (taking ~3min); assume A100 GPUs
+cd $UCCL_HOME/thirdparty/nccl-sg
+make src.build -j NVCC_GENCODE="-gencode=arch=compute_80,code=sm_80"
+cp src/include/nccl_common.h build/include/
+
+# Optionally, if you want to run nccl-tests for the original NCCL
+cd $UCCL_HOME/thirdparty/nccl
+make src.build -j NVCC_GENCODE="-gencode=arch=compute_80,code=sm_80"
+
+# Build nccl-tests; consider "conda deactivate" when hitting dependency errors
+cd $UCCL_HOME/thirdparty/nccl-tests
+make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=$UCCL_HOME/thirdparty/nccl-sg/build -j
 ```
 
-## Install lastest perftest to benchmark EFA
+## Runing nccl-tests for UCCL
+
+Filling `$UCCL_HOME/scripts/nodes.txt` with the ssh'able IP addresses of the nodes for rsync'ing all built libs. 
+Filling `$UCCL_HOME/efa/hostname` with the ssh'able IP addresses of the nodes for mpirun use. There, `slots` denotes the number of processes you want to run on each server; we currently only support 8. 
+
+```
+cd $UCCL_HOME/scripts
+python rsync.py
+
+# Assume four p4d.24xlarge instances each with 8 A100 GPUs. 
+cd $UCCL_HOME/efa
+./run_nccl_test.sh ud 32 0
+``` 
+
+
+## MISC
+
+### Install lastest perftest with patches to benchmark EFA NICs
+
 ```
 pushd /tmp
-git clone https://github.com/linux-rdma/perftest.git && cd perftest
-./autogen.sh
-./configure
-make
+git clone https://github.com/linux-rdma/perftest.git && cd perftest && git checkout c04922f
+git apply $UCCL_HOME/efa/perftest.patch
+./autogen.sh && ./configure && make -j
 sudo make install
 popd
 ```
 
 Throughput benchmark: 
 ```
-ib_send_bw -d rdmap16s27 --report_gbits -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 4096 -m 8192 -F
-ib_send_bw -d rdmap16s27 --report_gbits 172.31.42.140 -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 4096 -m 8192 -F
+ib_send_bw -d rdmap16s27 --report_gbits -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 8192 -F
+ib_send_bw -d rdmap16s27 --report_gbits -x 0 -c UD -t 128 -Q 1 -q 32 -l 2 -s 8192 -F <serverip>
 ```
 
 Latency benchmark: 
 ```
 ib_send_lat -d rdmap16s27 --report_gbits -x 0 -c UD -F
-ib_send_lat -d rdmap16s27 --report_gbits 172.31.42.140 -x 0 -c UD -F
+ib_send_lat -d rdmap16s27 --report_gbits -x 0 -c UD -F <serverip>
 ```
 
-## Run nccl-efa tests: 
+### Run transport tests
+
 ```
 ./util_efa_test --logtostderr
-./util_efa_test --logtostderr 172.31.42.140
+./util_efa_test --logtostderr <serverip>
 ```
 
 ```
-./transport_test --logtostderr --test=bimq --clientip=172.31.39.44
-./transport_test --logtostderr --test=bimq --serverip=172.31.42.140
+./transport_test --logtostderr --test=bimq --clientip=<clientip>
+./transport_test --logtostderr --test=bimq --serverip=<serverip>
 ```
