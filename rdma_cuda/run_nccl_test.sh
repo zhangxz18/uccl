@@ -1,5 +1,7 @@
 # /usr/bin/bash
 
+source ../scripts/shared.sh
+
 # Usage ./run_nccl_test.sh [UCCL] [# of Nodes] [# of GPUs per node] [allreduce/alltoall: 0/1]
 
 UCCL=${1:-1}
@@ -7,18 +9,16 @@ NUM_PROCS=${2:-2}
 NUM_GPUS_PER_NODE=${3:-8}
 PROG_OPTION=${4:-0}
 
-ROOT="/home/aleria/uccl_rdma"
-
 # IP of Nodes.
 NODES="87.120.213.6,87.120.213.5"
 # Names of HCAs."
 HCA_NAMES="mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1"
 # Name of Control NIC.
-CTRL_NIC="ens10f0np0"
+CTRL_NIC="eth0"
 # Path of NCCL
-NCCL_PATH="${ROOT}/nccl/build/lib"
+NCCL_PATH="${UCCL_HOME}/thirdparty/nccl/build/lib"
 # Path of UCCL
-PLUGIN_LIB="${ROOT}/rdma/libnccl-net.so"
+PLUGIN_LIB="${UCCL_HOME}/rdma_cuda/libnccl-net.so"
 
 # Number of chunnels.
 NUM_CHUNNEL=4
@@ -88,7 +88,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     -x NCCL_IB_HCA=${HCA_NAMES} \
     -x NCCL_NET_PLUGIN=${PLUGIN_LIB} \
     -x LD_LIBRARY_PATH=${NCCL_PATH}:${LD_LIBRARY_PATH} \
-    ${ROOT}/nccl-tests/build/${PROG_NAME} \
+    ${UCCL_HOME}/thirdparty/nccl-tests/build/${PROG_NAME} \
     -f 2 \
     --minbytes 1K --maxbytes 1G \
     --warmup_iters 50 --iters 50 \

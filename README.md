@@ -22,16 +22,50 @@ Existing network transports under NCCL (i.e., kernel TCP and RDMA) leverage one 
 * Open-source research platform for ML collectives
 
 On two AWS `g4dn.8xlarge` instances with 50G NICs and T4 GPUs under the cluster placement group, UCCL outperforms NCCL by up to **3.7x** for AllReduce: 
+![UCCL allreduce performance](./images/allreduce_perf.png)
 
-![UCCL Performance Report](./allreduce_perf.png)
+On four AWS `p4d.24xlarge` instances with 4x100G NICs and 8xA100 GPUs, UCCL outperforms NCCL by up to **3.3x** for AlltoAll: 
+![UCCL allreduce performance](./images/alltoall_perf.png)
 
-## Support
+Free free to checkout our full [technical report](https://arxiv.org/pdf/2504.17307).
 
 
-## Development Guide
+## Getting Started
 
-Please refer to [./doc/README_dev.md](doc/README_dev.md) for development setup and testing.
+Let's first prepare dependencies for UCCL. 
+* `git clone https://github.com/uccl-project/uccl.git`
+* `export UCCL_HOME=$(pwd)/uccl`
+* Install dependency: 
+    ```
+    sudo apt update
+    sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 libopenmpi-dev libibverbs-dev libpci-dev -y
+
+    # Install and activate Anaconda (you can choose any recent versions)
+    wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
+    bash ./Anaconda3-2024.10-1-Linux-x86_64.sh -b
+    source ~/anaconda3/bin/activate
+    source ~/.bashrc
+    conda init
+
+    # Install dependency into default base env
+    conda install paramiko -y
+    ```
+* Init UCCL submodules and build UCCL basic libs
+    ```
+    cd $UCCL_HOME
+    git submodule update --init
+    ```
+
+Then you can dive into individual folders for various supports: 
+* `efa/`: AWS EFA NIC (currently support p4d.24xlarge)
+* `afxdp/`: Non-RDMA NICs (currently support AWS ENA NICs and IBM VirtIO NICs)
+* `rdma_cuda/`: Nvidia/Mellanox GPUs + RDMA NICs (both IB and RoCE)
+* `rdma_hip/`: AMD GPUs + RDMA NICs (both IB and RoCE)
+
+## Documentation
+
+Please refer to [./doc/README.md](doc/README.md) for full documentation.
 
 ## Acknowledgement
 
-UCCL is being actively developed at [UC Berkeley Sky Computing Lab](https://sky.cs.berkeley.edu/). We welcome contributions from open-source developers. 
+UCCL is being actively developed at [UC Berkeley Sky Computing Lab](https://sky.cs.berkeley.edu/). We welcome open-source developers. 

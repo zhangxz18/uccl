@@ -10,7 +10,7 @@ PLATFORM=$6
 echo "configuring ${NIC} with ${NQUEUE} nic queues ${NIRQCORE} irq cores ${MTU} MTU for ${MODE} on ${PLATFORM}"
 
 echo "unloading any xdp programs"
-sudo $UCCL_HOME/lib/xdp-tools/xdp-loader/xdp-loader unload ${NIC} --all
+sudo $UCCL_HOME/afxdp/lib/xdp-tools/xdp-loader/xdp-loader unload ${NIC} --all
 
 echo "sudo ethtool -L ${NIC} combined ${NQUEUE}"
 sudo ethtool -L ${NIC} combined ${NQUEUE}

@@ -25,7 +25,7 @@ config_mapping = {
     "setup_extra": ["", "", 0],
 }
 UCCL_HOME = os.getenv("UCCL_HOME")
-PYTHON = f"source {UCCL_HOME}/../anaconda3/bin/activate; conda run -n base python"
+PYTHON = f"conda run -n base python"
 
 # Usage:
 #   python setup_all.py --target=setup_extra
@@ -59,12 +59,12 @@ if __name__ == "__main__":
     if target == "setup_extra":
         _ = exec_command_and_wait(
             node_clients[0],
-            f"cd {UCCL_HOME}; {PYTHON} rsync.py",
+            f"cd {UCCL_HOME}/scripts; {PYTHON} rsync.py",
         )
         wait_handler_vec = []
         for node_client in node_clients:
             wait_handler = exec_command_no_wait(
-                node_client, f"cd {UCCL_HOME}; ./scripts/setup_extra.sh"
+                node_client, f"cd {UCCL_HOME}/scripts; ./setup_extra.sh"
             )
             wait_handler_vec.append(wait_handler)
         for wait_handler in wait_handler_vec:
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     print(f'{stdout} {stderr}')
     stdout, stderr = exec_command_and_wait(
         node_clients[0],
-        f"cd {UCCL_HOME}; {PYTHON} rsync.py",
+        f"cd {UCCL_HOME}/scripts; {PYTHON} rsync.py",
     )
     print(f'{stdout} {stderr}')
 
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     wait_handler_vec = []
     for node_client in node_clients:
         wait_handler = exec_command_no_wait(
-            node_client, f"cd {UCCL_HOME}; {nic_cmd}"
+            node_client, f"cd {UCCL_HOME}/scripts; {nic_cmd}"
         )
         wait_handler_vec.append(wait_handler)
     for wait_handler in wait_handler_vec:

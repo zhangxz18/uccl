@@ -60,7 +60,7 @@ util_lrpc_test: util_lrpc_test.cc $(DEPS) $(lib_obj)
 %.o: %.cc $(DEPS)
 	g++ -c $< -o $@ $(INC) $(CXXFLAGS)
 
-NCCL_HOME:=../nccl
+NCCL_HOME:=../thirdparty/nccl
 CUDA_HOME:=/usr/local/cuda
 NCCL_INC:= -I$(NCCL_HOME)/build/include -I$(NCCL_HOME)/src/include -I$(CUDA_HOME)/include
 
@@ -70,3 +70,16 @@ $(PLUGIN_SO): nccl_plugin.cc ebpf_transport.o $(DEPS) $(lib_obj)
 .PHONY: clean
 clean:
 	rm -f *.o $(main_bin) $(PLUGIN_SO)
+
+lib: lib_config
+	echo lib; $(MAKE) -C lib
+	echo lib/xdp-tools; $(MAKE) -C lib/xdp-tools
+
+lib_config: configure
+	./configure
+	cd lib/xdp-tools; ./configure
+
+lib_clean:
+	echo lib/xdp-tools; $(MAKE) -C lib/xdp-tools clean
+	echo lib; $(MAKE) -C lib clean
+	echo common; $(MAKE) -C common clean

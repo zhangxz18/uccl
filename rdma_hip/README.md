@@ -45,7 +45,7 @@ export UCCL_HOME=<the absolute path of uccl>
 # Eg, /work1/yzhou/yangzhou/anaconda3/lib
 export CONDA_LIB_HOME=<the absolute path of anaconda lib>
 
-# Avoiding gfx950 as the HPC Fund cluster clang does not support it yet. 
+# Avoiding gfx950 as the HPC Fund cluster clang does not support it yet. Note this takes ~20min. 
 cd $UCCL_HOME/thirdparty/rccl
 ./install.sh --amdgpu_targets="gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201" -j 16
 

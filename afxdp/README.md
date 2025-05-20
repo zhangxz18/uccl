@@ -27,25 +27,7 @@ UCCL-AFXDP currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azur
 2. Configure the two VM instances for UCCL tests as follows. Note if you have used our provided AMI, you can skip this step.
     <details><summary>Click me</summary>
     
-    * Build `uccl`:
-        * `git clone https://github.com/uccl-project/uccl.git`
-        * `export UCCL_HOME=$(pwd)/uccl`
-        * Install dependency: 
-            ```
-            sudo apt update
-            sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 libopenmpi-dev libibverbs-dev libpci-dev -y
-
-            wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
-            bash ./Anaconda3-2024.10-1-Linux-x86_64.sh
-            source ~/.bashrc
-            conda init
-            ```
-
-        * Build UCCL: ignore "config.h: No such file or directory" at the end
-            ```
-            cd $UCCL_HOME
-            make
-            ```
+    * Prepare dependencies:
         * On Amazon VMs (Skip this step on other environments): Update AWS ENA driver to support zero-copy AF_XDP 
             ```
             # Install last ena driver with reboot persistent
@@ -83,12 +65,10 @@ UCCL-AFXDP currently supports AWS ENA NICs and IBM VirtIO NICs; support for Azur
         cd $UCCL_HOME/nccl
         make src.build -j NVCC_GENCODE="-gencode=arch=compute_90,code=sm_90"
         cp src/include/nccl_common.h build/include/
-        cd ..
 
         # Consider "conda deactivate" when hitting dependency errors
         cd $UCCL_HOME/nccl-tests
         make MPI=1 MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=$UCCL_HOME/nccl/build -j
-        cd ..
         ```
     </details>
 

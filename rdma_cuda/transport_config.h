@@ -11,8 +11,8 @@
 /// Interface configuration.
 static const char *IB_DEVICE_NAME_PREFIX = "mlx5_";
 static constexpr bool ROCE_NET = false;
-// If SINGLE_IP is set, all devices will use the same IP.
-static std::string SINGLE_IP("87.120.213.6");
+// If SINGLE_CTRL_NIC is set, all devices will use the same IP.
+static std::string SINGLE_CTRL_NIC("eth0");
 static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 static constexpr uint8_t NUM_DEVICES = 8;
 // static constexpr uint8_t DEVNAME_SUFFIX_LIST[8] = {0, 2, 4, 6, 0, 0, 0, 0};
