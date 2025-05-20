@@ -1,16 +1,14 @@
-# UCCL-RDMA
+# UCCL-RDMA-RCCL
 
-RDMA support for UCCL.
+UCCL-RDMA support for RCCL.
 
 1. UCCL supports two network fabrics: RoCE, Infiniband.
 2. UCCL supports two modes: Unreliable Connection (UC) and Reliable Connection (RC).
 
-## Install dependencies
-```
-sudo apt-get install libibverbs-dev -y
-```
+This guide assumes under the [AMD HPC Fund cluster](https://amdresearch.github.io/hpcfund/hardware.html), without any root access. 
 
 ## Configuration
+
 ### transport_config.h:
 
 1. Network
@@ -30,18 +28,44 @@ DEVNAME_SUFFIX_LIST:    The suffix of the device name.
 
 LINK_BANDWIDTH:         The bandwidth of each NIC (Bytes per second).
 ```
-### run_nccl_test.sh:
-```
-ROOT:                   The root directory of the workspace.
-NODES:                  IP list of all nodes.
-CTRL_NIC:               The name of control NIC.
-NCCL_PATH:              The path of libnccl.so
-PLUGIN_PATH:            The path of libnccl-net.so
 
-Usage: ./run_nccl_test.sh [NCCL/UCCL: 0/1, default:1] [# of Nodes, default:2] [# of GPUs per node, default:8] [allreduce/alltoall: 0/1]
+## Prepare dependency
+Install and activate recent Anaconda to prepare necessary libraries such as `-lglog -lgflags -lgtest`. Consider installing it into `$WORK` directory as Anaconda is large. Then: 
+```
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
 ```
 
-## Build
+## Building and running UCCL
+
+Build `rccl` and `rccl-tests`: 
+
 ```
-make -j`nproc`
+# Eg, /home1/yangzhou/uccl
+export UCCL_HOME=<the absolute path of uccl>
+# Eg, /work1/yzhou/yangzhou/anaconda3/lib
+export CONDA_LIB_HOME=<the absolute path of anaconda lib>
+
+# Avoiding gfx950 as the HPC Fund cluster clang does not support it yet. 
+cd $UCCL_HOME/thirdparty/rccl
+./install.sh --amdgpu_targets="gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201" -j 16
+
+cd $UCCL_HOME/thirdparty/rccl-tests
+make MPI=1 MPI_HOME=/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.5 HIP_HOME=/opt/rocm-6.3.1 NCCL_HOME=/opt/rocm-6.3.1/include/rccl CUSTOM_RCCL_LIB=/opt/rocm-6.3.1/lib/librccl.so -j
+```
+
+Build `librccl-net-uccl.so`
+
+```
+cd $UCCL_HOME/rdma_hip
+make -j
+```
+
+Running `rccl-tests`:
+
+```
+# Using slurm to allocate two AMD nodes
+salloc -N 2 -n 2 -p mi2104x -t 00:30:00
+
+# Usage: ./run_rccl_test.sh [rccl/uccl, default: uccl]
+./run_rccl_test.sh rccl
 ```
