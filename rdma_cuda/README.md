@@ -24,7 +24,7 @@ IB_DEVICE_NAME_PREFIX:  The prefix of the device name (e.g. mlx5_).
 
 DEVNAME_SUFFIX_LIST:    The suffix of the device name (use ibv_devices).
 
-LINK_BANDWIDTH:         The bandwidth (Bytes per second) of each NIC (use ibstat).
+LINK_BANDWIDTH:         The bandwidth (bytes per second) of each NIC (use ibstat).
 ```
 
 ### run_nccl_test.sh:
