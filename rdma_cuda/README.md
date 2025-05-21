@@ -1,29 +1,30 @@
 # UCCL-RDMA-NCCL
 
-UCCL RDMA support for RCCL.
+UCCL RDMA plugin for NCCL.
 
 1. UCCL supports two network fabrics: RoCE, Infiniband.
 2. UCCL supports two modes: Unreliable Connection (UC) and Reliable Connection (RC).
 
 ## Configuration
 ### transport_config.h:
+Modify the below constants based on the environment.
 
 1. Network
 ```
-ROCE_NET:               True (RoCE) or false (Infiniband)
+ROCE_NET:               true (RoCE) or false (Infiniband)
 
-SINGLE_CTRL_NIC:        The device name of control NIC. Set to empty string if each RDMA NIC has its own IP address. UCCL will detect them atomically.
+SINGLE_CTRL_NIC:        The device name of control NIC. Set to empty string if each RDMA NIC has its own IP address. UCCL will detect them automatically.
 ```
 
 2. NIC
 ```
-NUM_DEVICES:            The number of physical NICs.
+NUM_DEVICES:            The number of physical NICs (use ibv_devices).
 
-IB_DEVICE_NAME_PREFIX:  The prefix of the device name.
+IB_DEVICE_NAME_PREFIX:  The prefix of the device name (e.g. mlx5_).
 
-DEVNAME_SUFFIX_LIST:    The suffix of the device name.
+DEVNAME_SUFFIX_LIST:    The suffix of the device name (use ibv_devices).
 
-LINK_BANDWIDTH:         The bandwidth of each NIC (Bytes per second).
+LINK_BANDWIDTH:         The bandwidth (Bytes per second) of each NIC (use ibstat).
 ```
 
 ### run_nccl_test.sh:
