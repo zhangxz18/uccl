@@ -31,7 +31,7 @@ LINK_BANDWIDTH:         The bandwidth of each NIC (Bytes per second).
 
 ## Prepare dependency
 Install and activate recent Anaconda to prepare necessary libraries such as `-lglog -lgflags -lgtest`. Consider installing it into `$WORK` directory as Anaconda is large. Then: 
-```
+```shell
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
 ```
 
@@ -39,7 +39,7 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 
 Build `rccl` and `rccl-tests`: 
 
-```
+```shell
 # Eg, /home1/yangzhou/uccl
 export UCCL_HOME=<the absolute path of uccl>
 # Eg, /work1/yzhou/yangzhou/anaconda3/lib
@@ -55,14 +55,14 @@ make MPI=1 MPI_HOME=/opt/ohpc/pub/mpi/openmpi4-gnu12/4.1.5 HIP_HOME=/opt/rocm-6.
 
 Build `librccl-net-uccl.so`
 
-```
+```shell
 cd $UCCL_HOME/rdma_hip
 make -j
 ```
 
 Running `rccl-tests`:
 
-```
+```shell
 # Using slurm to allocate two AMD nodes
 salloc -N 2 -n 2 -p mi2104x -t 00:30:00
 

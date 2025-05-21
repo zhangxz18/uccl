@@ -46,13 +46,13 @@ Free free to checkout our full [technical report](https://arxiv.org/pdf/2504.173
 ## Getting Started
 
 Let's first clone the UCCL repo and init submodules. 
-```
+```shell
 git clone https://github.com/uccl-project/uccl.git --recursive
 export UCCL_HOME=$(pwd)/uccl
 ```
 
 Then install some common dependencies: 
-```
+```shell
 sudo apt update
 sudo apt install linux-tools-$(uname -r) clang llvm cmake m4 build-essential \
                  net-tools libgoogle-glog-dev libgtest-dev libgtest-dev \

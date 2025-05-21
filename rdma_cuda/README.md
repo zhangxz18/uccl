@@ -41,7 +41,7 @@ Usage: ./run_nccl_test.sh [NCCL/UCCL: 0/1, default:1] [# of Nodes, default:2] [#
 
 Build `nccl` and `nccl-tests`: 
 
-```
+```shell
 # Eg, /home/yangz/uccl
 export UCCL_HOME=<the absolute path of uccl>
 
@@ -57,13 +57,13 @@ make MPI=1 MPI_HOME=/opt/amazon/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=$UCC
 
 Build `libnccl-net.so`
 
-```
+```shell
 cd $UCCL_HOME/rdma_cuda
 make -j
 ```
 
 Running `nccl-tests`:
 
-```
+```shell
 ./run_nccl_test.sh 1 2 8 1
 ```
