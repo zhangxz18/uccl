@@ -37,8 +37,8 @@ Free free to checkout our full [technical report](https://arxiv.org/pdf/2504.173
 
 - [ ] Dynamic membership with GPU servers joining and exiting
 - [ ] GPU-initiated network P2P that support all NIC vendors including Nvidia, AWS EFA, and Broadcom, to support MoE all-to-all workload and KV cache transfers in PD disaggregation. 
-- [ ] NCCL re-architecturing
-  - [ ] Scalable and effcient CPU proxy
+- [ ] Re-architecting NCCL to unleash network hardware capabilities
+  - [ ] Scalable and efficient CPU proxy
   - [ ] Low-cost async collectives with compute-communication ordering guarantee
   - [ ] Device kernels in vendor-agnostic Triton language
 
@@ -54,7 +54,10 @@ export UCCL_HOME=$(pwd)/uccl
 Then install some common dependencies: 
 ```
 sudo apt update
-sudo apt install clang llvm libelf-dev libpcap-dev build-essential libc6-dev-i386 linux-tools-$(uname -r) libgoogle-glog-dev libgtest-dev byobu net-tools iperf iperf3 libgtest-dev cmake m4 libopenmpi-dev libibverbs-dev libpci-dev -y
+sudo apt install linux-tools-$(uname -r) clang llvm cmake m4 build-essential \
+                 net-tools libgoogle-glog-dev libgtest-dev libgtest-dev \
+                 libelf-dev libpcap-dev libc6-dev-i386 \
+                 libopenmpi-dev libibverbs-dev libpci-dev -y
 
 # Install and activate Anaconda (you can choose any recent versions)
 wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
@@ -63,7 +66,7 @@ source ~/anaconda3/bin/activate
 source ~/.bashrc
 conda init
 
-# Install dependency into default base env
+# Install python ssh lib into conda-default base env
 conda install paramiko -y
 ```
 
