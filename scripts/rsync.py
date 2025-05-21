@@ -3,7 +3,10 @@ import os
 from pathlib import Path
 
 UCCL_HOME = os.getenv("UCCL_HOME")
+if not UCCL_HOME:
+    raise ValueError("UCCL_HOME environment variable is not set.")
 
+print(f"Using UCCL_HOME: {UCCL_HOME}")
 
 async def rsync(nodes):
     tasks = [
