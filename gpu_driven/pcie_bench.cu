@@ -241,12 +241,27 @@ __global__ void persistKernel(struct IovFifo **fifo_vec) {
         __syncthreads();
         if (abort_flag) return;
 
+#ifdef MEASURE_KERNEL_TIME
+        unsigned long long start = 0;
+        unsigned long long end = 0;
+        if (tid == 0) {
+            start = clock64();     
+        }
+#endif
         kernelScatteredMemcpy(cur_iov);
 
+#ifdef MEASURE_KERNEL_TIME
+        if (tid == 0) {
+            end = clock64();
+        }
+#endif
         __syncthreads();
 
         // Post the finished work to the GPU
         if (tid == 0) {
+#ifdef MEASURE_KERNEL_TIME
+            printf("Block %d, iov_n %d, cycles = %llu\n", bid, cur_iov->iov_n, end - start);
+#endif
             fence_acq_rel_sys();
             st_relaxed_sys(&fifo->head, cached_tail);
         }
@@ -361,6 +376,11 @@ int main() {
     cudaCheckErrors("cudaStreamCreate failed");
     cudaStreamCreate(&stream2);
     cudaCheckErrors("cudaStreamCreate failed");
+
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    // Use printf for clock rate
+    printf("clock rate: %d\n", prop.clockRate);
 
     // Preallocate a iov work item.
     struct Iov *cpu_iov = (struct Iov *)malloc(sizeof(struct Iov));
