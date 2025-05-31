@@ -9,7 +9,7 @@
 #include <vector>
 #include <thread>
 
-static constexpr int kNumThBlocks = 1;
+static constexpr int kNumThBlocks = 8;
 static constexpr int kNumThPerBlock = 512;
 
 #define cudaCheckErrors(msg)                                        \
@@ -23,9 +23,10 @@ static constexpr int kNumThPerBlock = 512;
         }                                                           \
     } while (0)
 
-struct GPUSignal {
+struct alignas(128) GPUSignal {
     volatile uint64_t cmd;
     volatile uint64_t ack;
+    char _pad[128-16];
 };
 
 __device__ unsigned long long cycle_accum[kNumThBlocks] = {0};
@@ -41,9 +42,11 @@ __global__ void gpu_issue_command(GPUSignal *signals, int iterations) {
         for (int i = 0; i < iterations; i++) {
             unsigned long long start = clock64();
             signal->cmd = i + 1;  
+            
 
             while (signal->ack != (i + 1)) {
-                __nanosleep(10);
+                // __nanosleep(10);
+                ;
             }
             unsigned long long end = clock64();
             // printf("Block %d: Command %d issued, acked in %llu cycles\n", bid, i + 1, end - start);
@@ -57,7 +60,8 @@ __global__ void gpu_issue_command(GPUSignal *signals, int iterations) {
 void cpu_polling(GPUSignal *signal, int iterations, int block_id) {
     for (int i = 0; i < iterations; ++i) {
         while (signal->cmd != (i + 1)) {
-            std::this_thread::yield();
+            // std::this_thread::yield();
+            ;
         }
         signal->ack = i + 1; 
     }
@@ -75,11 +79,9 @@ int main() {
     cudaGetDeviceProperties(&prop, 0);
     printf("clock rate: %d kHz\n", prop.clockRate);
 
-    // Allocate an array of GPUSignals
     GPUSignal *signals;
     cudaHostAlloc(&signals, sizeof(GPUSignal) * kNumThBlocks, cudaHostAllocMapped);
 
-    // Initialize signals
     for (int i = 0; i < kNumThBlocks; ++i) {
         signals[i].cmd = 0;
         signals[i].ack = 0;
@@ -93,14 +95,12 @@ int main() {
         cpu_threads.emplace_back(cpu_polling, &signals[i], iterations, i);
     }
 
-    // Launch GPU kernel
     gpu_issue_command<<<kNumThBlocks, kNumThPerBlock, 0, stream1>>>(signals, iterations);
     cudaCheckErrors("gpu_issue_command kernel failed");
 
     cudaStreamSynchronize(stream1);
     cudaCheckErrors("cudaStreamSynchronize failed");
 
-    // Join CPU threads
     for (auto& t : cpu_threads) {
         t.join();
     }
@@ -113,7 +113,7 @@ int main() {
 
     for (int i = 0; i < kNumThBlocks; ++i) {
         double avg_cycles = static_cast<double>(host_cycle_accum[i]) / host_op_count[i];
-        double avg_latency_us = avg_cycles * 1000 / prop.clockRate;  // clockRate in kHz
+        double avg_latency_us = avg_cycles * 1000 / prop.clockRate; 
         printf("Block %d: Average latency = %.2f us over %u iterations, avg_cycles: %.2f\n", i, avg_latency_us, host_op_count[i], avg_cycles);
     }
 
