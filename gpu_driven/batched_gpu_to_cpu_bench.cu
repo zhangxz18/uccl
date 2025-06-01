@@ -26,7 +26,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
-
+#include <immintrin.h>
 #include <chrono>
 #include <tuple>
 #include <vector>
@@ -35,7 +35,7 @@
 
 static constexpr int kNumThBlocks = 8;
 static constexpr int kNumThPerBlock = 1;
-static constexpr int kIterations = 10000;
+static constexpr int kIterations = 1000000;
 static constexpr int kBatchSize = 1;
 
 // Bounded FIFO queue.
@@ -62,7 +62,7 @@ struct alignas(128) Fifo {
 __device__ unsigned long long cycle_accum[kNumThBlocks] = {0};
 __device__ unsigned int op_count[kNumThBlocks] = {0};
 
-__device__ unsigned long long start_cycle[kNumThBlocks][kQueueSize] = {{0}};
+// __device__ unsigned long long start_cycle[kNumThBlocks][kQueueSize] = {{0}};
 
 __global__ void gpu_issue_batched_commands(Fifo *fifos) {
 
@@ -73,6 +73,9 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
     if (tid != 0) {
         return;
     }
+
+    extern __shared__ unsigned long long start_cycle_smem[];
+
     for (int it = 0; it < kIterations; it += kBatchSize)
     {
         uint32_t my_hdr;
@@ -99,7 +102,7 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
             unsigned long long t0 = clock64();
             uint64_t cmd = (static_cast<uint64_t>(bid) << 32) | (it + i + 1);
 
-            start_cycle[bid][idx] = t0;
+            start_cycle_smem[idx] = t0;
             my_fifo->buf[idx] = cmd;
         }
         __threadfence_system();
@@ -108,7 +111,7 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
             uint32_t cidx = complete & kQueueMask;
             if (complete < my_fifo->tail) {
                 unsigned long long t1 = clock64();
-                unsigned long long cycles = t1 - start_cycle[bid][cidx];
+                unsigned long long cycles = t1 - start_cycle_smem[cidx];
                 cycle_accum[bid] += cycles;
                 op_count[bid]++;
                 complete++;
@@ -122,7 +125,7 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
         while (complete >= my_fifo->tail) { /* spin */ }
 
         unsigned long long t1 = clock64();
-        cycle_accum[bid] += (t1 - start_cycle[bid][cidx]);
+        cycle_accum[bid] += (t1 - start_cycle_smem[cidx]);
         ++op_count[bid];
         ++complete;
     }
@@ -137,6 +140,7 @@ void cpu_consume(Fifo *fifo, int block_idx) {
         uint64_t cmd;
         do { 
             cmd = fifo->buf[idx]; 
+            _mm_pause();  // Avoid hammering the cacheline. 
         } while (cmd == 0);
 
         // printf("CPU thread for block %d, idx: %d, consuming cmd %llu\n", 
@@ -150,7 +154,7 @@ void cpu_consume(Fifo *fifo, int block_idx) {
             exit(1);
         }
         fifo->buf[idx] = 0;
-        std::atomic_thread_fence(std::memory_order_release);
+        // std::atomic_thread_fence(std::memory_order_release);
         my_tail++;
         fifo->tail = my_tail;
     }
