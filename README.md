@@ -63,9 +63,9 @@ Then install some common dependencies:
 ```shell
 sudo apt update
 sudo apt install linux-tools-$(uname -r) clang llvm cmake m4 build-essential \
- net-tools libgoogle-glog-dev libgtest-dev libgtest-dev \
+                 net-tools libgoogle-glog-dev libgtest-dev libgtest-dev \
                  libelf-dev libpcap-dev libc6-dev-i386 \
- libopenmpi-dev libibverbs-dev libpci-dev -y
+                 libopenmpi-dev libibverbs-dev libpci-dev -y
 
 # Install and activate Anaconda (you can choose any recent versions)
 wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
