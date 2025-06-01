@@ -35,12 +35,13 @@
 
 static constexpr int kNumThBlocks = 8;
 static constexpr int kNumThPerBlock = 1;
-static constexpr int kIterations = 1000000;
-static constexpr int kBatchSize = 1;
+static constexpr int kIterations = 10000;
+static constexpr int kBatchSize = 8; // Higher throughput but higher latency.
 
-// Bounded FIFO queue.
-static constexpr uint32_t kQueueSize = 128;
+static constexpr uint32_t kQueueSize = 32;
 static constexpr uint32_t kQueueMask = kQueueSize - 1;
+
+#define MEASURE_PER_OP_LATENCY
 
 #define cudaCheckErrors(msg)                                        \
     do {                                                            \
@@ -59,20 +60,27 @@ struct alignas(128) Fifo {
     volatile uint64_t buf[kQueueSize]; // Payload buffer (8 bytes). 
 };
 
+#ifdef MEASURE_PER_OP_LATENCY
 __device__ unsigned long long cycle_accum[kNumThBlocks] = {0};
 __device__ unsigned int op_count[kNumThBlocks] = {0};
-
-// __device__ unsigned long long start_cycle[kNumThBlocks][kQueueSize] = {{0}};
+#endif
 
 __global__ void gpu_issue_batched_commands(Fifo *fifos) {
 
     const int bid = blockIdx.x;
     const int tid = threadIdx.x;
     Fifo *my_fifo = &fifos[bid];
-    uint32_t complete = 0;
     if (tid != 0) {
         return;
     }
+
+#ifdef MEASURE_PER_OP_LATENCY
+    uint32_t complete = 0;
+    __shared__ unsigned long long cycle_accum_smem;
+    __shared__ unsigned int       op_count_smem;
+    cycle_accum_smem = 0ull;
+    op_count_smem    = 0u;
+#endif
 
     extern __shared__ unsigned long long start_cycle_smem[];
 
@@ -106,29 +114,35 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
             my_fifo->buf[idx] = cmd;
         }
         __threadfence_system();
-
+#ifdef MEASURE_PER_OP_LATENCY
         while (complete < my_hdr + todo) {
             uint32_t cidx = complete & kQueueMask;
             if (complete < my_fifo->tail) {
                 unsigned long long t1 = clock64();
                 unsigned long long cycles = t1 - start_cycle_smem[cidx];
-                cycle_accum[bid] += cycles;
-                op_count[bid]++;
+                cycle_accum_smem += cycles;
+                op_count_smem++;
                 complete++;
             } else {
                 break;
             }
         }
+#endif
     }
+#ifdef MEASURE_PER_OP_LATENCY
     while (complete < kIterations) {
         uint32_t cidx = complete & kQueueMask;
         while (complete >= my_fifo->tail) { /* spin */ }
 
         unsigned long long t1 = clock64();
-        cycle_accum[bid] += (t1 - start_cycle_smem[cidx]);
-        ++op_count[bid];
+        cycle_accum_smem += (t1 - start_cycle_smem[cidx]);
+        ++op_count_smem;
         ++complete;
     }
+
+    cycle_accum[bid] = cycle_accum_smem;
+    op_count[bid] = op_count_smem;
+#endif
 }
 
 void cpu_consume(Fifo *fifo, int block_idx) {
@@ -140,7 +154,7 @@ void cpu_consume(Fifo *fifo, int block_idx) {
         uint64_t cmd;
         do { 
             cmd = fifo->buf[idx]; 
-            _mm_pause();  // Avoid hammering the cacheline. 
+            // _mm_pause();  // Avoid hammering the cacheline. 
         } while (cmd == 0);
 
         // printf("CPU thread for block %d, idx: %d, consuming cmd %llu\n", 
@@ -187,7 +201,8 @@ int main() {
         cpu_threads.emplace_back(cpu_consume, &fifos[i], i);
     }
     auto t0 = std::chrono::high_resolution_clock::now();
-    gpu_issue_batched_commands<<<kNumThBlocks, kNumThPerBlock, 0, stream1>>>(fifos);
+    size_t shmem_bytes = kQueueSize * sizeof(unsigned long long);
+    gpu_issue_batched_commands<<<kNumThBlocks, kNumThPerBlock, shmem_bytes, stream1>>>(fifos);
     cudaCheckErrors("gpu_issue_command kernel failed");
 
     cudaStreamSynchronize(stream1);
@@ -198,14 +213,18 @@ int main() {
         t.join();
     }
 
+#ifdef MEASURE_PER_OP_LATENCY
     unsigned long long h_cycles[kNumThBlocks];
     unsigned int       h_ops[kNumThBlocks];
     cudaMemcpyFromSymbol(h_cycles,cycle_accum,sizeof(h_cycles));
     cudaMemcpyFromSymbol(h_ops,   op_count,   sizeof(h_ops));
+#endif
 
-    double total_us=0; 
-    unsigned long long tot_cycles=0; 
+
     unsigned int tot_ops=0;
+#ifdef MEASURE_PER_OP_LATENCY
+    double total_us=0; 
+    unsigned long long tot_cycles=0;
     printf("\nPer-block avg latency:\n");
     for(int b=0;b<kNumThBlocks;++b){
         double us = (double)h_cycles[b]*1000.0/prop.clockRate/h_ops[b];
@@ -213,11 +232,18 @@ int main() {
         total_us += us;
         tot_cycles += h_cycles[b]; tot_ops += h_ops[b];
     }
+#else
+    tot_ops = kNumThBlocks * kIterations;
+#endif
     double wall_ms = std::chrono::duration<double,std::milli>(t1-t0).count();
     double throughput = (double)(kNumThBlocks*kIterations)/(wall_ms*1000.0);
 
+#ifdef MEASURE_PER_OP_LATENCY
     printf("\nOverall avg GPU-measured latency  : %.3f µs\n",
            (double)tot_cycles*1000.0/prop.clockRate/tot_ops);
+    printf("Total cycles                       : %llu\n", tot_cycles);
+#endif
+    printf("Total ops                          : %u\n", tot_ops);
     printf("End-to-end Wall-clock time        : %.3f ms\n", wall_ms);
     printf("Throughput                        : %.2f Mops/s\n", throughput);
 
