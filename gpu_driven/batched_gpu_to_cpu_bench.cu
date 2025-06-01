@@ -36,6 +36,7 @@
 static constexpr int kNumThBlocks = 8;
 static constexpr int kNumThPerBlock = 1;
 static constexpr int kIterations = 10000;
+static constexpr int kBatchSize = 1;
 
 // Bounded FIFO queue.
 static constexpr uint32_t kQueueSize = 128;
@@ -55,7 +56,7 @@ static constexpr uint32_t kQueueMask = kQueueSize - 1;
 struct alignas(128) Fifo {
     unsigned long long head; // Next slot to produce
     unsigned long long tail; // Next slot to consume
-    volatile uint64_t buf[kQueueSize]; // Payload buffer. 
+    volatile uint64_t buf[kQueueSize]; // Payload buffer (8 bytes). 
 };
 
 __device__ unsigned long long cycle_accum[kNumThBlocks] = {0};
@@ -72,31 +73,38 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
     if (tid != 0) {
         return;
     }
-    for (int it = 0; it < kIterations; ++it)
+    for (int it = 0; it < kIterations; it += kBatchSize)
     {
         uint32_t my_hdr;
         uint32_t cur_tail;
+
+        const unsigned int todo = 
+            (it + kBatchSize <= kIterations) ? kBatchSize :
+            (kIterations - it);
+
         while (true) {
             uint32_t cur_head = my_fifo->head;
             cur_tail = my_fifo->tail;
-            if (cur_head - cur_tail < kQueueSize) {
-                if (atomicAdd_system(&(my_fifo->head), 1ull) == cur_head) {
+            if (cur_head - cur_tail + todo <= kQueueSize) {
+                if (atomicAdd_system(&(my_fifo->head), todo) == cur_head) {
                     my_hdr = cur_head; 
                     break; // Successfully reserved a slot
                 }
             }
         }
 
-        uint32_t idx = my_hdr & kQueueMask;
-        // Write a dummy cmd
-        unsigned long long t0 = clock64();
-        uint64_t cmd = (static_cast<uint64_t>(bid) << 32) | (it + 1);
-        start_cycle[bid][idx] = t0;
-        my_fifo->buf[idx] = cmd;
+        #pragma unroll
+        for (int i = 0; i < todo; ++i) {
+            uint32_t idx = (my_hdr + i) & kQueueMask;
+            unsigned long long t0 = clock64();
+            uint64_t cmd = (static_cast<uint64_t>(bid) << 32) | (it + i + 1);
+
+            start_cycle[bid][idx] = t0;
+            my_fifo->buf[idx] = cmd;
+        }
         __threadfence_system();
 
-
-        while (complete < my_hdr + 1) {
+        while (complete < my_hdr + todo) {
             uint32_t cidx = complete & kQueueMask;
             if (complete < my_fifo->tail) {
                 unsigned long long t1 = clock64();
