@@ -66,5 +66,9 @@ make -j
 Running `nccl-tests`:
 
 ```shell
+cd $UCCL_HOME/scripts
+python rsync.py
+
+cd $UCCL_HOME/rdma_cuda
 ./run_nccl_test.sh 1 2 8 1
 ```

@@ -72,6 +72,7 @@ mpirun --bind-to none -np ${NUM_PROCS} -N 1 \
     --mca orte_base_help_aggregate 0 \
     -x LD_LIBRARY_PATH=${NCCL_PATH}:${LD_LIBRARY_PATH} \
     -x NCCL_NET_PLUGIN=${PLUGIN_LIB} \
+    -x NCCL_SOCKET_IFNAME=${CTRL_NIC} \
     -x GLOG_logtostderr=1 \
     -x GLOG_v=0 \
     -x NCCL_DEBUG=WARN \
