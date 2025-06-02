@@ -35,13 +35,14 @@
 
 static constexpr int kNumThBlocks = 8;
 static constexpr int kNumThPerBlock = 1;
-static constexpr int kIterations = 10000;
+static constexpr int kIterations = 10000000;
 static constexpr int kBatchSize = 8; // Higher throughput but higher latency.
 
 static constexpr uint32_t kQueueSize = 128;
 static constexpr uint32_t kQueueMask = kQueueSize - 1;
 
 #define MEASURE_PER_OP_LATENCY
+// #define DEBUG_PRINT
 
 #define cudaCheckErrors(msg)                                        \
     do {                                                            \
@@ -55,8 +56,9 @@ static constexpr uint32_t kQueueMask = kQueueSize - 1;
     } while (0)
 
 struct alignas(128) Fifo {
-    unsigned long long head; // Next slot to produce
-    unsigned long long tail; // Next slot to consume
+    // Using volatile and avoiding atomics. 
+    volatile unsigned long long head; // Next slot to produce
+    volatile unsigned long long tail; // Next slot to consume
     volatile uint64_t buf[kQueueSize]; // Payload buffer (8 bytes). 
 };
 
@@ -86,29 +88,32 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
 
     for (int it = 0; it < kIterations; it += kBatchSize)
     {
-        uint32_t my_hdr;
-        uint32_t cur_tail;
+        unsigned long long my_hdr;
+        unsigned long long cur_tail;
 
         const unsigned int todo = 
             (it + kBatchSize <= kIterations) ? kBatchSize :
             (kIterations - it);
 
         while (true) {
-            uint32_t cur_head = my_fifo->head;
+            unsigned long long cur_head = my_fifo->head;
             cur_tail = my_fifo->tail;
             if (cur_head - cur_tail + todo <= kQueueSize) {
-                if (atomicAdd_system(&(my_fifo->head), todo) == cur_head) {
-                    my_hdr = cur_head; 
-                    break; // Successfully reserved a slot
-                }
+                my_fifo->head = cur_head + todo;
+                my_hdr = cur_head;
+                break;
+                // if (atomicAdd_system(&(my_fifo->head), todo) == cur_head) {
+                    // my_hdr = cur_head; 
+                    // break; // Successfully reserved a slot
+                // }
             }
         }
 
         #pragma unroll
         for (int i = 0; i < todo; ++i) {
-            uint32_t idx = (my_hdr + i) & kQueueMask;
+            unsigned long long idx = (my_hdr + i) & kQueueMask;
             unsigned long long t0 = clock64();
-            uint64_t cmd = (static_cast<uint64_t>(bid) << 32) | (it + i + 1);
+            unsigned long long cmd = (static_cast<uint64_t>(bid) << 32) | (it + i + 1);
 
             start_cycle_smem[idx] = t0;
             my_fifo->buf[idx] = cmd;
@@ -164,7 +169,16 @@ void cpu_consume(Fifo *fifo, int block_idx) {
 
     uint64_t my_tail = 0;
     for (int seen = 0; seen < kIterations; ++seen) {
-        while (fifo->head == my_tail)  { /* spin */ }
+        // TODO: here, if CPU caches fifo->head, it may not see the updates from GPU.
+        while (fifo->head == my_tail)  { 
+#ifdef DEBUG_PRINT
+            if (block_idx == 0) {
+                printf("CPU thread for block %d, waiting for head to advance: my_tail: %lu, head: %llu\n", 
+                       block_idx, my_tail, fifo->head);
+            }
+#endif
+            /* spin */ 
+        }
         uint64_t idx = my_tail & kQueueMask;
         uint64_t cmd;
         do { 
@@ -172,9 +186,10 @@ void cpu_consume(Fifo *fifo, int block_idx) {
             _mm_pause();  // Avoid hammering the cacheline. 
         } while (cmd == 0);
 
-        // printf("CPU thread for block %d, idx: %d, consuming cmd %llu\n", 
-            //    block_idx, idx, static_cast<unsigned long long>(cmd));
-
+#ifdef DEBUG_PRINT
+        printf("CPU thread for block %d, seen: %d, my_head: %llu, my_tail: %lu, consuming cmd %llu\n", 
+               block_idx, seen, fifo->head, my_tail, static_cast<unsigned long long>(cmd));
+#endif
         uint64_t expected_cmd = (static_cast<uint64_t>(block_idx) << 32) | (seen + 1);
         if (cmd != expected_cmd) {
             fprintf(stderr, "Error: block %d, expected cmd %llu, got %llu\n",
@@ -186,6 +201,7 @@ void cpu_consume(Fifo *fifo, int block_idx) {
         // std::atomic_thread_fence(std::memory_order_release);
         my_tail++;
         fifo->tail = my_tail;
+        // _mm_clflush(&(fifo->tail));
     }
 }
 
