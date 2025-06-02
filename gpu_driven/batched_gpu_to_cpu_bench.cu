@@ -38,7 +38,7 @@ static constexpr int kNumThPerBlock = 1;
 static constexpr int kIterations = 10000;
 static constexpr int kBatchSize = 8; // Higher throughput but higher latency.
 
-static constexpr uint32_t kQueueSize = 32;
+static constexpr uint32_t kQueueSize = 128;
 static constexpr uint32_t kQueueMask = kQueueSize - 1;
 
 #define MEASURE_PER_OP_LATENCY
@@ -145,8 +145,23 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
 #endif
 }
 
+static inline bool pin_thread_to_cpu(int cpu) {
+    int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpu < 0 || cpu >= num_cpus) return false;
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu, &cpuset);
+
+    pthread_t current_thread = pthread_self();
+
+    return !pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
 void cpu_consume(Fifo *fifo, int block_idx) {
     // printf("CPU thread for block %d started\n", block_idx);
+    pin_thread_to_cpu(block_idx);
+
     uint64_t my_tail = 0;
     for (int seen = 0; seen < kIterations; ++seen) {
         while (fifo->head == my_tail)  { /* spin */ }
@@ -154,7 +169,7 @@ void cpu_consume(Fifo *fifo, int block_idx) {
         uint64_t cmd;
         do { 
             cmd = fifo->buf[idx]; 
-            // _mm_pause();  // Avoid hammering the cacheline. 
+            _mm_pause();  // Avoid hammering the cacheline. 
         } while (cmd == 0);
 
         // printf("CPU thread for block %d, idx: %d, consuming cmd %llu\n", 
