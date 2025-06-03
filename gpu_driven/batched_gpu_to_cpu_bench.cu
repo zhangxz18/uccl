@@ -4,20 +4,22 @@
  * CUDA_MODULE_LOADING=EAGER ./batched_gpu_to_cpu_bench
  * 
  * clock rate: 1410000 kHz
- * 
+ *
  * Per-block avg latency:
- *   Block 0 : 5.619 µs over 10000 ops
- *   Block 1 : 5.870 µs over 10000 ops
- *   Block 2 : 5.769 µs over 10000 ops
- *   Block 3 : 5.857 µs over 10000 ops
- *   Block 4 : 5.774 µs over 10000 ops
- *   Block 5 : 5.579 µs over 10000 ops
- *   Block 6 : 5.566 µs over 10000 ops
- *   Block 7 : 5.572 µs over 10000 ops
+ *  Block 0 : 12.322 µs over 10000000 ops
+ *  Block 1 : 11.964 µs over 10000000 ops
+ *  Block 2 : 12.189 µs over 10000000 ops
+ *  Block 3 : 12.006 µs over 10000000 ops
+ *  Block 4 : 12.125 µs over 10000000 ops
+ *  Block 5 : 12.029 µs over 10000000 ops
+ *  Block 6 : 12.082 µs over 10000000 ops
+ *  Block 7 : 12.010 µs over 10000000 ops
 
- * Overall avg GPU-measured latency  : 5.701 µs
- * End-to-end Wall-clock time        : 80.022 ms
- * Throughput                        : 1.00 Mops/s
+ * Overall avg GPU-measured latency  : 12.091 µs
+ * Total cycles                       : 1363866870356
+ * Total ops                          : 80000000
+ * End-to-end Wall-clock time        : 26901.583 ms
+ * Throughput                        : 2.97 Mops/s
  * 
  */
 
