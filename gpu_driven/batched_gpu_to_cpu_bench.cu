@@ -4,22 +4,22 @@
  * CUDA_MODULE_LOADING=EAGER ./batched_gpu_to_cpu_bench
  * 
  * clock rate: 1410000 kHz
- *
- * Per-block avg latency:
- *  Block 0 : 12.322 µs over 10000000 ops
- *  Block 1 : 11.964 µs over 10000000 ops
- *  Block 2 : 12.189 µs over 10000000 ops
- *  Block 3 : 12.006 µs over 10000000 ops
- *  Block 4 : 12.125 µs over 10000000 ops
- *  Block 5 : 12.029 µs over 10000000 ops
- *  Block 6 : 12.082 µs over 10000000 ops
- *  Block 7 : 12.010 µs over 10000000 ops
 
- * Overall avg GPU-measured latency  : 12.091 µs
- * Total cycles                       : 1363866870356
+ * Per-block avg latency:
+ * Block 0 : 6.976 µs over 10000000 ops
+ * Block 1 : 6.633 µs over 10000000 ops
+ * Block 2 : 6.809 µs over 10000000 ops
+ * Block 3 : 6.975 µs over 10000000 ops
+ * Block 4 : 6.642 µs over 10000000 ops
+ * Block 5 : 6.936 µs over 10000000 ops
+ * Block 6 : 6.912 µs over 10000000 ops
+ * Block 7 : 6.906 µs over 10000000 ops
+
+ * Overall avg GPU-measured latency  : 6.849 µs
+ * Total cycles                       : 772522054232
  * Total ops                          : 80000000
- * End-to-end Wall-clock time        : 26901.583 ms
- * Throughput                        : 2.97 Mops/s
+ * End-to-end Wall-clock time        : 11481.282 ms
+ * Throughput                        : 6.97 Mops/s
  * 
  */
 
@@ -59,10 +59,21 @@ static constexpr uint32_t kQueueMask = kQueueSize - 1;
 
 struct alignas(128) Fifo {
     // Using volatile and avoiding atomics. 
-    volatile unsigned long long head; // Next slot to produce
-    volatile unsigned long long tail; // Next slot to consume
+    uint64_t head; // Next slot to produce
+    uint64_t tail; // Next slot to consume
     volatile uint64_t buf[kQueueSize]; // Payload buffer (8 bytes). 
 };
+
+
+__device__ __forceinline__ uint64_t ld_volatile(uint64_t *ptr) {
+    uint64_t ans;
+    asm volatile("ld.volatile.global.u64 %0, [%1];"
+                 : "=l"(ans)
+                 : "l"(ptr)
+                 : "memory");
+    return ans;
+}
+
 
 #ifdef MEASURE_PER_OP_LATENCY
 __device__ unsigned long long cycle_accum[kNumThBlocks] = {0};
@@ -90,16 +101,17 @@ __global__ void gpu_issue_batched_commands(Fifo *fifos) {
 
     for (int it = 0; it < kIterations; it += kBatchSize)
     {
-        unsigned long long my_hdr;
-        unsigned long long cur_tail;
+        uint64_t my_hdr;
+        uint64_t cur_tail;
 
         const unsigned int todo = 
             (it + kBatchSize <= kIterations) ? kBatchSize :
             (kIterations - it);
 
         while (true) {
-            unsigned long long cur_head = my_fifo->head;
-            cur_tail = my_fifo->tail;
+            // CPU does not modify the head. 
+            uint64_t cur_head = my_fifo->head;
+            cur_tail = ld_volatile(&my_fifo->tail);
             if (cur_head - cur_tail + todo <= kQueueSize) {
                 my_fifo->head = cur_head + todo;
                 my_hdr = cur_head;
