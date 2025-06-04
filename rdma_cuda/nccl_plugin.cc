@@ -175,10 +175,6 @@ ncclResult_t pluginListen(int dev, void *opaqueHandle, void **listenComm) {
     struct ucclHandle *handle = (struct ucclHandle *)opaqueHandle;
     memset(handle, 0, sizeof(struct ucclHandle));
     
-    int local_gpuidx;
-    cudaGetDevice(&local_gpuidx);
-    dev = local_gpuidx;
-
     // Create a listening socket.
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     DCHECK(listen_fd >= 0) << "ERROR: opening socket";
@@ -231,8 +227,6 @@ ncclResult_t pluginConnect(int dev, void *opaque_handle, void **sendComm,
     int local_gpuidx;
     cudaGetDevice(&local_gpuidx);
     
-    dev = local_gpuidx;
-
     std::string remote_ip_str = ip_to_str(handle->ip_addr_u32);
 
     struct ucclSendComm *scomm =
