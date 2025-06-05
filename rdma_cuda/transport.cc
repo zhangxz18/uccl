@@ -1384,6 +1384,7 @@ int RDMAEndpoint::uccl_recv_async(UcclFlow *flow, struct Mhandle **mhandles,
         ureq->type = ReqRxRC;
         ureq->context = flow;
         ureq->rc_or_flush_done = false;
+        ureq->n = 1;
 
         flow->poll_flow_cq();
         return 0;
