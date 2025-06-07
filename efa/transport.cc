@@ -1682,6 +1682,7 @@ bool Endpoint::create_engine_and_add_to_engine_future(
 }
 
 bool Endpoint::initialize_engine_by_gpu_idx(int gpu_idx) {
+  // TODO(MaoZiming): check only called once.
   static std::once_flag flag_once;
   std::call_once(flag_once, [this, gpu_idx]() {
     listen_port_cur_.store(kBootstrapPort + gpu_idx * 1000);

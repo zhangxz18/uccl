@@ -317,6 +317,7 @@ class RDMAEndpoint {
   constexpr static uint16_t kTestListenPort = 30000;
   constexpr static uint32_t kStatsTimerIntervalSec = 2;
   constexpr static uint32_t RC_MAGIC = 0x12345678;
+  constexpr static uint16_t kBootstrapPort = 5000;
 
   std::shared_ptr<RDMAFactory> rdma_ctl_;
 
@@ -327,6 +328,8 @@ class RDMAEndpoint {
   // Per-engine communication channel
   Channel* channel_vec_[NUM_ENGINES * NUM_DEVICES];
   std::vector<std::unique_ptr<UcclRDMAEngine>> engine_vec_;
+  std::unordered_map<int, std::unique_ptr<UcclRDMAEngine>>
+      engine_id_to_engine_map_;
   std::vector<std::unique_ptr<std::thread>> engine_th_vec_;
 
   // Number of outstanding messages for each engine.
@@ -364,7 +367,11 @@ class RDMAEndpoint {
  public:
   RDMAEndpoint(uint8_t const* devname_suffix_list, int num_devices,
                int num_engines_per_dev);
+
+  RDMAEndpoint(int num_devices, int num_engines_per_dev);
   ~RDMAEndpoint();
+
+  bool initialize_engine_by_dev(int dev, std::atomic<uint16_t>& port);
 
   /// For testing easily.
   ConnID test_uccl_connect(int dev, std::string remote_ip, int remote_dev) {

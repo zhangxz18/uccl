@@ -271,6 +271,40 @@ void UcclRDMAEngine::handle_rx_work(void) {
   }
 }
 
+bool RDMAEndpoint::initialize_engine_by_dev(int dev,
+                                            std::atomic<uint16_t>& port) {
+  static std::once_flag flag_once;
+  std::call_once(flag_once, [this, dev, &port]() {
+    int start_engine_idx = dev * num_engines_per_dev_;
+    int end_engine_idx = (dev + 1) * num_engines_per_dev_ - 1;
+
+    port.store(kBootstrapPort + dev * 1000);
+    for (int engine_id = start_engine_idx; engine_id <= end_engine_idx;
+         engine_id++) {
+      int engine_cpu_id =
+          ENGINE_CPU_START_LIST[dev] + engine_id % num_engines_per_dev_;
+      DCHECK(engine_cpu_id < NUM_CPUS) << engine_cpu_id << ", " << NUM_CPUS;
+
+      engine_id_to_engine_map_[engine_id] = std::make_unique<UcclRDMAEngine>(
+          dev, engine_id, channel_vec_[engine_id], eqds_[dev]);
+
+      UcclRDMAEngine* engine_ptr = nullptr;
+      engine_ptr = engine_id_to_engine_map_[engine_id].get();
+      engine_th_vec_.emplace_back(std::make_unique<std::thread>(
+          [engine_ptr, engine_id, engine_cpu_id]() {
+            UCCL_LOG_ENGINE << "[Engine#" << engine_id << "] "
+                            << "running on CPU " << engine_cpu_id;
+            pin_thread_to_cpu(engine_cpu_id);
+            engine_ptr->run();
+          }));
+    }
+
+    create_listen_socket(&test_listen_fds_[dev], kTestListenPort + dev);
+  });
+
+  return true;
+}
+
 void UcclRDMAEngine::handle_tx_work(void) {
   Channel::Msg tx_work;
   int budget;
@@ -545,6 +579,33 @@ void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg& ctrl_work) {
   qp_setup_thread.detach();
 }
 
+RDMAEndpoint::RDMAEndpoint(int num_devices, int num_engines_per_dev)
+    : num_devices_(num_devices),
+      num_engines_per_dev_(num_engines_per_dev),
+      stats_thread_([this]() { stats_thread_fn(); }) {
+  static std::once_flag flag_once;
+  std::call_once(flag_once, [&]() {
+    rdma_ctl_ = rdma_ctl;
+
+    for (int i = 0; i < num_devices; i++) {
+      RDMAFactory::init_dev(DEVNAME_SUFFIX_LIST[i]);
+    }
+  });
+  ctx_pool_ = new SharedPool<PollCtx*, true>(kMaxInflightMsg);
+  ctx_pool_buf_ = new uint8_t[kMaxInflightMsg * sizeof(PollCtx)];
+  for (int i = 0; i < kMaxInflightMsg; i++) {
+    ctx_pool_->push(new (ctx_pool_buf_ + i * sizeof(PollCtx)) PollCtx());
+  }
+  int total_num_engines = num_devices * num_engines_per_dev;
+
+  for (int i = 0; i < total_num_engines; i++) channel_vec_[i] = new Channel();
+
+  if constexpr (kReceiverCCA == RECEIVER_CCA_EQDS) {
+    // Receiver-driven congestion control per device.
+    for (int i = 0; i < num_devices; i++) eqds_[i] = new eqds::EQDS(i);
+  }
+}
+
 RDMAEndpoint::RDMAEndpoint(uint8_t const* devname_suffix_list, int num_devices,
                            int num_engines_per_dev)
     : num_devices_(num_devices),
@@ -644,9 +705,22 @@ void UcclRDMAEngine::release() {
 }
 
 RDMAEndpoint::~RDMAEndpoint() {
+#ifdef LAZY_CREATE_ENGINE
+  for (auto& [engine_id, engine] : engine_id_to_engine_map_) {
+    engine->shutdown();
+  }
+#else
   for (auto& engine : engine_vec_) engine->shutdown();
+#endif
+
   for (auto& engine_th : engine_th_vec_) engine_th->join();
+#ifdef LAZY_CREATE_ENGINE
+  for (auto& [engine_id, engine] : engine_id_to_engine_map_) {
+    engine->release();
+  }
+#else
   for (auto& engine : engine_vec_) engine->release();
+#endif
 
   for (int dev = 0; dev < num_devices_; dev++) {
     for (auto& flow : active_flows_vec_[dev]) {
@@ -898,15 +972,6 @@ void RDMAEndpoint::install_flow_on_engines(int dev, PeerID peer_id,
   info->is_send = is_send;
 
   std::vector<PollCtx*> poll_ctx_vec;
-
-  for (int i = 0; i < num_engines_per_dev_; i++) {
-    auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
-    auto* poll_ctx = install_flow_on_engine(engine_idx, peer_id, meta);
-    poll_ctx_vec.push_back(poll_ctx);
-  }
-  for (auto* poll_ctx : poll_ctx_vec) {
-    uccl_poll(poll_ctx);
-  }
 
   for (int i = 0; i < num_engines_per_dev_; i++) {
     auto engine_idx = find_first_engine_idx_on_dev(dev) + i;
@@ -1316,7 +1381,6 @@ bool RDMAEndpoint::uccl_poll_ureq_once(struct ucclRequest* ureq) {
   }
   if ((ureq->type == ReqRx || ureq->type == ReqRxRC) && ret) {
     flow->dec_outstanding_reqs();
-
     if (ureq->recv.data_len[0] <= kRCSize && ureq->n == 1) {
       // This message should have used RC.
       // Give subsequent messages a chance to use RC.
@@ -1438,10 +1502,21 @@ void RDMAEndpoint::stats_thread_fn() {
       if (shutdown) break;
     }
 
+#ifdef LAZY_CREATE_ENGINE
+    if (engine_id_to_engine_map_.empty()) {
+      // No engines created yet, skip stats.
+      continue;
+    }
+#else
     if (engine_vec_.empty()) continue;
+#endif
     std::string s;
     uint32_t eidx = 0;
+#ifdef LAZY_CREATE_ENGINE
+    for (auto& [engine_id, engine] : engine_id_to_engine_map_) {
+#else
     for (auto& engine : engine_vec_) {
+#endif
 #ifdef STATS
       s = engine->status_to_string();
       if (!s.empty()) {
@@ -1459,10 +1534,10 @@ int RDMAEndpoint::uccl_regmr_dmabuf(UcclFlow* flow, void* addr, size_t len,
   auto factory_dev = RDMAFactory::get_factory_dev(flow->dev_);
   *mhandle = new Mhandle();
 
-  (*mhandle)->mr =
-      ibv_reg_dmabuf_mr(factory_dev->pd, offset, len, (uint64_t)addr, fd,
-                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                            IBV_ACCESS_REMOTE_READ);
+  (*mhandle)->mr = ibv_reg_dmabuf_mr(
+      factory_dev->pd, offset, len, (uint64_t)addr, fd,
+      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+          IBV_ACCESS_REMOTE_READ | IBV_ACCESS_RELAXED_ORDERING);
 
   return 0;
 }
@@ -1473,9 +1548,10 @@ int RDMAEndpoint::uccl_regmr(UcclFlow* flow, void* addr, size_t len,
   auto factory_dev = RDMAFactory::get_factory_dev(flow->dev_);
 
   *mhandle = new Mhandle();
-  (*mhandle)->mr = ibv_reg_mr(factory_dev->pd, addr, len,
-                              IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                                  IBV_ACCESS_REMOTE_READ);
+  (*mhandle)->mr =
+      ibv_reg_mr(factory_dev->pd, addr, len,
+                 IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                     IBV_ACCESS_REMOTE_READ | IBV_ACCESS_RELAXED_ORDERING);
 
   return 0;
 }

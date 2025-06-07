@@ -18,6 +18,28 @@ namespace uccl {
 // RDMAFactory rdma_ctl;
 std::shared_ptr<RDMAFactory> rdma_ctl;
 
+static int ibvWidths[] = {1, 4, 8, 12, 2};
+static int ibvSpeeds[] = {2500,  /* SDR */
+                          5000,  /* DDR */
+                          10000, /* QDR */
+                          10000, /* QDR */
+                          14000, /* FDR */
+                          25000, /* EDR */
+                          50000, /* HDR */
+                          100000 /* NDR */};
+
+static int firstBitSet(int val, int max) {
+  int i = 0;
+  while (i < max && ((val & (1 << i)) == 0)) i++;
+  return i;
+}
+static int ncclIbWidth(int width) {
+  return ibvWidths[firstBitSet(width, sizeof(ibvWidths) / sizeof(int) - 1)];
+}
+static int ncclIbSpeed(int speed) {
+  return ibvSpeeds[firstBitSet(speed, sizeof(ibvSpeeds) / sizeof(int) - 1)];
+}
+
 void RDMAFactory::init_dev(int devname_suffix) {
   struct FactoryDevice dev;
   struct ibv_device** device_list;
@@ -509,11 +531,13 @@ RDMAContext::~RDMAContext() {
 }
 
 int RDMAContext::supply_rx_buff(struct ucclRequest* ureq) {
+  DCHECK(ureq);
   auto* elems = ureq->recv.elems;
+  DCHECK(elems);
 
   auto req = alloc_recvreq();
   if (req == nullptr) return -1;
-
+  DCHECK(ureq->n == 1);
   for (int i = 0; i < ureq->n; i++) {
     // For sender to encode the request id in the immediate data.
     elems[i].rid = get_recvreq_id(req);

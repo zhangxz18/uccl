@@ -33,10 +33,10 @@
 namespace uccl {
 
 #define UCCL_LOG_PLUGIN VLOG(1) << "[Plugin] "
-#define UCCL_LOG_EP VLOG(2) << "[Endpoint] "
-#define UCCL_LOG_RE VLOG(2) << "[Resource] "
-#define UCCL_LOG_ENGINE VLOG(3) << "[Engine] "
-#define UCCL_LOG_IO VLOG(4) << "[IO] "
+#define UCCL_LOG_IO VLOG(2) << "[IO] "
+#define UCCL_LOG_EP VLOG(3) << "[Endpoint] "
+#define UCCL_LOG_RE VLOG(3) << "[Resource] "
+#define UCCL_LOG_ENGINE VLOG(4) << "[Engine] "
 
 #define POISON_64 UINT64_MAX
 #define POISON_32 UINT32_MAX
@@ -362,7 +362,9 @@ class Spin {
 
 #define load_acquire(X) __atomic_load_n(X, __ATOMIC_ACQUIRE)
 #define store_release(X, Y) __atomic_store_n(X, Y, __ATOMIC_RELEASE)
-#define ACCESS_ONCE(x) (*(decltype volatile(x)*)&(x))
+// clang-format off
+#define ACCESS_ONCE(x) (*(volatile decltype(x)*)&(x))
+// clang-format on
 #define is_power_of_two(x) ((x) != 0 && !((x) & ((x)-1)))
 
 #define KB(x) (static_cast<size_t>(x) << 10)
