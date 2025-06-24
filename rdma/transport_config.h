@@ -6,7 +6,9 @@
 #include <unistd.h>
 
 // #define STATS
+#ifndef LAZY_CREATE_ENGINE
 #define LAZY_CREATE_ENGINE
+#endif
 
 // TODO : Convert them to user definable configs
 #define ROCE_TRAFFIC_CLASS 3
