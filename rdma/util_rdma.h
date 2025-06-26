@@ -84,7 +84,7 @@ static inline int util_rdma_get_link_speed_from_ibv_speed(int active_speed,
  * @brief Buffer pool for work request extension.
  */
 class WrExBuffPool : public BuffPool {
-  static constexpr uint32_t kWrSize = sizeof(struct wr_ex);
+  static constexpr size_t kWrSize = sizeof(struct wr_ex);
   static constexpr uint32_t kNumWr = 4096;
   static_assert((kNumWr & (kNumWr - 1)) == 0, "kNumWr must be power of 2");
 
@@ -110,7 +110,7 @@ struct CQEDesc {
 
 class CQEDescPool : public BuffPool {
  public:
-  static constexpr uint32_t kDescSize = sizeof(struct CQEDesc);
+  static constexpr size_t kDescSize = sizeof(struct CQEDesc);
   static constexpr uint32_t kNumDesc = 4 * 65536;
   static_assert((kNumDesc & (kNumDesc - 1)) == 0,
                 "kNumDesc must be power of 2");
@@ -214,7 +214,7 @@ class RetrChunkBuffPool : public BuffPool {
  */
 class RetrHdrBuffPool : public BuffPool {
  public:
-  static constexpr uint32_t kHdrSize = sizeof(struct retr_chunk_hdr);
+  static constexpr size_t kHdrSize = sizeof(struct retr_chunk_hdr);
   static constexpr uint32_t kNumHdr = 1024;
   static_assert((kNumHdr & (kNumHdr - 1)) == 0, "kNumHdr must be power of 2");
 
@@ -228,8 +228,8 @@ class RetrHdrBuffPool : public BuffPool {
  */
 class CtrlChunkBuffPool : public BuffPool {
  public:
-  static constexpr uint32_t kPktSize = 36;
-  static constexpr uint32_t kChunkSize = kPktSize * kMaxBatchCQ;
+  static constexpr size_t kPktSize = 36;
+  static constexpr size_t kChunkSize = kPktSize * kMaxBatchCQ;
   static constexpr uint32_t kNumChunk = 65536;
   static_assert((kNumChunk & (kNumChunk - 1)) == 0,
                 "kNumChunk must be power of 2");
