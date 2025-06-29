@@ -25,9 +25,9 @@ inline uint64_t load_volatile_u64(uint64_t volatile* addr) {
   return val;
 }
 
-void remote_cpu_proxy(RingBuffer* rb, int block_idx, void* gpu_buffer,
-                      size_t total_size, int rank, char const* peer_ip,
-                      CopyRing& g_ring) {
+void remote_cpu_proxy(DeviceToHostCmdBuffer* rb, int block_idx,
+                      void* gpu_buffer, size_t total_size, int rank,
+                      char const* peer_ip, CopyRing& g_ring) {
   printf("Remote CPU thread for block %d started\n", block_idx + 1);
 
 #ifdef NUMA_AWARE_SCHEDULING
@@ -73,8 +73,9 @@ void remote_cpu_proxy(RingBuffer* rb, int block_idx, void* gpu_buffer,
 }
 
 void notify_gpu_completion(std::unordered_set<uint64_t>& finished_wrs,
-                           std::mutex& finished_wrs_mutex, RingBuffer* rb,
-                           int block_idx, uint64_t& my_tail) {
+                           std::mutex& finished_wrs_mutex,
+                           DeviceToHostCmdBuffer* rb, int block_idx,
+                           uint64_t& my_tail) {
 // This assumes we don't have EFA NICs.
 #ifdef ASSUME_WR_IN_ORDER
   if (finished_wrs.size() > 0) {
@@ -173,7 +174,7 @@ void notify_gpu_completion(std::unordered_set<uint64_t>& finished_wrs,
 }
 
 void post_gpu_command(
-    RingBuffer* rb, uint64_t& my_tail, size_t& seen, int block_idx,
+    DeviceToHostCmdBuffer* rb, uint64_t& my_tail, size_t& seen, int block_idx,
     void* gpu_buffer, ibv_cq* cq, std::unordered_set<uint64_t>& finished_wrs,
     std::mutex& finished_wrs_mutex,
     std::chrono::duration<double, std::micro>& total_rdma_write_durations) {
@@ -244,15 +245,20 @@ void post_gpu_command(
 
   if (!wrs_to_post.empty()) {
     auto start = std::chrono::high_resolution_clock::now();
+#ifdef RDMA_BATCH_TOKENS
+    post_rdma_async_batched(gpu_buffer, kObjectSize, batch_size, wrs_to_post,
+                            cq, finished_wrs, finished_wrs_mutex);
+#else
     post_rdma_async_chained(gpu_buffer, kObjectSize, batch_size, wrs_to_post,
                             cq, finished_wrs, finished_wrs_mutex);
+#endif
     auto end = std::chrono::high_resolution_clock::now();
     total_rdma_write_durations +=
         std::chrono::duration_cast<std::chrono::microseconds>(end - start);
   }
 }
 
-void cpu_proxy(RingBuffer* rb, int block_idx, void* gpu_buffer,
+void cpu_proxy(DeviceToHostCmdBuffer* rb, int block_idx, void* gpu_buffer,
                size_t total_size, int rank, char const* peer_ip) {
   printf("CPU thread for block %d started\n", block_idx + 1);
 #ifdef NUMA_AWARE_SCHEDULING
@@ -346,7 +352,7 @@ void cpu_proxy(RingBuffer* rb, int block_idx, void* gpu_buffer,
       (float)wr_time_total / completion_count, wr_time_total, completion_count);
 }
 
-void cpu_proxy_local(RingBuffer* rb, int block_idx) {
+void cpu_proxy_local(DeviceToHostCmdBuffer* rb, int block_idx) {
   // printf("CPU thread for block %d started\n", block_idx);
   pin_thread_to_cpu(block_idx + 1);
 

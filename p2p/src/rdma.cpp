@@ -58,6 +58,8 @@ thread_local std::vector<uint64_t> ack_recv_buf;
 thread_local struct ibv_mr* ack_recv_mr;
 thread_local uint64_t largest_completed_wr = 0;
 thread_local bool has_received_ack = false;
+thread_local std::unordered_map<uint64_t, std::vector<uint64_t>>
+    wr_id_to_wr_ids;
 
 struct NicCtx {
   // ibv_context* ctx;
@@ -668,14 +670,52 @@ void unpack_imm_data(int& src_addr_offset, int& destination_gpu,
   destination_addr_offset = imm_data & 0xFFFF;  // 16 bits
 }
 
+void post_rdma_async_batched(void* buf, size_t bytes, size_t num_wrs,
+                             std::vector<uint64_t> wrs_to_post, ibv_cq* cq,
+                             std::unordered_set<uint64_t>& finished_wrs,
+                             std::mutex& finished_wrs_mutex) {
+  struct ibv_sge sge {
+    .addr = (uintptr_t)buf /*+ start_offset * bytes*/,
+    .length = (uint32_t)(bytes * num_wrs), .lkey = mr->lkey
+  };
+  uint64_t largest_wr = wrs_to_post.back();
+  struct ibv_send_wr wr {};
+  wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+  wr.sg_list = &sge;
+  wr.num_sge = 1;
+  wr.wr.rdma.remote_addr = remote_addr /*+ start_offset * bytes*/;
+  wr.wr.rdma.rkey = remote_rkey;
+  wr.wr_id = largest_wr;
+#ifdef ENABLE_WRITE_WITH_IMMEDIATE
+  wr.imm_data = largest_wr;
+#endif
+  if (largest_wr % kSignalledEvery == 0)
+    wr.send_flags = IBV_SEND_SIGNALED;
+  else
+    wr.send_flags = 0;
+
+  ibv_send_wr* bad = nullptr;
+  int ret = ibv_post_send(qp, &wr, &bad);
+  if (ret) {
+    fprintf(stderr, "ibv_post_send failed: %s (ret=%d)\n", strerror(ret), ret);
+    if (bad) {
+      fprintf(stderr, "Bad WR at address: %p\n", bad);
+    }
+    exit(1);
+  }
+  g_posted.fetch_add(num_wrs, std::memory_order_relaxed);
+  if (wr_id_to_wr_ids.find(largest_wr) != wr_id_to_wr_ids.end()) {
+    fprintf(stderr, "Error: largest_wr %lu already exists in wr_id_to_wr_ids\n",
+            largest_wr);
+    exit(1);
+  }
+  wr_id_to_wr_ids[largest_wr] = wrs_to_post;
+}
+
 void post_rdma_async_chained(void* buf, size_t bytes, size_t num_wrs,
                              std::vector<uint64_t> wrs_to_post, ibv_cq* cq,
                              std::unordered_set<uint64_t>& finished_wrs,
                              std::mutex& finished_wrs_mutex) {
-  // while (g_posted.load() - g_completed.load() > kMaxOutstandingSends) {
-  //   local_poll_completions(cq, finished_wrs, finished_wrs_mutex);
-  // }
-
   std::vector<struct ibv_sge> sges(num_wrs);
   std::vector<struct ibv_send_wr> wrs(num_wrs);
   if (num_wrs != wrs_to_post.size()) {
@@ -696,28 +736,23 @@ void post_rdma_async_chained(void* buf, size_t bytes, size_t num_wrs,
     wrs[i].num_sge = 1;
     wrs[i].wr.rdma.remote_addr = remote_addr + offset * bytes;
     wrs[i].wr.rdma.rkey = remote_rkey;
-
-    // printf("Posting WR %zu: addr=0x%lx, rkey=0x%x, remote_addr=0x%lx\n",
-    //        wrs_to_post[i], sges[i].addr, mr->rkey,
-    //        wrs[i].wr.rdma.remote_addr);
     wrs[i].wr_id = wrs_to_post[i];
     assert(wrs[i].wr_id <= kIterations);
 #ifdef ENABLE_WRITE_WITH_IMMEDIATE
     wrs[i].opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-    // wrs[i].imm_data = build_imm_data(0, wrs[i].wr_id, 0);
-    wrs[i].imm_data = wrs[i].wr_id;  // Use WR ID as immediate data
+    wrs[i].imm_data = wrs[i].wr_id;
 #else
     wrs[i].opcode = IBV_WR_RDMA_WRITE;
 #endif
     if ((i + 1) % kSignalledEvery == 0)
-      wrs[i].send_flags = IBV_SEND_SIGNALED;  // generate a CQE
+      wrs[i].send_flags = IBV_SEND_SIGNALED;
     else
-      wrs[i].send_flags = 0;  // no CQE → cheaper
+      wrs[i].send_flags = 0;
 
     if (i < num_wrs - 1) {
-      wrs[i].next = &wrs[i + 1];  // chain to next WR
+      wrs[i].next = &wrs[i + 1];
     } else {
-      wrs[i].next = nullptr;  // last WR in the chain
+      wrs[i].next = nullptr;
     }
   }
   ibv_send_wr* bad = nullptr;
@@ -837,7 +872,17 @@ void local_poll_completions(ibv_cq* cq,
       case IBV_WC_SEND:
       case IBV_WC_RDMA_WRITE: {
         std::lock_guard<std::mutex> lock(finished_wrs_mutex);
+#ifdef RDMA_BATCH_TOKENS
+        for (auto const& wr_id : wr_id_to_wr_ids[wc[i].wr_id]) {
+          finished_wrs.insert(wr_id);
+        }
+        // printf("[WR] %d completed on peer, wr_id=%llu, num_wrs=%zu\n",
+        //        thread_idx, (unsigned long long)wc[i].wr_id,
+        //        wr_id_to_wr_ids[wc[i].wr_id].size());
+        wr_id_to_wr_ids.erase(wc[i].wr_id);
+#else
         finished_wrs.insert(wc[i].wr_id);
+#endif
       } break;
       case IBV_WC_RECV:
         if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
@@ -1048,12 +1093,13 @@ void remote_cpu_proxy_poll_write_with_immediate(int idx, ibv_cq* cq,
         fprintf(stderr, "per_GPU_device_buf[%d] is null\n", destination_gpu);
         std::abort();
       }
-
+#ifndef RDMA_BATCH_TOKENS
       if (wc[i].byte_len != kObjectSize) {
         fprintf(stderr, "Unexpected byte length: %u, expected: %u\n",
                 wc[i].byte_len, kObjectSize);
         std::abort();
       }
+#endif
       if (wc[i].imm_data > kIterations) {
         fprintf(stderr, "Unexpected imm_data: %u, expected <= %d\n",
                 wc[i].imm_data, kIterations);

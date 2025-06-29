@@ -35,27 +35,30 @@
     }                                                         \
   } while (0)
 
+// #define REMOTE_PERSISTENT_KERNEL
 #define MEASURE_PER_OP_LATENCY
 #define ENABLE_WRITE_WITH_IMMEDIATE
 #define ASSUME_WR_IN_ORDER
 #define NUMA_AWARE_SCHEDULING
 #define ENABLE_PROXY_CUDA_MEMCPY
 #define SYNCHRONOUS_COMPLETION
+#define RDMA_BATCH_TOKENS
 #define kQueueSize 1024
 #define kQueueMask (kQueueSize - 1)
-#define kMaxInflight 32
-#define kBatchSize 16
+#define kMaxInflight 64
+#define kBatchSize 32
 #define kIterations 1000000
-#define kNumThBlocks 4
+#define kNumThBlocks 6
 #define kNumThPerBlock 1
 #ifdef SYNCHRONOUS_COMPLETION
-#define kRemoteNVLinkBatchSize 1  // Immediately synchronize stream for latency.
+#define kRemoteNVLinkBatchSize \
+  16  // Immediately synchronize stream for latency.
 #else
 #define kRemoteNVLinkBatchSize 512
 #endif
-#define kObjectSize 8192  // 8 KB
-#define kMaxOutstandingSends 1024
-#define kMaxOutstandingRecvs 1024
+#define kObjectSize 10752  // 10.5 KB
+#define kMaxOutstandingSends 2048
+#define kMaxOutstandingRecvs 2048
 #define kSignalledEvery 1
 #define kSenderAckQueueDepth 1024
 #define kNumPollingThreads 0  // Rely on CPU proxy to poll.
@@ -72,14 +75,6 @@
 #define NVLINK_SM_PER_PROCESS 2
 #endif
 // #define SEPARATE_POLLING
-// Command structure for each transfer
-struct TransferCmd {
-  uint64_t cmd;
-  uint32_t dst_rank;  // remote node id (MPI-style)
-  uint32_t dst_gpu;   // GPU id on remote node
-  void* src_ptr;      // device pointer to data
-  uint64_t bytes;     // transfer size
-};
 
 bool pin_thread_to_cpu(int cpu);
 
