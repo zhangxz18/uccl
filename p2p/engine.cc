@@ -36,7 +36,7 @@ Endpoint::Endpoint(uint32_t const local_gpu_idx, uint32_t const num_cpus)
 
   auto ib_nics = uccl::get_rdma_nics();
   // Find the RDMA NIC that is closest to each of the GPUs.
-  for (int i = 0; i < kMaxNumGPUs; i++) {
+  for (int i = 0; i < gpu_cards.size(); i++) {
     auto gpu_device_path = gpu_cards[i];
     auto ib_nic_it = std::min_element(
         ib_nics.begin(), ib_nics.end(), [&](auto const& a, auto const& b) {
@@ -46,7 +46,7 @@ Endpoint::Endpoint(uint32_t const local_gpu_idx, uint32_t const num_cpus)
     gpu_to_dev[i] = ib_nic_it - ib_nics.begin();
   }
   std::cout << "Detected best GPU-NIC mapping: " << std::endl;
-  for (int i = 0; i < kMaxNumGPUs; i++) {
+  for (int i = 0; i < gpu_cards.size(); i++) {
     std::cout << "\tGPU " << i << " -> NIC " << gpu_to_dev[i] << " ("
               << ib_nics[gpu_to_dev[i]].first << ")" << std::endl;
   }
@@ -54,7 +54,9 @@ Endpoint::Endpoint(uint32_t const local_gpu_idx, uint32_t const num_cpus)
 
   // Initialize the engine based on the GPU index.
 #ifdef LAZY_CREATE_ENGINE
+  printf("Lazy creation of engine, GPU index: %d\n", local_gpu_idx_);
   ep_->initialize_engine_by_dev(gpu_to_dev[local_gpu_idx_]);
+  printf("Engine initialized for GPU %d\n", local_gpu_idx_);
 #endif
   if (!large_kv_meta_data_registered_) {
     py::gil_scoped_acquire acquire;
@@ -128,7 +130,11 @@ bool Endpoint::reg(void const* data, size_t size, uint64_t& mr_id) {
   uccl::Mhandle* mhandle;
   ep_->uccl_regmr(gpu_to_dev[local_gpu_idx_], const_cast<void*>(data), size, 0,
                   &mhandle);
-
+  if (mhandle->mr == nullptr) {
+    std::cerr << "[Endpoint::reg] Failed to register memory region, "
+              << "mhandle->mr is null\n";
+    std::abort();
+  }
   mr_id_to_mr_[mr_id] = new MR{mr_id, mhandle};
 
   return true;
