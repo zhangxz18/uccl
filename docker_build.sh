@@ -2,21 +2,20 @@
 set -e
 
 # -----------------------
-# Build uccl wheels for CUDA (NVIDIA) and ROCm (AMD) back-ends
+# Build uccl wheels for CUDA (NVIDIA), ROCm (AMD), and CUDA (Grace-hopper) back-ends
 # The host machine does *not* need CUDA or ROCm – everything lives inside
 # a purpose-built Docker image derived from Ubuntu 22.04.
 #
 # Usage:
-#   ./docker_build.sh [cuda|rocm|efa|all] [-it]
+#   ./docker_build.sh [cuda|rocm|gh|efa|all] [-it]
 #
 # The wheels are written to ./wheelhouse-*/
 # -----------------------
 
 TARGET=${1:-cuda}
 
-if [[ $TARGET != "cuda" && $TARGET != "rocm" && $TARGET != "efa" && $TARGET != "all" ]]; then
-  echo "Usage: $0 [cuda|rocm|efa|all]" >&2
-  exit 1
+if [[ $TARGET != "cuda" && $TARGET != "rocm" && $TARGET != "gh" && $TARGET != "efa" && $TARGET != "all" ]]; then
+  echo "Usage: $0 [cuda|rocm|gh|efa|all]" >&2
 fi
 
 rm -r uccl.egg-info || true
@@ -29,6 +28,14 @@ mkdir -p "${WHEEL_DIR}"
 
 # If TARGET=all, orchestrate builds for each backend and package **all** shared libraries
 if [[ $TARGET == "all" ]]; then
+  # Build both backend-specific wheels first
+  "$0" cuda
+  if [[ "$(uname -m)" != "aarch64" ]]; then
+    "$0" rocm
+  else
+    echo "Skipping ROCm build on Arm64."
+  fi
+  "$0" gh
   # Temporary directory to accumulate .so files from each backend build
   TEMP_LIB_DIR="uccl/lib_all"
   rm -rf "${TEMP_LIB_DIR}" || true
@@ -44,6 +51,10 @@ if [[ $TARGET == "all" ]]; then
 
   echo "### Building EFA backend and collecting its shared library ###"
   "$0" efa
+  cp uccl/lib/*.so "${TEMP_LIB_DIR}/" || true
+
+  echo "### Building Grace Hopper backend and collecting its shared library ###"
+  "$0" gh
   cp uccl/lib/*.so "${TEMP_LIB_DIR}/" || true
 
   # Prepare combined library directory
@@ -76,7 +87,11 @@ IMAGE_NAME="uccl-builder-${TARGET}"
 
 # Build the builder image (contains toolchain + CUDA/ROCm)
 echo "[1/3] Building Docker image ${IMAGE_NAME} using ${DOCKERFILE}..."
-docker build -t "$IMAGE_NAME" -f "$DOCKERFILE" .
+if [[ "$TARGET" == "gh" ]]; then
+  docker build --platform=linux/arm64 -t "$IMAGE_NAME" -f "$DOCKERFILE" .
+else
+  docker build -t "$IMAGE_NAME" -f "$DOCKERFILE" .
+fi
 
 echo "[2/3] Running build inside container..."
 if [[ $2 == "-it" ]]; then
@@ -119,6 +134,12 @@ else
       elif [[ "$TARGET" == efa ]]; then
           cd efa && make clean && make -j$(nproc) && cd ..
           TARGET_SO=efa/libnccl-net-efa.so
+      elif [[ "$TARGET" == gh ]]; then
+          cd rdma && make clean && make -j$(nproc) && cd ..
+          TARGET_SO=rdma/libnccl-net-uccl.so
+      else 
+          echo "Unsupported target: $TARGET"
+          exit 1
       fi
 
       echo "[container] Packaging uccl..."
