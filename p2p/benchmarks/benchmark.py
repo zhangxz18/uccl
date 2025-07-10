@@ -6,8 +6,6 @@ import time
 from typing import List
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 try:
     from uccl import p2p
 except ImportError as exc:
@@ -91,6 +89,7 @@ def _run_server(args):
             elapsed = time.perf_counter() - start
             gbps = (total_recv * 8) / elapsed / 1e9  # bits per second → Gbps
             gb_sec = total_recv / elapsed / 1e9  # bytes per second → GB/s
+            lat = elapsed/args.iters
         else:
             ep.recvv(conn_id, mr_id_v, data_ptr_v, size_v, args.num_kvblocks)
             start = time.perf_counter()
@@ -105,9 +104,10 @@ def _run_server(args):
             elapsed = time.perf_counter() - start
             gbps = (total_recv * 8) / elapsed / 1e9  # bits per second → Gbps
             gb_sec = total_recv / elapsed / 1e9  # bytes per second → GB/s
+            lat = elapsed/args.iters
 
         print(
-            f"[Server] {_pretty_size(size):>8} : {gbps:6.2f} Gbps | {gb_sec:6.2f} GB/s"
+            f"[Server] {_pretty_size(size):>8} : {gbps:6.2f} Gbps | {gb_sec:6.2f} GB/s  | {lat:6.6f} s"
         )
     print("[Server] Benchmark complete")
 
@@ -148,6 +148,7 @@ def _run_client(args):
             elapsed = time.perf_counter() - start
             gbps = (total_sent * 8) / elapsed / 1e9
             gb_sec = total_sent / elapsed / 1e9
+            lat = elapsed/args.iters
         else:
             ep.sendv(conn_id, mr_id_v, data_ptr_v, size_v, args.num_kvblocks)
             start = time.perf_counter()
@@ -162,9 +163,10 @@ def _run_client(args):
             elapsed = time.perf_counter() - start
             gbps = (total_sent * 8) / elapsed / 1e9
             gb_sec = total_sent / elapsed / 1e9
-
+            lat = elapsed/args.iters
+            
         print(
-            f"[Client] {_pretty_size(size):>8} : {gbps:6.2f} Gbps | {gb_sec:6.2f} GB/s"
+            f"[Client] {_pretty_size(size):>8} : {gbps:6.2f} Gbps | {gb_sec:6.2f} GB/s  | {lat:6.6f} s"
         )
     print("[Client] Benchmark complete")
 
