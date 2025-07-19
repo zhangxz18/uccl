@@ -986,6 +986,7 @@ class RDMAEndpoint {
 
   // RDMA devices.
   int num_devices_;
+  int port_;
 
   int num_engines_per_dev_;
   // Per-engine communication channel
@@ -1030,12 +1031,18 @@ class RDMAEndpoint {
   ~RDMAEndpoint();
 
   uint32_t get_num_devices() { return num_devices_; }
+  int get_port() {
+    if (port_ == 0) {
+      throw std::runtime_error("Error: port_ is not set.");
+    }
+    return port_;
+  }
 
   void initialize_resources(int total_num_engines);
 
   void cleanup_resources();
 
-  bool initialize_engine_by_dev(int dev);
+  bool initialize_engine_by_dev(int dev, bool test_create_listen_fd);
 
   /// For testing easily.
   ConnID test_uccl_connect(int dev, int gpu, int remote_dev, int remote_gpu,
@@ -1060,18 +1067,26 @@ class RDMAEndpoint {
   ConnID uccl_accept(int dev, int listen_fd, int local_gpuidx,
                      std::string& remote_ip, int* remote_dev);
 
-  bool is_local_leader(int ldev, int lgpu, std::string lip, int rdev, int rgpu,
-                       std::string rip) {
-    if (str_to_ip(lip.c_str()) < str_to_ip(rip.c_str())) {
-      return true;
-    } else if (str_to_ip(lip.c_str()) == str_to_ip(rip.c_str())) {
-      if (ldev < rdev)
-        return true;
-      else if (ldev == rdev) {
-        if (lgpu < rgpu) return true;
-        DCHECK(lgpu != rgpu);
-      }
-    }
+  bool is_local_leader(int ldev, int lgpu, std::string lip, uint16_t lport,
+                       int rdev, int rgpu, std::string rip, uint16_t rport) {
+    auto lip_int = str_to_ip(lip.c_str());
+    auto rip_int = str_to_ip(rip.c_str());
+
+    if (lip_int < rip_int) return true;
+    if (lip_int > rip_int) return false;
+
+    if (ldev < rdev) return true;
+    if (ldev > rdev) return false;
+
+    if (lgpu < rgpu) return true;
+    if (lgpu > rgpu) return false;
+
+    // This is to handle an edge case where both p2p connections run on the same
+    // GPU (debug.)
+    if (lport < rport) return true;
+    if (lport > rport) return false;
+
+    // If all else is equal (very rare), default to false (non-leader)
     return false;
   }
 

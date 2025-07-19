@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "util/net.h"
 #include "util/util.h"
 #include <arpa/inet.h>
 #include <glog/logging.h>
@@ -17,6 +18,7 @@
 int const kMaxNumGPUs = 8;
 // Assume the local and remote GPUs have the same GPU-NIC mapping.
 uint8_t gpu_to_dev[kMaxNumGPUs] = {0};
+std::once_flag glog_init_once;
 
 inline void check_python_signals() {
   PyGILState_STATE gstate = PyGILState_Ensure();
@@ -32,9 +34,11 @@ Endpoint::Endpoint(uint32_t const local_gpu_idx, uint32_t const num_cpus)
   py::gil_scoped_release release;
   std::cout << "Creating Engine with GPU index: " << local_gpu_idx
             << ", CPUs: " << num_cpus << std::endl;
-  Py_Initialize();
+  // Py_Initialize();
 
-  google::InitGoogleLogging("uccl_p2p");
+  std::call_once(glog_init_once,
+                 []() { google::InitGoogleLogging("uccl_p2p"); });
+
   google::InstallFailureSignalHandler();
 
   // Initialize the RDMA endpoint with lazy creation.
@@ -83,7 +87,7 @@ Endpoint::Endpoint(uint32_t const local_gpu_idx, uint32_t const num_cpus)
   // Initialize the engine based on the GPU index.
 #ifdef LAZY_CREATE_ENGINE
   printf("Lazy creation of engine, GPU index: %d\n", local_gpu_idx_);
-  ep_->initialize_engine_by_dev(gpu_to_dev[local_gpu_idx_]);
+  ep_->initialize_engine_by_dev(gpu_to_dev[local_gpu_idx_], false);
   printf("Engine initialized for GPU %d\n", local_gpu_idx_);
 #endif
 
@@ -113,7 +117,7 @@ Endpoint::~Endpoint() {
 }
 
 bool Endpoint::connect(std::string const& ip_addr, int const& remote_gpu_idx,
-                       uint64_t& conn_id) {
+                       uint64_t& conn_id, int remote_port) {
   py::gil_scoped_release release;
   std::cout << "Attempting to connect to " << ip_addr << ":" << remote_gpu_idx
             << std::endl;
@@ -121,11 +125,18 @@ bool Endpoint::connect(std::string const& ip_addr, int const& remote_gpu_idx,
   // Create a new connection ID
   conn_id = next_conn_id_.fetch_add(1);
 
-  std::future<uccl::ConnID> uccl_conn_id_future =
-      std::async(std::launch::async, [this, remote_gpu_idx, &ip_addr]() {
-        return ep_->test_uccl_connect(
-            gpu_to_dev[local_gpu_idx_], local_gpu_idx_,
-            gpu_to_dev[remote_gpu_idx], remote_gpu_idx, ip_addr);
+  std::future<uccl::ConnID> uccl_conn_id_future = std::async(
+      std::launch::async, [this, remote_gpu_idx, &ip_addr, remote_port]() {
+        if (remote_port == -1) {
+          throw std::runtime_error("Error: remote_port is not set.");
+          return ep_->test_uccl_connect(
+              gpu_to_dev[local_gpu_idx_], local_gpu_idx_,
+              gpu_to_dev[remote_gpu_idx], remote_gpu_idx, ip_addr);
+        } else {
+          return ep_->uccl_connect(gpu_to_dev[local_gpu_idx_], local_gpu_idx_,
+                                   gpu_to_dev[remote_gpu_idx], remote_gpu_idx,
+                                   ip_addr, remote_port);
+        }
       });
 
   // Check for Python signals (eg, ctrl+c) while waiting for connection
@@ -283,6 +294,50 @@ bool Endpoint::send(uint64_t conn_id, uint64_t mr_id, void const* data,
   }
 
   return true;
+}
+
+std::vector<uint8_t> Endpoint::get_endpoint_metadata() {
+  char uccl_ifname[MAX_IF_NAME_SIZE + 1];
+  uccl::socketAddress uccl_ifaddr;
+  int num_ifs =
+      uccl::find_interfaces(uccl_ifname, &uccl_ifaddr, MAX_IF_NAME_SIZE, 1);
+  if (num_ifs != 1) UCCL_INIT_CHECK(false, "No IP interface found");
+
+  std::string ip_str = uccl::get_dev_ip(uccl_ifname);
+  uint16_t port = ep_->get_port();
+  // int listen_fd = uccl::open_ephemeral_port(port);
+  // if (listen_fd < 0) {
+  //   throw std::runtime_error("Failed to open ephemeral port");
+  // }
+
+  bool is_ipv6 = ip_str.find(':') != std::string::npos;
+  size_t ip_len = is_ipv6 ? 16 : 4;
+
+  // Additional 2 bytes for port and 4 bytes for local_gpu_idx_
+  size_t total_len = ip_len + 2 + sizeof(int);
+  std::vector<uint8_t> metadata(total_len);
+
+  // Copy IP
+  if (is_ipv6) {
+    struct in6_addr ip6_bin;
+    if (inet_pton(AF_INET6, ip_str.c_str(), &ip6_bin) != 1)
+      throw std::runtime_error("Invalid IPv6 address: " + ip_str);
+    std::memcpy(metadata.data(), &ip6_bin, 16);
+  } else {
+    struct in_addr ip4_bin;
+    if (inet_pton(AF_INET, ip_str.c_str(), &ip4_bin) != 1)
+      throw std::runtime_error("Invalid IPv4 address: " + ip_str);
+    std::memcpy(metadata.data(), &ip4_bin, 4);
+  }
+
+  // Copy port in network byte order
+  uint16_t net_port = htons(port);
+  std::memcpy(metadata.data() + ip_len, &net_port, 2);
+
+  // Copy local_gpu_idx_ in host byte order
+  std::memcpy(metadata.data() + ip_len + 2, &local_gpu_idx_, sizeof(int));
+
+  return metadata;
 }
 
 bool Endpoint::recv(uint64_t conn_id, uint64_t mr_id, void* data,
@@ -775,7 +830,7 @@ bool Endpoint::join_group(std::string const& discovery_uri,
                   << cid << "\n";
       }
     } else {
-      if (!connect(peers[r].ip_addr, remote_gpu_idx, cid)) {
+      if (!connect(peers[r].ip_addr, remote_gpu_idx, cid, -1)) {
         std::cerr << "[join_group] connect from rank " << r << " failed\n";
         return false;
       }
