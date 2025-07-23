@@ -106,7 +106,7 @@ On client:
 python benchmark_uccl.py --role client --device gpu --local-gpu-idx 0 --num-cpus 4 --remote-ip <Server IP>
 ```
 
-### Running NIXL
+### Running NIXL (with UCX backend)
 
 If you have not installed nixl with RDMA support, you can follow: 
 <details><summary>Click me</summary>
@@ -163,6 +163,18 @@ UCX_MAX_RMA_LANES=4 UCX_IB_PCI_RELAXED_ORDERING=on UCX_NET_DEVICES=mlx5_2:1 UCX_
     python benchmark_nixl.py --role client --device gpu --local-gpu-idx 0 --remote-ip <Server IP>
 ```
 
+### Running NIXL (with Mooncake backend)
+
+On Server:
+```bash
+python benchmark_nixl.py --role server --device gpu --local-gpu-idx 0 --backend mooncake
+```
+
+On Client:
+```bash
+python benchmark_nixl.py --role client --remote-ip <Server IP> --device gpu \
+    --local-gpu-idx 0 --backend mooncake
+```
 
 ### Running NCCL
 
