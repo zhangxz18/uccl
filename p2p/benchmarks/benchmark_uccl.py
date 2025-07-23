@@ -330,7 +330,7 @@ def main():
     p.add_argument(
         "--oob-port",
         type=int,
-        default=50051,
+        default=19999,
         help="TCP port used to ship metadata (server listens, client fetches)",
     )
     args = p.parse_args()
