@@ -1842,8 +1842,6 @@ int RDMAEndpoint::uccl_regmr(int dev, void* addr, size_t len,
                              int type /*unsed for now*/,
                              struct Mhandle** mhandle) {
   auto factory_dev = RDMAFactory::get_factory_dev(dev);
-  cudaPointerAttributes attr;
-  cudaPointerGetAttributes(&attr, addr);
 
   unsigned int flags =
       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
@@ -1856,7 +1854,13 @@ int RDMAEndpoint::uccl_regmr(int dev, void* addr, size_t len,
   } else {
     (*mhandle)->mr = ibv_reg_mr(factory_dev->pd, addr, len, flags);
   }
-
+  if (!(*mhandle)->mr) {
+    std::cerr << "ibv_reg_mr failed (" << strerror(errno) << "), len=" << len
+              << " addr=" << addr << "\n";
+    delete *mhandle;
+    *mhandle = nullptr;
+    return -1;
+  }
   return 0;
 }
 
