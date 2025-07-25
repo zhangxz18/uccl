@@ -231,6 +231,38 @@ bool Endpoint::reg(void const* data, size_t size, uint64_t& mr_id) {
   return true;
 }
 
+bool Endpoint::read(uint64_t conn_id, uint64_t mr_id, void* dst, size_t size,
+                    uccl::FifoItem const& slot_item) {
+  py::gil_scoped_release release;
+
+  if (!ucclParamRCMode()) {
+    DCHECK(false) << "RDMA READ is only supported in RC mode, toggle RCMODE to "
+                     "be True in transport_config.h";
+    std::abort();
+  }
+
+  DCHECK(size <= 0xffffffff) << "size must be < 4 GB";
+  auto* conn = conn_id_to_conn_[conn_id];
+  auto* mhandle = mr_id_to_mr_[mr_id]->mhandle_;
+  uccl::ucclRequest ureq;
+  memset(&ureq, 0, sizeof(uccl::ucclRequest));
+  int rc;
+  do {
+    rc = ep_->uccl_read_async(
+        static_cast<uccl::UcclFlow*>(conn->uccl_conn_id_.context), mhandle, dst,
+        size, slot_item, &ureq);
+    if (rc == -1) {
+      check_python_signals();
+      std::this_thread::yield();
+    }
+  } while (rc == -1);
+
+  while (!ep_->uccl_poll_ureq_once(&ureq)) {
+    check_python_signals();
+  }
+  return true;
+}
+
 bool Endpoint::regv(std::vector<void const*> const& data_v,
                     std::vector<size_t> const& size_v,
                     std::vector<uint64_t>& mr_id_v) {
@@ -760,6 +792,19 @@ bool Endpoint::send_async(uint64_t conn_id, uint64_t mr_id, void const* data,
     }
   } while (rc == -1);
 
+  return true;
+}
+
+bool Endpoint::advertise(uint64_t conn_id, uint64_t mr_id, void* addr,
+                         size_t len, char* out_buf) {
+  py::gil_scoped_release release;
+  auto* conn = conn_id_to_conn_[conn_id];
+  auto mhandle = mr_id_to_mr_[mr_id]->mhandle_;
+  uccl::ucclRequest req_data;
+  if (ep_->prepare_fifo_metadata(
+          static_cast<uccl::UcclFlow*>(conn->uccl_conn_id_.context), &mhandle,
+          addr, len, out_buf) == -1)
+    return false;
   return true;
 }
 
