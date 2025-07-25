@@ -20,17 +20,22 @@ p2p/
 ## Prerequisites
 
 ### System Requirements
-- Linux with RDMA support (optional for development)
+- Linux with RDMA support
 - Python 3.7+ with development headers
-- C++17 compatible compiler (GCC 7+ or Clang 5+)
+- C++17 compatible compiler
 - pybind11 library
-- PyTorch or NumPy (for tensor/array operations)
+- PyTorch (for tensor/array operations)
+
+```bash
+sudo apt install build-essential net-tools libelf-dev libibverbs-dev \
+                 libgoogle-glog-dev libgtest-dev libgflags-dev -y
+```
 
 ### Optional Dependencies
-- RDMA drivers and libraries (`libibverbs-dev`)
-- RDMA-capable network hardware (InfiniBand, RoCE)
+<details><summary>Click me</summary>
+
 - CUDA (for GPU tensor operations)
-- Install Redis 
+- Install Redis
 
 ```bash
 sudo apt-get update
@@ -64,6 +69,9 @@ make -j
 sudo make install
 ```
 
+</details>
+
+
 ## Installation
 
 1. **Install Python dependencies:**
@@ -95,34 +103,26 @@ cd benchmarks
 
 ### Running UCCL P2P
 
-On server: 
+On client: 
 ```bash
-python benchmark_uccl.py --role server --device gpu --local-gpu-idx 0 --num-cpus 4
+torchrun --nnodes=2 --nproc_per_node=1 --node-rank=0 --master_addr=<IP addr> \
+    benchmark_uccl.py --device gpu --local-gpu-idx 0 --num-cpus 4
 ```
 
-On client:
+On server:
 ```bash
-python benchmark_uccl.py --role client --device gpu --local-gpu-idx 0 --num-cpus 4 --remote-ip <Server IP>
+torchrun --nnodes=2 --nproc_per_node=1 --node-rank=1 --master_addr=<IP addr> \
+    benchmark_uccl.py --device gpu --local-gpu-idx 0 --num-cpus 4
 ```
+You may consider setting `GLOO_SOCKET_IFNAME=xxx` if triggering Gloo connectFullMesh failure.
 
-To benchmark dual direction transfer: 
-```bash
-python benchmark_uccl_dual.py --role server --device gpu --local-gpu-idx 0 --num-cpus 4 --remote-ip <Remote IP>
-python benchmark_uccl_dual.py --role client --device gpu --local-gpu-idx 0 --num-cpus 4 --remote-ip <Remote IP>
-```
-
-To benchmark on AMD GPUs: 
+To benchmark on AMD GPUs, do the following preparation: 
 ```bash
 make -j -f MakefileHip install
-
 export CONDA_LIB_HOME="/work1/yzhou/yangzhou/anaconda3/lib"
 export LD_LIBRARY_PATH=${CONDA_LIB_HOME}:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}
 export UCCL_RCMODE=1
-
-python benchmark_uccl.py --role server --device gpu --local-gpu-idx 0 --num-cpus 4
-python benchmark_uccl.py --role client --device gpu --local-gpu-idx 0 --num-cpus 4 --remote-ip <Server IP>
 ```
-
 
 ### Running NIXL (with UCX backend)
 
