@@ -19,6 +19,16 @@ p2p/
 
 ## Prerequisites
 
+The easiest way is to: 
+```
+git clone https://github.com/uccl-project/uccl.git --recursive
+cd uccl && bash build_and_install.sh [cuda|rocm]
+```
+
+Alternatively, you can setup your local dev environment by: 
+
+<details><summary>Click me</summary>
+
 ### System Requirements
 - Linux with RDMA support
 - Python 3.7+ with development headers
@@ -32,7 +42,6 @@ sudo apt install build-essential net-tools libelf-dev libibverbs-dev \
 ```
 
 ### Optional Dependencies
-<details><summary>Click me</summary>
 
 - CUDA (for GPU tensor operations)
 - Install Redis
@@ -69,10 +78,7 @@ make -j
 sudo make install
 ```
 
-</details>
-
-
-## Installation
+### Installation
 
 1. **Install Python dependencies:**
    ```bash
@@ -93,13 +99,13 @@ sudo make install
    ```bash
    make install
    ```
+
+</details>
+
+
 ## Performance Benchmarks
 
-Navigate to benchmarks directory:
-
-```bash
-cd benchmarks
-```
+Navigate to `benchmarks` directory: 
 
 ### Running UCCL P2P
 
@@ -114,15 +120,10 @@ On server:
 torchrun --nnodes=2 --nproc_per_node=1 --node-rank=1 --master_addr=<IP addr> \
     benchmark_uccl.py --device gpu --local-gpu-idx 0 --num-cpus 4
 ```
+
 You may consider setting `GLOO_SOCKET_IFNAME=xxx` if triggering Gloo connectFullMesh failure.
 
-To benchmark on AMD GPUs, do the following preparation: 
-```bash
-make -j -f MakefileHip install
-export CONDA_LIB_HOME="/work1/yzhou/yangzhou/anaconda3/lib"
-export LD_LIBRARY_PATH=${CONDA_LIB_HOME}:/opt/rocm-6.3.1/lib:${LD_LIBRARY_PATH}
-export UCCL_RCMODE=1
-```
+To benchmark on AMD GPUs, you need to specify `UCCL_RCMODE=1`.
 
 ### Running NIXL (with UCX backend)
 
