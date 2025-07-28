@@ -124,6 +124,8 @@ torchrun --nnodes=2 --nproc_per_node=1 --node-rank=1 --master_addr=<IP addr> \
 Notes: 
 * You may consider exporting `GLOO_SOCKET_IFNAME=xxx` if triggering Gloo connectFullMesh failure.
 * To benchmark on AMD GPUs, you need to specify `UCCL_RCMODE=1`.
+* To benchmark dual direction transfer, you can run `benchmark_uccl_dual.py` with the same commands as above. 
+* To benchmark one-sided READ transfer, you can run `benchmark_uccl_read.py`.
 
 ### Running NCCL
 
@@ -144,7 +146,8 @@ torchrun --nnodes=2 --nproc_per_node=1 --node-rank=1 --master_addr=<IP addr> \
 Notes: 
 * You can specify `NCCL_IB_HCA=mlx5_2:1` to control which NIC and port to use. 
 * If you see errors like `message size truncated`, it is likely caused by NCCL version mismatch. We suggest specifying `LD_PRELOAD=<path to libnccl.so.2>`. 
-* To benchmark dual direction transfer, you can run `benchmark_nccl_dual.py` with the same commands as above. 
+* To benchmark dual direction transfer, you can run `benchmark_nccl_dual.py`. 
+* This also works for AMD GPUs.
 
 ### Running NIXL with UCX backend
 
@@ -202,6 +205,9 @@ On Client:
 UCX_MAX_RMA_LANES=4 UCX_IB_PCI_RELAXED_ORDERING=on UCX_NET_DEVICES=mlx5_2:1 UCX_TLS=cuda,rc \
 python benchmark_nixl.py --role client --device gpu --local-gpu-idx 0 --remote-ip <Server IP>
 ```
+
+Notes: 
+* You can specify `--op-type read` to benchmark one-sided READ transfer in NIXL. On GH200, we find NIXL READ over GPU memory is extremely slow with 1GB/s out of 25, while NIXL READ over CPU memory is better but only max at 9GB/s. 
 
 ### Running NIXL with Mooncake backend
 
