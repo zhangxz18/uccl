@@ -22,7 +22,7 @@
 
 class Proxy {
  public:
-  enum class Mode { Sender, Remote, Local };
+  enum class Mode { Sender, Remote, Local, Dual };
 
   struct Config {
     DeviceToHostCmdBuffer* rb = nullptr;
@@ -55,6 +55,7 @@ class Proxy {
   void run_sender();
   void run_remote();
   void run_local();
+  void run_dual();
   void pin_thread();
 
   double avg_rdma_write_us() const;

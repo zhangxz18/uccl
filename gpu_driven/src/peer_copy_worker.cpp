@@ -95,6 +95,9 @@ void peer_copy_worker(PeerCopyShared& shared, PeerWorkerCtx& ctx,
     std::string func_name;
 
     if (false) {
+      /* This works with dual mode. */
+      /* I suspect there is contention with application kernel and copy kernel
+       * in launch_peer_bulk_copy2 */
       err = cudaMemcpyPeerAsync(t.dst_ptr, t.dst_dev, t.src_ptr,
                                 shared.src_device, t.bytes * copy_batch_size,
                                 stream);

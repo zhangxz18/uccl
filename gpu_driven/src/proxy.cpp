@@ -79,6 +79,25 @@ void Proxy::run_remote() {
   }
 }
 
+void Proxy::run_dual() {
+  printf("Dual (single-thread) proxy for block %d starting\n",
+         cfg_.block_idx + 1);
+  init_remote();
+  // == sender-only bits:
+  local_post_ack_buf(ctx_, kSenderAckQueueDepth);
+
+  uint64_t my_tail = 0;
+  size_t seen = 0;
+  while (ctx_.progress_run.load(std::memory_order_acquire)) {
+    poll_cq_dual(ctx_, finished_wrs_, finished_wrs_mutex_, cfg_.block_idx,
+                 ring);
+    if (my_tail < kIterations) {
+      notify_gpu_completion(my_tail);
+      post_gpu_command(my_tail, seen);
+    }
+  }
+}
+
 void Proxy::notify_gpu_completion(uint64_t& my_tail) {
 #ifdef ASSUME_WR_IN_ORDER
   if (finished_wrs_.empty()) return;
