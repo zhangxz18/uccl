@@ -288,6 +288,8 @@ class RDMAContext {
 
   inline bool is_roce() { return is_roce_; }
 
+  inline bool rc_mode() { return io_ctx_->rc_mode_; }
+
  public:
   // 256-bit SACK bitmask => we can track up to 256 packets
   static constexpr std::size_t kReassemblyMaxSeqnoDistance = kSackBitmapSize;
@@ -1015,6 +1017,10 @@ class RDMAEndpoint {
   ~RDMAEndpoint();
 
   uint32_t get_num_devices() { return num_devices_; }
+
+  int get_best_dev_idx(int gpu_idx) {
+    return RDMAFactory::get_best_dev_idx(gpu_idx);
+  }
 
   inline uint16_t get_p2p_listen_port(int dev) {
     CHECK(p2p_listen_ports_[dev] != 0)
