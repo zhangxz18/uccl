@@ -87,3 +87,9 @@ uccl.egg-info/
 dist/
 wheelhouse-*/
 build/
+temp/
+.vscode/
+.vscode/c_cpp_properties.json
+rccl_build/
+build_new/
+.clangd
