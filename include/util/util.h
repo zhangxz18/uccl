@@ -365,6 +365,7 @@ struct alignas(64) PollCtx {
 };
 
 inline void uccl_wakeup(PollCtx* ctx) {
+  VLOG(0) << "[DEBUGGING] uccl_wakeup: start to wakeup for ctx=" << ctx << " and ctx->done=" << ctx->done.load();
   std::lock_guard<std::mutex> lock(ctx->mu);
   ctx->done = true;
   ctx->cv.notify_one();

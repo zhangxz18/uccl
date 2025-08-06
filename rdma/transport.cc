@@ -559,13 +559,24 @@ void UcclRDMAEngine::handle_install_flow_on_engine(
     }
   }
 
-  UCCL_LOG_ENGINE << "Installed flow: " << flow_id
-                  << ", peerid: " << ctrl_work.peer_id
-                  << " on engine: " << engine_idx_
-                  << (is_send ? " (send)" : " (recv)")
-                  << ", RDMAContext: " << rdma_ctx;
+  // VLOG(0) << "[DEBUGGING] handle_install_flow_on_engine: Installed flow local_dev=" << dev_
+  //                 << ", remote_dev=" << flow->remote_dev_
+  //                 << ", flow_id=" << flow_id
+  //                 << ", peerid=" << ctrl_work.peer_id
+  //                 << " on engine=" << engine_idx_
+  //                 << (is_send ? " (send)" : " (recv)")
+  //                 << ", poll_ctx=" << poll_ctx
+  //                 << ", RDMAContext=" << rdma_ctx;
 
   uccl_wakeup(poll_ctx);
+  VLOG(0) << "[DEBUGGING] handle_install_flow_on_engine: wakeup poll_ctx local_dev=" << dev_
+          << ", remote_dev=" << flow->remote_dev_
+          << ", flow_id=" << flow_id
+          << ", peerid=" << ctrl_work.peer_id
+          << " on engine=" << engine_idx_
+          << (is_send ? " (send)" : " (recv)")
+          << ", poll_ctx=" << poll_ctx
+          << ", RDMAContext=" << rdma_ctx ;
 }
 
 void UcclRDMAEngine::handle_install_ctx_on_engine(Channel::CtrlMsg& ctrl_work) {
@@ -1092,7 +1103,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int local_gpuidx, int remote_dev,
       new UcclFlow(this, dev, peer_id, flow_id, remote_ip, remote_dev, true);
   DCHECK(flow);
 
-  VLOG(0) << "[DEBUGGING] uccl_connect: start to install flow on engines for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
+  // VLOG(0) << "[DEBUGGING] uccl_connect: start to install flow on engines for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
   auto poll_ctx_vec =
       install_flow_on_engines(dev, peer_id, flow_id, flow, true);
 
@@ -1115,7 +1126,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int local_gpuidx, int remote_dev,
   }
 
   flow->modify_fifo(bootstrap_fd, dev, remote_ctx, remote_fifo_qpn);
-  VLOG(0) << "[DEBUGGING] uccl_connect: finish to modify fifo for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
+  // VLOG(0) << "[DEBUGGING] uccl_connect: finish to modify fifo for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
 
   active_flows_spin_[dev].Lock();
   active_flows_vec_[dev].push_back(flow);
@@ -1129,7 +1140,7 @@ ConnID RDMAEndpoint::uccl_connect(int dev, int local_gpuidx, int remote_dev,
   
 
   for (auto* poll_ctx : poll_ctx_vec) {
-    uccl_wait(poll_ctx);
+    uccl_wait_debug(poll_ctx, dev, remote_dev, flow_id);
   }
 
   VLOG(0) << "[DEBUGGING] uccl_connect: finishto poll_ctx for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
@@ -1231,7 +1242,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, int local_gpuidx,
       new UcclFlow(this, dev, peer_id, flow_id, remote_ip, *remote_dev, false);
   DCHECK(flow);
 
-  VLOG(0) << "[DEBUGGING] uccl_accept: start to install flow on engines for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
+  // VLOG(0) << "[DEBUGGING] uccl_accept: start to install flow on engines for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
   auto poll_ctx_vec =
       install_flow_on_engines(dev, peer_id, flow_id, flow, false);
 
@@ -1255,7 +1266,7 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, int local_gpuidx,
   }
 
   flow->modify_fifo(bootstrap_fd, dev, remote_ctx, remote_fifo_qpn);
-  VLOG(0) << "[DEBUGGING] uccl_accept: finish to modify fifo for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
+  // VLOG(0) << "[DEBUGGING] uccl_accept: finish to modify fifo for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
   active_flows_spin_[dev].Lock();
   active_flows_vec_[dev].push_back(flow);
   active_flows_spin_[dev].Unlock();
@@ -1264,13 +1275,13 @@ ConnID RDMAEndpoint::uccl_accept(int dev, int listen_fd, int local_gpuidx,
     std::lock_guard<std::mutex> lock(fd_vec_mu_);
     fd_vec_.push_back(bootstrap_fd);
   }
-  VLOG(0) << "[DEBUGGING] uccl_accept: finish to push flow to active_flows_vec_ and start poll_ctx for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
+  VLOG(0) << "[DEBUGGING] uccl_accept: finish to push flow to active_flows_vec_ and start poll_ctx for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << *remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
   
   for (auto* poll_ctx : poll_ctx_vec) {
-    uccl_wait(poll_ctx);
+    uccl_wait_debug(poll_ctx, dev, *remote_dev, flow_id);
   }
 
-  VLOG(0) << "[DEBUGGING] uccl_accept: finishto poll_ctx for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
+  VLOG(0) << "[DEBUGGING] uccl_accept: finishto poll_ctx for local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " local_port=" << local_port << " remote_dev=" << *remote_dev  << " remote_gpuidx=" << remote_gpuidx << " remote_port=" << remote_port << " flow_id=" << flow_id;
 
   return ConnID{
       .context = flow, .flow_id = flow_id, .peer_id = peer_id, .dev = dev};

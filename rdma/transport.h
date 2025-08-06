@@ -962,7 +962,7 @@ struct PeerInfo {
  * RDMAEndpoint.
  */
 class RDMAEndpoint {
-  constexpr static uint32_t kMaxInflightMsg = 1024 * 256;
+  constexpr static uint32_t kMaxInflightMsg = 1024 * 512;
   constexpr static uint32_t kStatsTimerIntervalSec = 2;
   constexpr static uint32_t RC_MAGIC = 0x12345678;
 
@@ -1135,6 +1135,15 @@ class RDMAEndpoint {
   inline bool uccl_wait(PollCtx* ctx) {
     std::unique_lock<std::mutex> lock(ctx->mu);
     ctx->cv.wait(lock, [&ctx] { return ctx->done.load(); });
+    fence_and_clean_ctx(ctx);
+    return true;
+  }
+
+  inline bool uccl_wait_debug(PollCtx* ctx, int ldev, int rdev, int flow_id) {
+    std::unique_lock<std::mutex> lock(ctx->mu);
+    VLOG(0) << "[DEBUGGING] uccl_wait_debug: start to wait for local_dev=" << ldev << " remote_dev=" << rdev << " flow_id=" << flow_id << "with ctx=" << ctx << " and ctx->done=" << ctx->done.load();
+    ctx->cv.wait(lock, [&ctx] { return ctx->done.load(); });
+    VLOG(0) << "[DEBUGGING] uccl_wait_debug: done waiting for local_dev=" << ldev << " remote_dev=" << rdev << " flow_id=" << flow_id << "with ctx=" << ctx << " and ctx->done=" << ctx->done.load();
     fence_and_clean_ctx(ctx);
     return true;
   }
