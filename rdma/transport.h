@@ -1089,6 +1089,7 @@ class RDMAEndpoint {
     if (lport > rport) return false;
 
     // If all else is equal (very rare), default to false (non-leader)
+    printf("[Warning] is_local_leader: all else is equal with (lip=%d, rip=%d, ldev=%d, rdev=%d, lgpu=%d, rgpu=%d, lport=%d, rport=%d)\n", lip_int, rip_int, ldev, rdev, lgpu, rgpu, lport, rport);
     return false;
   }
 
@@ -1137,7 +1138,7 @@ class RDMAEndpoint {
     fence_and_clean_ctx(ctx);
     return true;
   }
-
+  
   inline bool uccl_poll_once(PollCtx* ctx) {
     if (!ctx->done.load()) return false;
     fence_and_clean_ctx(ctx);

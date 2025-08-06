@@ -322,7 +322,7 @@ ncclResult_t pluginListen(int dev, void* opaqueHandle, void** listenComm) {
 
   *listenComm = lcomm;
 
-  UCCL_LOG_PLUGIN << "Listen on dev: " << dev << " from PID: " << getpid();
+  VLOG(0) << "[DEBUGGING] pluginListen: Listen on local_dev=" << dev << ", local_gpuidx=" << handle->remote_gpuidx <<" local_port=" << handle->listen_port << " with listen_fd=" << listen_fd << " from PID: " << getpid();
 
   return ncclSuccess;
 }
@@ -351,12 +351,14 @@ ncclResult_t pluginConnect(int dev, void* opaque_handle, void** sendComm,
     handle->state = kConnConnecting;
     // Delegate connection to another thread.
     std::thread t = std::thread([dev, local_gpuidx, handle, remote_ip_str] {
+      VLOG(0) << "[DEBUGGING] pluginConnect: find a handle in KConnInit. local_dev=" << dev << ", local_gpuidx=" << local_gpuidx << ", handle=" << handle << ", remote_ip_str=" << remote_ip_str.c_str() << " remote_port=" << handle->listen_port;
       handle->connect_buffer.base.conn_id = ep->uccl_connect(
           dev, local_gpuidx, handle->remote_dev, handle->remote_gpuidx,
           remote_ip_str, handle->listen_port);
       handle->connect_buffer.base.dev = dev;
       std::atomic_thread_fence(std::memory_order_release);
       handle->state = kConnConnected;
+      VLOG(0) << "[DEBUGGING] pluginConnect: handle->state = kConnConnected. local_dev=" << dev << ", local_gpuidx=" << local_gpuidx << ", handle=" << handle << ", remote_ip_str=" << remote_ip_str.c_str() << " remote_port=" << handle->listen_port;
     });
     t.detach();
     *sendComm = nullptr;
@@ -365,16 +367,16 @@ ncclResult_t pluginConnect(int dev, void* opaque_handle, void** sendComm,
     *sendComm = nullptr;
     free(scomm);
   } else {
+    VLOG(0) << "[DEBUGGING] pluginConnect: find a handle in KConnConnected. local_dev=" << dev << ", local_gpuidx=" << local_gpuidx << ", handle=" << handle << ", remote_ip_str=" << remote_ip_str.c_str();
     DCHECK(handle->state == kConnConnected);
     scomm->base = handle->connect_buffer.base;
     scomm->base.uccl_req_pool = std::make_shared<ucclRequestBuffPool>();
     *sendComm = scomm;
+    DCHECK(*sendComm) << "sendComm is nullptr";
   }
 
   if (*sendComm) {
-    UCCL_LOG_PLUGIN << "Connected to " << remote_ip_str << "/"
-                    << handle->remote_dev << " on dev:" << dev << ", "
-                    << scomm->base.conn_id.flow_id << " from PID: " << getpid();
+    VLOG(0) << "[DEBUGGING] PluginConnect: Connected to remote_ip=" << remote_ip_str << " remote_dev=" << handle->remote_dev << " on local_dev=" << dev << " local_gpuidx=" << local_gpuidx << " flow_id=" << scomm->base.conn_id.flow_id << " from PID: " << getpid();
   }
 
   return ncclSuccess;
@@ -395,6 +397,7 @@ ncclResult_t pluginAccept(void* listenComm, void** recvComm,
     lcomm->state = kConnConnecting;
     // Delegate connection to another thread.
     std::thread t = std::thread([lcomm] {
+      VLOG(0) << "[DEBUGGING] pluginAccept: find a listenComm in KConnInit. local_dev=" << lcomm->dev << ", listen_fd=" << lcomm->listen_fd << ", local_gpuidx=" << lcomm->gpuidx;
       std::string remote_ip_str;
       int remote_dev;
       lcomm->accept_buffer.base.conn_id =
@@ -406,6 +409,7 @@ ncclResult_t pluginAccept(void* listenComm, void** recvComm,
       // Ensure kConnConnected is set after all other fields are set.
       std::atomic_thread_fence(std::memory_order_release);
       lcomm->state = kConnConnected;
+      VLOG(0) << "[DEBUGGING] pluginAccept: listenComm->state = kConnConnected. local_dev=" << lcomm->dev << ", listen_fd=" << lcomm->listen_fd << ", local_gpuidx=" << lcomm->gpuidx;
     });
     t.detach();
     *recvComm = nullptr;
@@ -420,12 +424,11 @@ ncclResult_t pluginAccept(void* listenComm, void** recvComm,
     rcomm->remote_ip_str = lcomm->accept_buffer.remote_ip_str;
     rcomm->remote_dev = lcomm->accept_buffer.remote_dev;
     *recvComm = rcomm;
+    DCHECK(*recvComm) << "recvComm is nullptr";
   }
 
   if (*recvComm) {
-    UCCL_LOG_PLUGIN << "Accepted from " << rcomm->remote_ip_str << "/"
-                    << rcomm->remote_dev << " on dev:" << lcomm->dev << ", "
-                    << rcomm->base.conn_id.flow_id << " from PID: " << getpid();
+    VLOG(0) << "[DEBUGGING] PluginAccept: Accepted from remote_ip=" << rcomm->remote_ip_str << " remote_dev=" << rcomm->remote_dev << " on local_dev=" << lcomm->dev << " local_gpuidx=" << lcomm->gpuidx << " flow_id=" << rcomm->base.conn_id.flow_id << " from PID: " << getpid();
   }
 
   return ncclSuccess;
